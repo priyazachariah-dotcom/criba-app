@@ -4,7 +4,6 @@ import { google } from 'googleapis';
 import Anthropic from '@anthropic-ai/sdk';
 import ical from 'node-ical';
 import multer from 'multer';
-import { pdfToPng } from 'pdf-to-png-converter';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
@@ -12,9 +11,10 @@ import fs from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-const upload = multer({ dest: '/tmp/uploads/' });
+const upload = multer({ dest: '/tmp/uploads/', limits: { fileSize: 20 * 1024 * 1024 } });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// In-memory store
 const store = {
   users: new Map(),
   usersByEmail: new Map(),
@@ -71,6 +71,7 @@ function getOAuthClient(user) {
   return client;
 }
 
+// AUTH
 app.get('/api/auth/google', (req, res) => {
   const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
   res.redirect(url);
@@ -108,12 +109,38 @@ app.get('/api/me', requireAuth, (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => { req.session.destroy(); res.json({ ok: true }); });
 
+// CONTACTS
+app.get('/api/contacts/search', requireAuth, async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.length < 2) return res.json([]);
+  const user = db.getUser(req.session.userId);
+  if (!user) return res.status(401).json({ error: 'Not found' });
+  try {
+    const auth = getOAuthClient(user);
+    const people = google.people({ version: 'v1', auth });
+    const response = await people.people.searchContacts({
+      query: q,
+      readMask: 'names,emailAddresses',
+      pageSize: 10,
+    });
+    const contacts = (response.data.results || []).map(r => ({
+      name: r.person?.names?.[0]?.displayName || '',
+      email: r.person?.emailAddresses?.[0]?.value || '',
+    })).filter(c => c.email);
+    res.json(contacts);
+  } catch (err) {
+    console.error('Contacts error:', err);
+    res.json([]);
+  }
+});
+
+// EVENTS
 app.get('/api/events/pending', requireAuth, (req, res) => {
   res.json(db.getPendingEvents(req.session.userId));
 });
 
 app.post('/api/events/approve', requireAuth, async (req, res) => {
-  const { id, title, date, time, location, person, shareToBharat } = req.body;
+  const { id, title, date, time, location, attendees, shareToBharat } = req.body;
   const user = db.getUser(req.session.userId);
   if (!user) return res.status(401).json({ error: 'Not found' });
   const event = [...store.events.values()].find(e => e.id === id && e.user_id === user.id);
@@ -121,25 +148,44 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
   try {
     const auth = getOAuthClient(user);
     const calendar = google.calendar({ version: 'v3', auth });
+    const tz = 'America/Los_Angeles';
     let start, end;
-    if (date) {
-      if (time) {
-        const dt = `${date}T${time}:00`;
-        const tz = 'America/Los_Angeles';
-        start = { dateTime: dt, timeZone: tz };
-        end = { dateTime: new Date(new Date(dt).getTime() + 60 * 60 * 1000).toISOString(), timeZone: tz };
-      } else {
-        start = { date }; end = { date };
-      }
+    if (!date) return res.status(400).json({ error: 'Date is required' });
+    
+    if (time && time !== '09:00' && time !== '') {
+      // Has a real time — create timed event
+      start = { dateTime: `${date}T${time}:00`, timeZone: tz };
+      // End 1 hour later
+      const [h, m] = time.split(':').map(Number);
+      const endH = String(h + 1).padStart(2, '0');
+      end = { dateTime: `${date}T${endH}:${String(m).padStart(2,'0')}:00`, timeZone: tz };
     } else {
-      return res.status(400).json({ error: 'Date is required' });
+      // All day event
+      start = { date };
+      end = { date };
     }
-    const attendees = shareToBharat ? [{ email: 'bharatguruprakash@gmail.com' }] : [];
-    await calendar.events.insert({ calendarId: 'primary', resource: { summary: title || event.title, location: location || event.location || '', start, end, attendees, description: `Added via Criba · For: ${person || event.person}` } });
+
+    // Build attendees list
+    const eventAttendees = [];
+    if (shareToBharat) eventAttendees.push({ email: 'bharatguruprakash@gmail.com' });
+    if (attendees && Array.isArray(attendees)) {
+      attendees.forEach(a => { if (a.email) eventAttendees.push({ email: a.email }); });
+    }
+
+    await calendar.events.insert({
+      calendarId: 'primary',
+      resource: {
+        summary: title || event.title,
+        location: location || event.location || '',
+        start, end,
+        attendees: eventAttendees,
+        description: `Added via Criba`,
+      }
+    });
     db.updateEventStatus(id, 'approved');
     res.json({ ok: true });
   } catch (err) {
-    console.error('Calendar error:', err);
+    console.error('Calendar error:', err.message);
     res.status(500).json({ error: 'Failed to add to Google Calendar: ' + err.message });
   }
 });
@@ -149,6 +195,7 @@ app.post('/api/events/dismiss', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// CALENDARS
 app.get('/api/calendars', requireAuth, (req, res) => {
   res.json(db.getCalendars(req.session.userId));
 });
@@ -158,13 +205,14 @@ app.delete('/api/calendars/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// iCal
 app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
   const { name, person, url } = req.body;
   if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
   try {
     const events = await ical.async.fromURL(url);
     const today = new Date(); today.setHours(0,0,0,0);
-    const endOfYear = new Date('2026-12-31');
+    const endOfYear = new Date('2027-08-31');
     const futureEvents = Object.values(events).filter(ev => {
       if (ev.type !== 'VEVENT') return false;
       const start = ev.start ? new Date(ev.start) : null;
@@ -175,8 +223,9 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
     db.saveCalendar({ id: calId, user_id: req.session.userId, name, person, source: 'ical', url, event_count: futureEvents.length, created_at: new Date().toISOString() });
     for (const ev of futureEvents) {
       const start = new Date(ev.start);
-      const dateStr = start.toISOString().split('T')[0];
-      const timeStr = ev.start && !ev.allDay ? start.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' }) : '';
+      const dateStr = start.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+      const isAllDay = ev.datetype === 'date' || !ev.start?.toTimeString;
+      const timeStr = isAllDay ? '' : start.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' });
       db.saveEvent({ id: randomUUID(), user_id: req.session.userId, calendar_id: calId, title: ev.summary || 'Untitled Event', date: dateStr, time: timeStr, location: ev.location || '', person, category: 'School', source: name, status: 'pending', created_at: new Date().toISOString() });
     }
     res.json({ ok: true, eventCount: futureEvents.length, calendarId: calId });
@@ -186,35 +235,88 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
   }
 });
 
+// PDF — using Claude's native PDF support (no image conversion needed)
 app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req, res) => {
   const { name, person } = req.body;
   if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
   if (!name) return res.status(400).json({ error: 'Calendar name is required' });
   const pdfPath = req.file.path;
   try {
-    const pages = await pdfToPng(pdfPath, { disableFontFace: true, useSystemFonts: true, viewportScale: 2.0, outputFileMask: 'page' });
-    if (!pages || pages.length === 0) return res.status(400).json({ error: 'Could not read PDF pages' });
-    const imageContents = pages.slice(0, 5).map(page => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: page.content.toString('base64') } }));
+    // Read PDF as base64 and send directly to Claude
+    const pdfBuffer = fs.readFileSync(pdfPath);
+    const pdfBase64 = pdfBuffer.toString('base64');
+
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
-      messages: [{ role: 'user', content: [...imageContents, { type: 'text', text: `This is a school calendar PDF. Extract ALL events and dates you can see. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today through June 30, 2026. Return a JSON object: {"categories":[{"name":"Category name","count":number,"events":[{"title":"Event name","date":"YYYY-MM-DD","time":"HH:MM or null","location":"location or null"}]}]}. Group events by category from what you actually see. Return ONLY valid JSON.` }] }]
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: {
+              type: 'base64',
+              media_type: 'application/pdf',
+              data: pdfBase64,
+            }
+          },
+          {
+            type: 'text',
+            text: `This is a school calendar PDF. Extract ALL events, dates and holidays you can see.
+            
+Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward.
+
+Return a JSON object with this exact structure:
+{
+  "categories": [
+    {
+      "name": "Category name (e.g. Holidays, School Breaks, Key Dates, Sports)",
+      "count": number,
+      "events": [
+        {
+          "title": "Event name",
+          "date": "YYYY-MM-DD",
+          "time": null,
+          "location": null
+        }
+      ]
+    }
+  ]
+}
+
+Group events by the type/category you find in the calendar. Use the actual categories from the document.
+Return ONLY valid JSON, no explanation, no markdown.`
+          }
+        ]
+      }]
     });
+
     const text = response.content[0].text;
     let parsed;
-    try { parsed = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim()); }
-    catch { return res.status(500).json({ error: 'AI could not parse this PDF. Please try a different file.' }); }
-    if (!parsed.categories || parsed.categories.length === 0) return res.status(400).json({ error: 'No events found in this PDF' });
+    try {
+      const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      parsed = JSON.parse(clean);
+    } catch {
+      return res.status(500).json({ error: 'AI could not parse this PDF. Please try a different file.' });
+    }
+
+    if (!parsed.categories || parsed.categories.length === 0) {
+      return res.status(400).json({ error: 'No events found in this PDF' });
+    }
+
     const calId = randomUUID();
-    const totalEvents = parsed.categories.reduce((sum, c) => sum + c.events.length, 0);
+    const totalEvents = parsed.categories.reduce((sum, c) => sum + (c.events?.length || 0), 0);
     db.saveCalendar({ id: calId, user_id: req.session.userId, name, person, source: 'pdf', url: req.file.originalname || 'upload.pdf', event_count: 0, created_at: new Date().toISOString() });
+
     for (const cat of parsed.categories) {
-      for (const ev of cat.events) {
+      for (const ev of (cat.events || [])) {
         db.saveEvent({ id: randomUUID(), user_id: req.session.userId, calendar_id: calId, title: ev.title, date: ev.date, time: ev.time || '', location: ev.location || '', person, category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() });
       }
     }
+
     try { fs.unlinkSync(pdfPath); } catch {}
-    res.json({ ok: true, calendarId: calId, totalEvents, categories: parsed.categories.map(c => ({ name: c.name, count: c.events.length })) });
+    res.json({ ok: true, calendarId: calId, totalEvents, categories: parsed.categories.map(c => ({ name: c.name, count: c.events?.length || 0 })) });
+
   } catch (err) {
     console.error('PDF error:', err);
     try { fs.unlinkSync(pdfPath); } catch {}

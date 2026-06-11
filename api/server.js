@@ -1,5 +1,5 @@
 import express from 'express';
-import session from 'express-session';
+import cookieParser from 'cookie-parser';
 import { google } from 'googleapis';
 import Anthropic from '@anthropic-ai/sdk';
 import ical from 'node-ical';
@@ -8,32 +8,65 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
+import crypto from 'crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const upload = multer({ dest: '/tmp/uploads/', limits: { fileSize: 20 * 1024 * 1024 } });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const SECRET = process.env.SESSION_SECRET || 'criba-secret-key-2026';
 
-const store = {
-  users: new Map(),
-  usersByEmail: new Map(),
-  calendars: new Map(),
-  events: new Map(),
-};
+const userEvents = new Map();
+const userCalendars = new Map();
 
-const db = {
-  getUser: (id) => store.users.get(id),
-  getUserByEmail: (email) => { const id = store.usersByEmail.get(email); return id ? store.users.get(id) : null; },
-  saveUser: (user) => { store.users.set(user.id, user); store.usersByEmail.set(user.email, user.id); },
-  getCalendars: (userId) => [...store.calendars.values()].filter(c => c.user_id === userId).sort((a,b) => b.created_at > a.created_at ? 1 : -1),
-  saveCalendar: (cal) => store.calendars.set(cal.id, cal),
-  deleteCalendar: (id) => store.calendars.delete(id),
-  getPendingEvents: (userId) => [...store.events.values()].filter(e => e.user_id === userId && e.status === 'pending').sort((a,b) => a.date > b.date ? 1 : -1),
-  saveEvent: (ev) => store.events.set(ev.id, ev),
-  updateEventStatus: (id, status) => { const ev = store.events.get(id); if (ev) { ev.status = status; store.events.set(id, ev); } },
-  getEventsByCalendar: (calId, userId, status) => [...store.events.values()].filter(e => e.calendar_id === calId && e.user_id === userId && (!status || e.status === status)),
-  updateCalendarCount: (calId, count) => { const cal = store.calendars.get(calId); if (cal) { cal.event_count = count; store.calendars.set(calId, cal); } },
-};
+function getUserEvents(email) {
+  if (!userEvents.has(email)) userEvents.set(email, new Map());
+  return userEvents.get(email);
+}
+
+function getUserCalendars(email) {
+  if (!userCalendars.has(email)) userCalendars.set(email, new Map());
+  return userCalendars.get(email);
+}
+
+function signData(data) {
+  const str = JSON.stringify(data);
+  const encoded = Buffer.from(str).toString('base64');
+  const sig = crypto.createHmac('sha256', SECRET).update(encoded).digest('hex');
+  return `${encoded}.${sig}`;
+}
+
+function verifyData(token) {
+  if (!token) return null;
+  try {
+    const [encoded, sig] = token.split('.');
+    const expected = crypto.createHmac('sha256', SECRET).update(encoded).digest('hex');
+    if (sig !== expected) return null;
+    return JSON.parse(Buffer.from(encoded, 'base64').toString());
+  } catch { return null; }
+}
+
+function setUserCookie(res, user) {
+  const token = signData({ id: user.id, email: user.email, name: user.name, access_token: user.access_token, refresh_token: user.refresh_token });
+  res.cookie('criba_user', token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000, sameSite: 'lax', secure: false });
+}
+
+function getUser(req) {
+  return verifyData(req.cookies?.criba_user);
+}
+
+function requireAuth(req, res, next) {
+  const user = getUser(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+  req.user = user;
+  next();
+}
+
+function getOAuthClient(user) {
+  const client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
+  client.setCredentials({ access_token: user.access_token, refresh_token: user.refresh_token });
+  return client;
+}
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
@@ -51,24 +84,16 @@ const SCOPES = [
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'criba-secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { secure: false, maxAge: 7 * 24 * 60 * 60 * 1000 }
-}));
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, '../public')));
 
-function requireAuth(req, res, next) {
-  if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' });
+function requireAuth2(req, res, next) {
+  const user = getUser(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
+  req.user = user;
   next();
 }
 
-function getOAuthClient(user) {
-  const client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
-  client.setCredentials({ access_token: user.access_token, refresh_token: user.refresh_token });
-  return client;
-}
 app.get('/api/auth/google', (req, res) => {
   const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
   res.redirect(url);
@@ -81,16 +106,8 @@ app.get('/api/auth/google/callback', async (req, res) => {
     oauth2Client.setCredentials(tokens);
     const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
     const { data } = await oauth2.userinfo.get();
-    let user = db.getUserByEmail(data.email);
-    if (!user) {
-      user = { id: randomUUID(), email: data.email, name: data.name, access_token: tokens.access_token, refresh_token: tokens.refresh_token || '' };
-    } else {
-      user.access_token = tokens.access_token;
-      if (tokens.refresh_token) user.refresh_token = tokens.refresh_token;
-      user.name = data.name;
-    }
-    db.saveUser(user);
-    req.session.userId = user.id;
+    const user = { id: randomUUID(), email: data.email, name: data.name, access_token: tokens.access_token, refresh_token: tokens.refresh_token || '' };
+    setUserCookie(res, user);
     res.redirect('/');
   } catch (err) {
     console.error('OAuth error:', err);
@@ -98,21 +115,22 @@ app.get('/api/auth/google/callback', async (req, res) => {
   }
 });
 
-app.get('/api/me', requireAuth, (req, res) => {
-  const user = db.getUser(req.session.userId);
-  if (!user) return res.status(401).json({ error: 'Not found' });
+app.get('/api/me', (req, res) => {
+  const user = getUser(req);
+  if (!user) return res.status(401).json({ error: 'Not authenticated' });
   res.json({ id: user.id, email: user.email, name: user.name });
 });
 
-app.post('/api/auth/logout', (req, res) => { req.session.destroy(); res.json({ ok: true }); });
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('criba_user');
+  res.json({ ok: true });
+});
 
 app.get('/api/contacts/search', requireAuth, async (req, res) => {
   const { q } = req.query;
   if (!q || q.length < 2) return res.json([]);
-  const user = db.getUser(req.session.userId);
-  if (!user) return res.status(401).json({ error: 'Not found' });
   try {
-    const auth = getOAuthClient(user);
+    const auth = getOAuthClient(req.user);
     const people = google.people({ version: 'v1', auth });
     const response = await people.people.searchContacts({
       query: q,
@@ -125,96 +143,190 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
     })).filter(c => c.email);
     res.json(contacts);
   } catch (err) {
-    console.error('Contacts error:', err);
+    console.error('Contacts error:', err.message);
     res.json([]);
   }
 });
-
 app.get('/api/events/pending', requireAuth, (req, res) => {
-  res.json(db.getPendingEvents(req.session.userId));
+  const events = getUserEvents(req.user.email);
+  const pending = [...events.values()].filter(e => e.status === 'pending').sort((a,b) => a.date > b.date ? 1 : -1);
+  res.json(pending);
+});
+
+app.get('/api/events/recent', requireAuth, (req, res) => {
+  const events = getUserEvents(req.user.email);
+  const approved = [...events.values()]
+    .filter(e => e.status === 'approved')
+    .sort((a,b) => b.approved_at > a.approved_at ? 1 : -1)
+    .slice(0, 20);
+  res.json(approved);
 });
 
 app.post('/api/events/approve', requireAuth, async (req, res) => {
   const { id, title, date, time, location, attendees, shareToBharat } = req.body;
-  const user = db.getUser(req.session.userId);
-  if (!user) return res.status(401).json({ error: 'Not found' });
-  const event = [...store.events.values()].find(e => e.id === id && e.user_id === user.id);
+  const events = getUserEvents(req.user.email);
+  const event = events.get(id);
   if (!event) return res.status(404).json({ error: 'Event not found' });
   try {
-    const auth = getOAuthClient(user);
+    const auth = getOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
     const tz = 'America/Los_Angeles';
     let start, end;
     if (!date) return res.status(400).json({ error: 'Date is required' });
-    if (time && time !== '') {
+    if (time && time.trim() !== '') {
       start = { dateTime: `${date}T${time}:00`, timeZone: tz };
       const [h, m] = time.split(':').map(Number);
-      const endH = String(h + 1).padStart(2, '0');
-      end = { dateTime: `${date}T${endH}:${String(m).padStart(2,'0')}:00`, timeZone: tz };
+      const endHour = h + 1 > 23 ? 23 : h + 1;
+      end = { dateTime: `${date}T${String(endHour).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`, timeZone: tz };
     } else {
-      start = { date }; end = { date };
+      start = { date };
+      end = { date };
     }
     const eventAttendees = [];
     if (shareToBharat) eventAttendees.push({ email: 'bharatguruprakash@gmail.com' });
     if (attendees && Array.isArray(attendees)) {
       attendees.forEach(a => { if (a.email) eventAttendees.push({ email: a.email }); });
     }
-    await calendar.events.insert({
+    const calEvent = await calendar.events.insert({
       calendarId: 'primary',
       resource: { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description: 'Added via Criba' }
     });
-    db.updateEventStatus(id, 'approved');
-    res.json({ ok: true });
+    event.status = 'approved';
+    event.calEventId = calEvent.data.id;
+    event.approved_at = new Date().toISOString();
+    event.title = title || event.title;
+    event.date = date;
+    event.time = time || '';
+    event.location = location || event.location || '';
+    events.set(id, event);
+    res.json({ ok: true, calEventId: calEvent.data.id });
   } catch (err) {
     console.error('Calendar error:', err.message);
     res.status(500).json({ error: 'Failed to add to Google Calendar: ' + err.message });
   }
 });
 
+app.post('/api/events/undo', requireAuth, async (req, res) => {
+  const { id } = req.body;
+  const events = getUserEvents(req.user.email);
+  const event = events.get(id);
+  if (!event || !event.calEventId) return res.status(404).json({ error: 'Event not found' });
+  try {
+    const auth = getOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    await calendar.events.delete({ calendarId: 'primary', eventId: event.calEventId });
+    event.status = 'pending';
+    event.calEventId = null;
+    event.approved_at = null;
+    events.set(id, event);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Undo error:', err.message);
+    res.status(500).json({ error: 'Failed to undo: ' + err.message });
+  }
+});
+
+app.post('/api/events/update', requireAuth, async (req, res) => {
+  const { id, title, date, time, location, attendees } = req.body;
+  const events = getUserEvents(req.user.email);
+  const event = events.get(id);
+  if (!event || !event.calEventId) return res.status(404).json({ error: 'Event not found' });
+  try {
+    const auth = getOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const tz = 'America/Los_Angeles';
+    let start, end;
+    if (time && time.trim() !== '') {
+      start = { dateTime: `${date}T${time}:00`, timeZone: tz };
+      const [h, m] = time.split(':').map(Number);
+      const endHour = h + 1 > 23 ? 23 : h + 1;
+      end = { dateTime: `${date}T${String(endHour).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`, timeZone: tz };
+    } else {
+      start = { date }; end = { date };
+    }
+    const eventAttendees = (attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
+    await calendar.events.patch({
+      calendarId: 'primary',
+      eventId: event.calEventId,
+      resource: { summary: title, location: location || '', start, end, attendees: eventAttendees }
+    });
+    event.title = title; event.date = date; event.time = time || ''; event.location = location || '';
+    events.set(id, event);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('Update error:', err.message);
+    res.status(500).json({ error: 'Failed to update: ' + err.message });
+  }
+});
+
 app.post('/api/events/dismiss', requireAuth, (req, res) => {
-  db.updateEventStatus(req.body.id, 'dismissed');
+  const events = getUserEvents(req.user.email);
+  const event = events.get(req.body.id);
+  if (event) { event.status = 'dismissed'; events.set(req.body.id, event); }
   res.json({ ok: true });
 });
 app.get('/api/calendars', requireAuth, (req, res) => {
-  res.json(db.getCalendars(req.session.userId));
+  const cals = getUserCalendars(req.user.email);
+  res.json([...cals.values()].sort((a,b) => b.created_at > a.created_at ? 1 : -1));
 });
 
 app.delete('/api/calendars/:id', requireAuth, (req, res) => {
-  db.deleteCalendar(req.params.id);
+  const cals = getUserCalendars(req.user.email);
+  cals.delete(req.params.id);
+  const events = getUserEvents(req.user.email);
+  for (const [eid, ev] of events) {
+    if (ev.calendar_id === req.params.id && ev.status === 'pending') events.delete(eid);
+  }
   res.json({ ok: true });
 });
 
 app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
-  const { name, person, url } = req.body;
+  const { name, url } = req.body;
   if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
   try {
-    const events = await ical.async.fromURL(url);
+    const icalEvents = await ical.async.fromURL(url);
     const today = new Date(); today.setHours(0,0,0,0);
-    const endOfYear = new Date('2027-08-31');
-    const futureEvents = Object.values(events).filter(ev => {
+    const endDate = new Date('2027-08-31');
+    const futureEvents = Object.values(icalEvents).filter(ev => {
       if (ev.type !== 'VEVENT') return false;
       const start = ev.start ? new Date(ev.start) : null;
-      return start && start >= today && start <= endOfYear;
+      return start && start >= today && start <= endDate;
     });
     if (futureEvents.length === 0) return res.status(400).json({ error: 'No upcoming events found in this calendar' });
+
+    // Group by category for selection
+    const categoryMap = new Map();
+    for (const ev of futureEvents) {
+      const cat = ev.categories?.[0] || 'School Events';
+      if (!categoryMap.has(cat)) categoryMap.set(cat, []);
+      categoryMap.get(cat).push(ev);
+    }
+    const categories = [...categoryMap.entries()].map(([name, evs]) => ({ name, count: evs.length }));
+
     const calId = randomUUID();
-    db.saveCalendar({ id: calId, user_id: req.session.userId, name, person, source: 'ical', url, event_count: futureEvents.length, created_at: new Date().toISOString() });
+    const cals = getUserCalendars(req.user.email);
+    cals.set(calId, { id: calId, name, source: 'ical', url, event_count: 0, created_at: new Date().toISOString() });
+
+    const events = getUserEvents(req.user.email);
     for (const ev of futureEvents) {
       const start = new Date(ev.start);
       const dateStr = start.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-      const isAllDay = ev.datetype === 'date' || !ev.start?.toTimeString;
+      const isAllDay = ev.datetype === 'date';
       const timeStr = isAllDay ? '' : start.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' });
-      db.saveEvent({ id: randomUUID(), user_id: req.session.userId, calendar_id: calId, title: ev.summary || 'Untitled Event', date: dateStr, time: timeStr, location: ev.location || '', person, category: 'School', source: name, status: 'pending', created_at: new Date().toISOString() });
+      const cat = ev.categories?.[0] || 'School Events';
+      const evId = randomUUID();
+      events.set(evId, { id: evId, calendar_id: calId, title: ev.summary || 'Untitled Event', date: dateStr, time: timeStr, location: ev.location || '', category: cat, source: name, status: 'draft', created_at: new Date().toISOString() });
     }
-    res.json({ ok: true, eventCount: futureEvents.length, calendarId: calId });
+
+    res.json({ ok: true, calendarId: calId, totalEvents: futureEvents.length, categories });
   } catch (err) {
     console.error('iCal error:', err);
-    res.status(500).json({ error: 'Failed to fetch calendar. Check the URL and try again.' });
+    res.status(500).json({ error: 'Failed to fetch calendar: ' + err.message });
   }
 });
 
 app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req, res) => {
-  const { name, person } = req.body;
+  const { name } = req.body;
   if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
   if (!name) return res.status(400).json({ error: 'Calendar name is required' });
   const pdfPath = req.file.path;
@@ -222,13 +334,13 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfBase64 = pdfBuffer.toString('base64');
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-opus-4-5',
       max_tokens: 4096,
       messages: [{
         role: 'user',
         content: [
           { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-          { type: 'text', text: `This is a school calendar PDF. Extract ALL events, dates and holidays. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward. Return JSON: {"categories":[{"name":"Category name","count":number,"events":[{"title":"Event name","date":"YYYY-MM-DD","time":null,"location":null}]}]}. Group by category from the document. Return ONLY valid JSON.` }
+          { type: 'text', text: `This is a school calendar PDF. Extract ALL events, dates and holidays. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward. Return JSON: {"categories":[{"name":"Category name","count":number,"events":[{"title":"Event name","date":"YYYY-MM-DD","time":null,"location":null}]}]}. Group by category from the document. Return ONLY valid JSON, no markdown.` }
         ]
       }]
     });
@@ -236,13 +348,16 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     let parsed;
     try { parsed = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim()); }
     catch { return res.status(500).json({ error: 'AI could not parse this PDF.' }); }
-    if (!parsed.categories || !parsed.categories.length) return res.status(400).json({ error: 'No events found in this PDF' });
+    if (!parsed.categories?.length) return res.status(400).json({ error: 'No events found in this PDF' });
     const calId = randomUUID();
     const totalEvents = parsed.categories.reduce((sum, c) => sum + (c.events?.length || 0), 0);
-    db.saveCalendar({ id: calId, user_id: req.session.userId, name, person, source: 'pdf', url: req.file.originalname || 'upload.pdf', event_count: 0, created_at: new Date().toISOString() });
+    const cals = getUserCalendars(req.user.email);
+    cals.set(calId, { id: calId, name, source: 'pdf', url: req.file.originalname || 'upload.pdf', event_count: 0, created_at: new Date().toISOString() });
+    const events = getUserEvents(req.user.email);
     for (const cat of parsed.categories) {
       for (const ev of (cat.events || [])) {
-        db.saveEvent({ id: randomUUID(), user_id: req.session.userId, calendar_id: calId, title: ev.title, date: ev.date, time: ev.time || '', location: ev.location || '', person, category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() });
+        const evId = randomUUID();
+        events.set(evId, { id: evId, calendar_id: calId, title: ev.title, date: ev.date, time: ev.time || '', location: ev.location || '', category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() });
       }
     }
     try { fs.unlinkSync(pdfPath); } catch {}
@@ -257,13 +372,17 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
 app.post('/api/calendars/confirm-categories', requireAuth, (req, res) => {
   const { calendarId, selectedCategories } = req.body;
   if (!calendarId || !selectedCategories) return res.status(400).json({ error: 'Missing data' });
-  const drafts = db.getEventsByCalendar(calendarId, req.session.userId, 'draft');
+  const events = getUserEvents(req.user.email);
   let addedCount = 0;
-  for (const ev of drafts) {
-    if (selectedCategories.includes(ev.category)) { db.updateEventStatus(ev.id, 'pending'); addedCount++; }
-    else { db.updateEventStatus(ev.id, 'rejected'); }
+  for (const [, ev] of events) {
+    if (ev.calendar_id === calendarId && ev.status === 'draft') {
+      if (selectedCategories.includes(ev.category)) { ev.status = 'pending'; addedCount++; }
+      else { ev.status = 'rejected'; }
+    }
   }
-  db.updateCalendarCount(calendarId, addedCount);
+  const cals = getUserCalendars(req.user.email);
+  const cal = cals.get(calendarId);
+  if (cal) { cal.event_count = addedCount; cals.set(calendarId, cal); }
   res.json({ ok: true, addedCount });
 });
 

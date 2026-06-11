@@ -1,8 +1,18 @@
 {
   "version": 2,
-  "functions": {
-    "api/server.js": {
-      "maxDuration": 60
+  "builds": [
+    {
+      "src": "api/server.js",
+      "use": "@vercel/node",
+      "config": {
+        "maxDuration": 60
+      }
     }
-  }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/server.js"
+    }
+  ]
 }

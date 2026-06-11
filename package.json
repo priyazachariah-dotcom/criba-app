@@ -13,7 +13,6 @@
     "express-session": "^1.18.0",
     "googleapis": "^140.0.0",
     "multer": "^1.4.5-lts.1",
-    "node-ical": "^0.16.1",
-    "pdf-to-png-converter": "^3.3.0"
+    "node-ical": "^0.16.1"
   }
 }

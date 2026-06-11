@@ -14,7 +14,6 @@ const app = express();
 const upload = multer({ dest: '/tmp/uploads/', limits: { fileSize: 20 * 1024 * 1024 } });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// In-memory store
 const store = {
   users: new Map(),
   usersByEmail: new Map(),
@@ -70,8 +69,6 @@ function getOAuthClient(user) {
   client.setCredentials({ access_token: user.access_token, refresh_token: user.refresh_token });
   return client;
 }
-
-// AUTH
 app.get('/api/auth/google', (req, res) => {
   const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
   res.redirect(url);
@@ -109,7 +106,6 @@ app.get('/api/me', requireAuth, (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => { req.session.destroy(); res.json({ ok: true }); });
 
-// CONTACTS
 app.get('/api/contacts/search', requireAuth, async (req, res) => {
   const { q } = req.query;
   if (!q || q.length < 2) return res.json([]);
@@ -134,7 +130,6 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
   }
 });
 
-// EVENTS
 app.get('/api/events/pending', requireAuth, (req, res) => {
   res.json(db.getPendingEvents(req.session.userId));
 });
@@ -151,36 +146,22 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const tz = 'America/Los_Angeles';
     let start, end;
     if (!date) return res.status(400).json({ error: 'Date is required' });
-    
-    if (time && time !== '09:00' && time !== '') {
-      // Has a real time — create timed event
+    if (time && time !== '') {
       start = { dateTime: `${date}T${time}:00`, timeZone: tz };
-      // End 1 hour later
       const [h, m] = time.split(':').map(Number);
       const endH = String(h + 1).padStart(2, '0');
       end = { dateTime: `${date}T${endH}:${String(m).padStart(2,'0')}:00`, timeZone: tz };
     } else {
-      // All day event
-      start = { date };
-      end = { date };
+      start = { date }; end = { date };
     }
-
-    // Build attendees list
     const eventAttendees = [];
     if (shareToBharat) eventAttendees.push({ email: 'bharatguruprakash@gmail.com' });
     if (attendees && Array.isArray(attendees)) {
       attendees.forEach(a => { if (a.email) eventAttendees.push({ email: a.email }); });
     }
-
     await calendar.events.insert({
       calendarId: 'primary',
-      resource: {
-        summary: title || event.title,
-        location: location || event.location || '',
-        start, end,
-        attendees: eventAttendees,
-        description: `Added via Criba`,
-      }
+      resource: { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description: 'Added via Criba' }
     });
     db.updateEventStatus(id, 'approved');
     res.json({ ok: true });
@@ -194,8 +175,6 @@ app.post('/api/events/dismiss', requireAuth, (req, res) => {
   db.updateEventStatus(req.body.id, 'dismissed');
   res.json({ ok: true });
 });
-
-// CALENDARS
 app.get('/api/calendars', requireAuth, (req, res) => {
   res.json(db.getCalendars(req.session.userId));
 });
@@ -205,7 +184,6 @@ app.delete('/api/calendars/:id', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// iCal
 app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
   const { name, person, url } = req.body;
   if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
@@ -235,88 +213,40 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
   }
 });
 
-// PDF — using Claude's native PDF support (no image conversion needed)
 app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req, res) => {
   const { name, person } = req.body;
   if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
   if (!name) return res.status(400).json({ error: 'Calendar name is required' });
   const pdfPath = req.file.path;
   try {
-    // Read PDF as base64 and send directly to Claude
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfBase64 = pdfBuffer.toString('base64');
-
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
       messages: [{
         role: 'user',
         content: [
-          {
-            type: 'document',
-            source: {
-              type: 'base64',
-              media_type: 'application/pdf',
-              data: pdfBase64,
-            }
-          },
-          {
-            type: 'text',
-            text: `This is a school calendar PDF. Extract ALL events, dates and holidays you can see.
-            
-Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward.
-
-Return a JSON object with this exact structure:
-{
-  "categories": [
-    {
-      "name": "Category name (e.g. Holidays, School Breaks, Key Dates, Sports)",
-      "count": number,
-      "events": [
-        {
-          "title": "Event name",
-          "date": "YYYY-MM-DD",
-          "time": null,
-          "location": null
-        }
-      ]
-    }
-  ]
-}
-
-Group events by the type/category you find in the calendar. Use the actual categories from the document.
-Return ONLY valid JSON, no explanation, no markdown.`
-          }
+          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
+          { type: 'text', text: `This is a school calendar PDF. Extract ALL events, dates and holidays. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward. Return JSON: {"categories":[{"name":"Category name","count":number,"events":[{"title":"Event name","date":"YYYY-MM-DD","time":null,"location":null}]}]}. Group by category from the document. Return ONLY valid JSON.` }
         ]
       }]
     });
-
     const text = response.content[0].text;
     let parsed;
-    try {
-      const clean = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      parsed = JSON.parse(clean);
-    } catch {
-      return res.status(500).json({ error: 'AI could not parse this PDF. Please try a different file.' });
-    }
-
-    if (!parsed.categories || parsed.categories.length === 0) {
-      return res.status(400).json({ error: 'No events found in this PDF' });
-    }
-
+    try { parsed = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim()); }
+    catch { return res.status(500).json({ error: 'AI could not parse this PDF.' }); }
+    if (!parsed.categories || !parsed.categories.length) return res.status(400).json({ error: 'No events found in this PDF' });
     const calId = randomUUID();
     const totalEvents = parsed.categories.reduce((sum, c) => sum + (c.events?.length || 0), 0);
     db.saveCalendar({ id: calId, user_id: req.session.userId, name, person, source: 'pdf', url: req.file.originalname || 'upload.pdf', event_count: 0, created_at: new Date().toISOString() });
-
     for (const cat of parsed.categories) {
       for (const ev of (cat.events || [])) {
         db.saveEvent({ id: randomUUID(), user_id: req.session.userId, calendar_id: calId, title: ev.title, date: ev.date, time: ev.time || '', location: ev.location || '', person, category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() });
       }
     }
-
     try { fs.unlinkSync(pdfPath); } catch {}
     res.json({ ok: true, calendarId: calId, totalEvents, categories: parsed.categories.map(c => ({ name: c.name, count: c.events?.length || 0 })) });
-
   } catch (err) {
     console.error('PDF error:', err);
     try { fs.unlinkSync(pdfPath); } catch {}

@@ -11,15 +11,18 @@
     --border: #d4cfc7; --accent: #1a1714; --green: #2d6a4f; --red: #c1392b; --radius: 10px;
   }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+
   #auth-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 2rem; }
-  .auth-logo { font-size: 2rem; font-weight: 600; letter-spacing: -0.5px; margin-bottom: 0.5rem; }
-  .auth-tagline { color: var(--text2); font-size: 0.95rem; margin-bottom: 3rem; }
-  .auth-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 2.5rem; width: 100%; max-width: 400px; text-align: center; }
+  .auth-logo { font-size: 2.5rem; font-weight: 600; letter-spacing: -1px; margin-bottom: 0.375rem; }
+  .auth-tagline { color: var(--text2); font-size: 0.95rem; margin-bottom: 3rem; letter-spacing: 0.02em; }
+  .auth-card { background: white; border: 1px solid var(--border); border-radius: 16px; padding: 2.5rem; width: 100%; max-width: 400px; text-align: center; box-shadow: 0 2px 20px rgba(0,0,0,0.06); }
   .auth-card h2 { font-size: 1.2rem; font-weight: 500; margin-bottom: 0.5rem; }
-  .auth-card p { color: var(--text2); font-size: 0.9rem; margin-bottom: 2rem; line-height: 1.5; }
-  .google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 0.875rem; background: white; border: 1.5px solid var(--border); border-radius: 8px; font-size: 0.95rem; font-weight: 500; cursor: pointer; color: var(--text); text-decoration: none; transition: background 0.15s; }
-  .google-btn:hover { background: var(--bg); }
+  .auth-card p { color: var(--text2); font-size: 0.9rem; margin-bottom: 2rem; line-height: 1.6; }
+  .google-btn { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; padding: 0.9rem 1.5rem; background: white; border: 1.5px solid var(--border); border-radius: 10px; font-size: 0.95rem; font-weight: 500; cursor: pointer; color: var(--text); text-decoration: none; transition: all 0.15s; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+  .google-btn:hover { background: var(--bg); border-color: #bbb; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
   .google-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
+  .auth-privacy { margin-top: 1.5rem; font-size: 0.75rem; color: var(--text2); line-height: 1.5; }
+
   #app-screen { display: none; min-height: 100vh; }
   header { background: white; border-bottom: 1px solid var(--border); padding: 0 2rem; height: 60px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
   .header-left { display: flex; align-items: center; gap: 2rem; }
@@ -33,14 +36,17 @@
   .user-name { font-size: 0.875rem; color: var(--text2); }
   .logout-btn { font-size: 0.875rem; color: var(--text2); background: none; border: none; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 6px; }
   .logout-btn:hover { background: var(--bg); color: var(--text); }
+
   .page { display: none; padding: 2rem; max-width: 800px; margin: 0 auto; }
   .page.active { display: block; }
   .page-title { font-size: 1.75rem; font-weight: 600; margin-bottom: 0.375rem; letter-spacing: -0.5px; }
   .page-sub { color: var(--text2); font-size: 0.9rem; margin-bottom: 2rem; }
+
   .empty-state { text-align: center; padding: 4rem 2rem; color: var(--text2); }
   .empty-icon { font-size: 2.5rem; margin-bottom: 1rem; opacity: 0.4; }
   .empty-state h3 { font-size: 1.1rem; font-weight: 500; color: var(--text); margin-bottom: 0.5rem; }
   .empty-state p { font-size: 0.875rem; line-height: 1.6; }
+
   .event-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
   .event-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1rem; }
   .event-title-input { font-size: 1rem; font-weight: 500; border: none; background: transparent; width: 100%; padding: 0; color: var(--text); font-family: inherit; }
@@ -69,20 +75,21 @@
   .person-chip { display: flex; align-items: center; gap: 6px; padding: 3px 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: 20px; font-size: 0.8rem; }
   .person-chip button { background: none; border: none; cursor: pointer; color: var(--text2); font-size: 1rem; line-height: 1; padding: 0; }
   .event-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
-  .btn-approve { padding: 0.5rem 1.25rem; background: var(--accent); color: white; border: none; border-radius: 6px; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: opacity 0.15s; }
-  .btn-approve:hover { opacity: 0.85; }
+  .btn-approve { padding: 0.5rem 1.25rem; background: var(--accent); color: white; border: none; border-radius: 6px; font-size: 0.875rem; font-weight: 500; cursor: pointer; }
   .btn-approve:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-dismiss { padding: 0.5rem 1rem; background: transparent; color: var(--text2); border: 1px solid var(--border); border-radius: 6px; font-size: 0.875rem; cursor: pointer; }
-  .btn-dismiss:hover { background: var(--bg); color: var(--text); }
+  .btn-dismiss:hover { background: var(--bg); }
+  .btn-undo { font-size: 0.8rem; color: var(--text2); background: none; border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; cursor: pointer; margin-left: 4px; }
   .success-msg { font-size: 0.8rem; color: var(--green); }
   .error-msg { font-size: 0.8rem; color: var(--red); }
+
   .add-cal-btn { display: flex; align-items: center; gap: 6px; padding: 0.625rem 1.25rem; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 0.875rem; font-weight: 500; cursor: pointer; margin-bottom: 2rem; }
   .cal-form { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 2rem; }
   .cal-form h3 { font-size: 1rem; font-weight: 500; margin-bottom: 1.25rem; }
   .form-group { margin-bottom: 1rem; }
   .form-group label { display: block; font-size: 0.8rem; color: var(--text2); margin-bottom: 5px; font-weight: 500; }
-  .form-group input, .form-group select { width: 100%; padding: 0.625rem 0.875rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.875rem; background: var(--bg); color: var(--text); font-family: inherit; }
-  .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--accent); background: white; }
+  .form-group input { width: 100%; padding: 0.625rem 0.875rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.875rem; background: var(--bg); color: var(--text); font-family: inherit; }
+  .form-group input:focus { outline: none; border-color: var(--accent); background: white; }
   .source-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
   .source-tab { padding: 0.5rem 1rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.875rem; cursor: pointer; background: transparent; color: var(--text2); }
   .source-tab.active { background: var(--accent); color: white; border-color: var(--accent); }
@@ -108,29 +115,39 @@
   .category-item input { width: 16px; height: 16px; }
   .category-item-name { font-size: 0.875rem; font-weight: 500; }
   .category-item-count { font-size: 0.75rem; color: var(--text2); }
+  .recent-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 0.75rem; }
+  .recent-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; }
+  .recent-card-title { font-weight: 500; font-size: 0.95rem; }
+  .recent-card-meta { font-size: 0.8rem; color: var(--text2); margin-top: 2px; }
+  .btn-edit { font-size: 0.8rem; color: var(--text2); background: none; border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+  .btn-edit:hover { background: var(--bg); }
+  .view-more-btn { width: 100%; padding: 0.75rem; background: transparent; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; color: var(--text2); cursor: pointer; margin-top: 0.5rem; }
+  .view-more-btn:hover { background: var(--bg); }
   @media (max-width: 600px) { .page { padding: 1rem; } .event-fields { grid-template-columns: 1fr; } header { padding: 0 1rem; } .header-left { gap: 1rem; } }
 </style>
 </head>
 <body>
- <div id="auth-screen">
+
+<div id="auth-screen">
   <div class="auth-logo">Criba</div>
   <div class="auth-tagline">Filter the noise.</div>
   <div class="auth-card">
     <h2>Sign in to Criba</h2>
     <p>Connect your Google account to start adding school calendars and events to Google Calendar.</p>
     <a href="/api/auth/google" class="google-btn">
-      <svg viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
       Continue with Google
     </a>
+    <p class="auth-privacy">Criba reads your calendar to add events. We never store your messages or sell your data.</p>
   </div>
 </div>
-
 <div id="app-screen">
   <header>
     <div class="header-left">
       <div class="logo">Criba</div>
       <nav>
         <button class="nav-btn active" onclick="showPage('review', this)">Review <span class="badge" id="pending-badge" style="display:none">0</span></button>
+        <button class="nav-btn" onclick="showPage('recent', this)">My Calendar</button>
         <button class="nav-btn" onclick="showPage('calendars', this)">Calendars</button>
       </nav>
     </div>
@@ -144,6 +161,12 @@
     <div class="page-title">Review</div>
     <div class="page-sub">Approve events to add them to your Google Calendar.</div>
     <div id="review-list"></div>
+  </div>
+
+  <div class="page" id="page-recent">
+    <div class="page-title">My Calendar</div>
+    <div class="page-sub">Recently added events — edit or update any time.</div>
+    <div id="recent-list"></div>
   </div>
 
   <div class="page" id="page-calendars">
@@ -186,10 +209,12 @@
 <script>
 let user = null;
 let pendingEvents = [];
+let recentEvents = [];
 let calendars = [];
 let selectedFile = null;
 let extractedCategories = [];
 let selectedPeople = {};
+let showingAll = false;
 
 const CAL_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0891b2'];
 
@@ -204,6 +229,7 @@ async function checkAuth() {
 }
 
 function showAuth() { document.getElementById('auth-screen').style.display = 'flex'; document.getElementById('app-screen').style.display = 'none'; }
+
 function showApp() {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app-screen').style.display = 'block';
@@ -211,10 +237,14 @@ function showApp() {
   loadData();
 }
 
-async function loadData() { await Promise.all([loadPendingEvents(), loadCalendars()]); }
+async function loadData() { await Promise.all([loadPendingEvents(), loadRecentEvents(), loadCalendars()]); }
 
 async function loadPendingEvents() {
   try { const res = await fetch('/api/events/pending'); if (res.ok) { pendingEvents = await res.json(); renderReview(); } } catch {}
+}
+
+async function loadRecentEvents() {
+  try { const res = await fetch('/api/events/recent'); if (res.ok) { recentEvents = await res.json(); renderRecent(); } } catch {}
 }
 
 async function loadCalendars() {
@@ -224,7 +254,7 @@ async function loadCalendars() {
 function renderReview() {
   const container = document.getElementById('review-list');
   const badge = document.getElementById('pending-badge');
-  if (pendingEvents.length === 0) {
+  if (!pendingEvents.length) {
     badge.style.display = 'none';
     container.innerHTML = `<div class="empty-state"><div class="empty-icon">✓</div><h3>All caught up</h3><p>Add a school calendar in the Calendars tab<br>and events will appear here for review.</p></div>`;
     return;
@@ -249,7 +279,7 @@ function renderReview() {
           <input type="date" id="date-${i}" value="${ev.date || ''}" />
         </div>
         <div class="event-field">
-          <label>Time <span style="font-weight:300">(leave blank for all-day)</span></label>
+          <label>Time <span style="font-weight:300">(blank = all-day)</span></label>
           <input type="time" id="time-${i}" value="${ev.time || ''}" />
         </div>
         <div class="event-field full">
@@ -276,6 +306,85 @@ function renderReview() {
       </div>
     </div>`;
   }).join('');
+}
+
+function renderRecent() {
+  const container = document.getElementById('recent-list');
+  if (!recentEvents.length) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">📅</div><h3>Nothing added yet</h3><p>Events you approve will appear here for editing.</p></div>`;
+    return;
+  }
+  const display = showingAll ? recentEvents : recentEvents.slice(0, 20);
+  container.innerHTML = display.map(ev => `
+    <div class="recent-card" id="recent-${ev.id}">
+      <div class="recent-card-header">
+        <div>
+          <div class="recent-card-title">${ev.title}</div>
+          <div class="recent-card-meta">${formatDate(ev.date)}${ev.time ? ' · ' + formatTime(ev.time) : ' · All day'} · ${ev.source}</div>
+        </div>
+        <button class="btn-edit" onclick="toggleEdit('${ev.id}')">Edit</button>
+      </div>
+      <div id="edit-${ev.id}" style="display:none">
+        <div class="event-fields" style="margin-bottom:0.75rem">
+          <div class="event-field">
+            <label>Date</label>
+            <input type="date" id="redate-${ev.id}" value="${ev.date||''}" />
+          </div>
+          <div class="event-field">
+            <label>Time (blank = all-day)</label>
+            <input type="time" id="retime-${ev.id}" value="${ev.time||''}" />
+          </div>
+          <div class="event-field full">
+            <label>Location</label>
+            <input type="text" id="reloc-${ev.id}" value="${(ev.location||'').replace(/"/g,'&quot;')}" placeholder="Add location" />
+          </div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn-approve" style="font-size:0.8rem;padding:0.4rem 1rem" onclick="saveEdit('${ev.id}', '${(ev.title||'').replace(/'/g,"\\'")}')">Save changes</button>
+          <button class="btn-dismiss" style="font-size:0.8rem" onclick="toggleEdit('${ev.id}')">Cancel</button>
+          <span id="edit-status-${ev.id}"></span>
+        </div>
+      </div>
+    </div>`).join('') + (!showingAll && recentEvents.length > 20 ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${recentEvents.length - 20} older events)</button>` : '');
+}
+
+function showAllRecent() { showingAll = true; renderRecent(); }
+
+function toggleEdit(id) {
+  const el = document.getElementById(`edit-${id}`);
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveEdit(id, title) {
+  const date = document.getElementById(`redate-${id}`)?.value;
+  const time = document.getElementById(`retime-${id}`)?.value || '';
+  const location = document.getElementById(`reloc-${id}`)?.value || '';
+  const status = document.getElementById(`edit-status-${id}`);
+  status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Saving...</span>';
+  try {
+    const res = await fetch('/api/events/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id, title, date, time, location, attendees: []}) });
+    if (res.ok) {
+      status.innerHTML = '<span class="success-msg">✓ Updated</span>';
+      await loadRecentEvents();
+    } else {
+      const err = await res.json();
+      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+    }
+  } catch { status.innerHTML = '<span class="error-msg">Network error</span>'; }
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  const date = new Date(d + 'T12:00:00');
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatTime(t) {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  const hour = h % 12 || 12;
+  return `${hour}:${String(m).padStart(2,'0')} ${ampm}`;
 }
 
 let searchTimers = {};
@@ -314,9 +423,7 @@ function renderSelectedPeople(i) {
 }
 
 document.addEventListener('click', e => {
-  if (!e.target.closest('.people-search-wrap')) {
-    document.querySelectorAll('.contacts-dropdown').forEach(d => d.style.display = 'none');
-  }
+  if (!e.target.closest('.people-search-wrap')) document.querySelectorAll('.contacts-dropdown').forEach(d => d.style.display = 'none');
 });
 
 async function approveEvent(i) {
@@ -334,13 +441,14 @@ async function approveEvent(i) {
     shareToBharat: document.getElementById(`bharat-${i}`)?.checked || false,
   };
   try {
-    const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+    const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (res.ok) {
-      status.innerHTML = '<span class="success-msg">✓ Added to Google Calendar</span>';
-      setTimeout(() => { pendingEvents.splice(i, 1); renderReview(); }, 1500);
+      status.innerHTML = `<span class="success-msg">✓ Added</span> <button class="btn-undo" onclick="undoEvent(${i}, '${ev.id}')">Undo</button>`;
+      await loadRecentEvents();
+      setTimeout(() => { pendingEvents.splice(i, 1); renderReview(); }, 8000);
     } else {
       const err = await res.json();
-      status.innerHTML = `<span class="error-msg">${err.error || 'Failed to add'}</span>`;
+      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
       btn.disabled = false; btn.textContent = 'Add to Calendar';
     }
   } catch {
@@ -349,9 +457,16 @@ async function approveEvent(i) {
   }
 }
 
+async function undoEvent(i, id) {
+  try {
+    const res = await fetch('/api/events/undo', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
+    if (res.ok) { await loadPendingEvents(); await loadRecentEvents(); }
+  } catch {}
+}
+
 async function dismissEvent(i) {
   const ev = pendingEvents[i];
-  try { await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: ev.id}) }); } catch {}
+  try { await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id: ev.id}) }); } catch {}
   pendingEvents.splice(i, 1);
   renderReview();
 }
@@ -438,12 +553,14 @@ async function submitCalendar() {
     if (!url) { alert('Please enter a URL'); btn.disabled = false; return; }
     status.innerHTML = '<div class="loading"><div class="spinner"></div>Fetching calendar...</div>';
     try {
-      const res = await fetch('/api/calendars/add-ical', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, person: '', url}) });
+      const res = await fetch('/api/calendars/add-ical', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, url}) });
       const data = await res.json();
-      if (res.ok) {
-        status.innerHTML = `<div style="color:var(--green);font-size:0.875rem;padding:0.5rem 0">✓ Found ${data.eventCount} upcoming events — check Review tab</div>`;
-        await loadCalendars(); await loadPendingEvents();
-        setTimeout(hideCalForm, 2000);
+      if (res.ok && data.categories) {
+        status.innerHTML = `<div style="color:var(--green);font-size:0.875rem;padding:0.5rem 0">✓ Found ${data.totalEvents} events — select what to add</div>`;
+        extractedCategories = data.categories;
+        showCategorySelection(data.categories);
+        btn.textContent = 'Add selected events';
+        btn.onclick = () => confirmCategorySelection(data.calendarId);
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
       }
@@ -451,11 +568,10 @@ async function submitCalendar() {
     btn.disabled = false;
   } else {
     if (!selectedFile) { alert('Please select a PDF'); btn.disabled = false; return; }
-    status.innerHTML = '<div class="loading"><div class="spinner"></div>Reading PDF with AI — this takes about 30 seconds...</div>';
+    status.innerHTML = '<div class="loading"><div class="spinner"></div>Reading PDF with AI — takes about 30 seconds...</div>';
     const formData = new FormData();
     formData.append('pdf', selectedFile);
     formData.append('name', name);
-    formData.append('person', '');
     try {
       const res = await fetch('/api/calendars/add-pdf', { method: 'POST', body: formData });
       const data = await res.json();
@@ -464,9 +580,9 @@ async function submitCalendar() {
         extractedCategories = data.categories;
         showCategorySelection(data.categories);
         btn.textContent = 'Add selected events';
-        btn.onclick = () => confirmCategorySelection(name, data.calendarId);
+        btn.onclick = () => confirmCategorySelection(data.calendarId);
       } else {
-        status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed to extract'}</div>`;
+        status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
       }
     } catch { status.innerHTML = '<div style="color:var(--red);font-size:0.875rem">Network error</div>'; }
     btn.disabled = false;
@@ -479,7 +595,7 @@ function showCategorySelection(categories) {
   container.innerHTML = `<div class="category-selection"><h4>What do you want to add to your Review queue?</h4>${categories.map((cat,i) => `<label class="category-item"><input type="checkbox" id="cat-${i}" checked><div><div class="category-item-name">${cat.name}</div><div class="category-item-count">${cat.count} event${cat.count!==1?'s':''}</div></div></label>`).join('')}</div>`;
 }
 
-async function confirmCategorySelection(name, calendarId) {
+async function confirmCategorySelection(calendarId) {
   const selected = extractedCategories.filter((_,i) => document.getElementById(`cat-${i}`)?.checked);
   if (!selected.length) { alert('Please select at least one category'); return; }
   const btn = document.getElementById('cal-submit-btn');
@@ -511,4 +627,4 @@ function showPage(page, btn) {
 async function logout() { await fetch('/api/auth/logout', {method:'POST'}); user = null; showAuth(); }
 </script>
 </body>
-</html>
+</html> 

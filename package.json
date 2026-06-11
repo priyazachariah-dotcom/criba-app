@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
-    "better-sqlite3": "^9.4.3",
     "express": "^4.18.2",
     "express-session": "^1.18.0",
     "googleapis": "^140.0.0",

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import crypto from 'crypto';
+import Redis from 'ioredis';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -16,17 +17,51 @@ const upload = multer({ dest: '/tmp/uploads/', limits: { fileSize: 20 * 1024 * 1
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const SECRET = process.env.SESSION_SECRET || 'criba-secret-key-2026';
 
-const userEvents = new Map();
-const userCalendars = new Map();
+const redis = new Redis(process.env.REDIS_URL);
+
+// Async wrapper over a Redis hash that mirrors the Map methods the routes
+// were already calling (get/set/has/delete/values/entries), since Redis
+// access is inherently async unlike the in-memory Map it replaces.
+class RedisHashMap {
+  constructor(key) { this.key = key; }
+  async get(field) {
+    const val = await redis.hget(this.key, field);
+    return val ? JSON.parse(val) : undefined;
+  }
+  async set(field, value) {
+    await redis.hset(this.key, field, JSON.stringify(value));
+    return this;
+  }
+  async has(field) {
+    return (await redis.hexists(this.key, field)) === 1;
+  }
+  async delete(field) {
+    return (await redis.hdel(this.key, field)) > 0;
+  }
+  async values() {
+    const all = await redis.hgetall(this.key);
+    return Object.values(all).map(v => JSON.parse(v));
+  }
+  async entries() {
+    const all = await redis.hgetall(this.key);
+    return Object.entries(all).map(([k, v]) => [k, JSON.parse(v)]);
+  }
+  // Batches multiple field writes into a single round trip (used when
+  // importing many events at once from an iCal feed or PDF).
+  async setMany(pairs) {
+    if (!pairs.length) return;
+    const pipeline = redis.pipeline();
+    for (const [field, value] of pairs) pipeline.hset(this.key, field, JSON.stringify(value));
+    await pipeline.exec();
+  }
+}
 
 function getUserEvents(email) {
-  if (!userEvents.has(email)) userEvents.set(email, new Map());
-  return userEvents.get(email);
+  return new RedisHashMap(`events:${email}`);
 }
 
 function getUserCalendars(email) {
-  if (!userCalendars.has(email)) userCalendars.set(email, new Map());
-  return userCalendars.get(email);
+  return new RedisHashMap(`calendars:${email}`);
 }
 
 function signData(data) {
@@ -147,15 +182,15 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
     res.json([]);
   }
 });
-app.get('/api/events/pending', requireAuth, (req, res) => {
+app.get('/api/events/pending', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
-  const pending = [...events.values()].filter(e => e.status === 'pending').sort((a,b) => a.date > b.date ? 1 : -1);
+  const pending = (await events.values()).filter(e => e.status === 'pending').sort((a,b) => a.date > b.date ? 1 : -1);
   res.json(pending);
 });
 
-app.get('/api/events/recent', requireAuth, (req, res) => {
+app.get('/api/events/recent', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
-  const approved = [...events.values()]
+  const approved = (await events.values())
     .filter(e => e.status === 'approved')
     .sort((a,b) => b.approved_at > a.approved_at ? 1 : -1)
     .slice(0, 20);
@@ -165,7 +200,7 @@ app.get('/api/events/recent', requireAuth, (req, res) => {
 app.post('/api/events/approve', requireAuth, async (req, res) => {
   const { id, title, date, time, location, attendees, shareToBharat } = req.body;
   const events = getUserEvents(req.user.email);
-  const event = events.get(id);
+  const event = await events.get(id);
   if (!event) return res.status(404).json({ error: 'Event not found' });
   try {
     const auth = getOAuthClient(req.user);
@@ -198,7 +233,7 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     event.date = date;
     event.time = time || '';
     event.location = location || event.location || '';
-    events.set(id, event);
+    await events.set(id, event);
     res.json({ ok: true, calEventId: calEvent.data.id });
   } catch (err) {
     console.error('Calendar error:', err.message);
@@ -209,7 +244,7 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
 app.post('/api/events/undo', requireAuth, async (req, res) => {
   const { id } = req.body;
   const events = getUserEvents(req.user.email);
-  const event = events.get(id);
+  const event = await events.get(id);
   if (!event || !event.calEventId) return res.status(404).json({ error: 'Event not found' });
   try {
     const auth = getOAuthClient(req.user);
@@ -218,7 +253,7 @@ app.post('/api/events/undo', requireAuth, async (req, res) => {
     event.status = 'pending';
     event.calEventId = null;
     event.approved_at = null;
-    events.set(id, event);
+    await events.set(id, event);
     res.json({ ok: true });
   } catch (err) {
     console.error('Undo error:', err.message);
@@ -229,7 +264,7 @@ app.post('/api/events/undo', requireAuth, async (req, res) => {
 app.post('/api/events/update', requireAuth, async (req, res) => {
   const { id, title, date, time, location, attendees } = req.body;
   const events = getUserEvents(req.user.email);
-  const event = events.get(id);
+  const event = await events.get(id);
   if (!event || !event.calEventId) return res.status(404).json({ error: 'Event not found' });
   try {
     const auth = getOAuthClient(req.user);
@@ -251,7 +286,7 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
       resource: { summary: title, location: location || '', start, end, attendees: eventAttendees }
     });
     event.title = title; event.date = date; event.time = time || ''; event.location = location || '';
-    events.set(id, event);
+    await events.set(id, event);
     res.json({ ok: true });
   } catch (err) {
     console.error('Update error:', err.message);
@@ -259,23 +294,23 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/events/dismiss', requireAuth, (req, res) => {
+app.post('/api/events/dismiss', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
-  const event = events.get(req.body.id);
-  if (event) { event.status = 'dismissed'; events.set(req.body.id, event); }
+  const event = await events.get(req.body.id);
+  if (event) { event.status = 'dismissed'; await events.set(req.body.id, event); }
   res.json({ ok: true });
 });
-app.get('/api/calendars', requireAuth, (req, res) => {
+app.get('/api/calendars', requireAuth, async (req, res) => {
   const cals = getUserCalendars(req.user.email);
-  res.json([...cals.values()].sort((a,b) => b.created_at > a.created_at ? 1 : -1));
+  res.json((await cals.values()).sort((a,b) => b.created_at > a.created_at ? 1 : -1));
 });
 
-app.delete('/api/calendars/:id', requireAuth, (req, res) => {
+app.delete('/api/calendars/:id', requireAuth, async (req, res) => {
   const cals = getUserCalendars(req.user.email);
-  cals.delete(req.params.id);
+  await cals.delete(req.params.id);
   const events = getUserEvents(req.user.email);
-  for (const [eid, ev] of events) {
-    if (ev.calendar_id === req.params.id && ev.status === 'pending') events.delete(eid);
+  for (const [eid, ev] of await events.entries()) {
+    if (ev.calendar_id === req.params.id && ev.status === 'pending') await events.delete(eid);
   }
   res.json({ ok: true });
 });
@@ -305,18 +340,19 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
 
     const calId = randomUUID();
     const cals = getUserCalendars(req.user.email);
-    cals.set(calId, { id: calId, name, source: 'ical', url, event_count: 0, created_at: new Date().toISOString() });
+    await cals.set(calId, { id: calId, name, source: 'ical', url, event_count: 0, created_at: new Date().toISOString() });
 
     const events = getUserEvents(req.user.email);
-    for (const ev of futureEvents) {
+    const eventPairs = futureEvents.map(ev => {
       const start = new Date(ev.start);
       const dateStr = start.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
       const isAllDay = ev.datetype === 'date';
       const timeStr = isAllDay ? '' : start.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' });
       const cat = ev.categories?.[0] || 'School Events';
       const evId = randomUUID();
-      events.set(evId, { id: evId, calendar_id: calId, title: ev.summary || 'Untitled Event', date: dateStr, time: timeStr, location: ev.location || '', category: cat, source: name, status: 'draft', created_at: new Date().toISOString() });
-    }
+      return [evId, { id: evId, calendar_id: calId, title: ev.summary || 'Untitled Event', date: dateStr, time: timeStr, location: ev.location || '', category: cat, source: name, status: 'draft', created_at: new Date().toISOString() }];
+    });
+    await events.setMany(eventPairs);
 
     res.json({ ok: true, calendarId: calId, totalEvents: futureEvents.length, categories });
   } catch (err) {
@@ -352,14 +388,16 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     const calId = randomUUID();
     const totalEvents = parsed.categories.reduce((sum, c) => sum + (c.events?.length || 0), 0);
     const cals = getUserCalendars(req.user.email);
-    cals.set(calId, { id: calId, name, source: 'pdf', url: req.file.originalname || 'upload.pdf', event_count: 0, created_at: new Date().toISOString() });
+    await cals.set(calId, { id: calId, name, source: 'pdf', url: req.file.originalname || 'upload.pdf', event_count: 0, created_at: new Date().toISOString() });
     const events = getUserEvents(req.user.email);
+    const eventPairs = [];
     for (const cat of parsed.categories) {
       for (const ev of (cat.events || [])) {
         const evId = randomUUID();
-        events.set(evId, { id: evId, calendar_id: calId, title: ev.title, date: ev.date, time: ev.time || '', location: ev.location || '', category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() });
+        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, date: ev.date, time: ev.time || '', location: ev.location || '', category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
       }
     }
+    await events.setMany(eventPairs);
     try { fs.unlinkSync(pdfPath); } catch {}
     res.json({ ok: true, calendarId: calId, totalEvents, categories: parsed.categories.map(c => ({ name: c.name, count: c.events?.length || 0 })) });
   } catch (err) {
@@ -369,20 +407,23 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
   }
 });
 
-app.post('/api/calendars/confirm-categories', requireAuth, (req, res) => {
+app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
   const { calendarId, selectedCategories } = req.body;
   if (!calendarId || !selectedCategories) return res.status(400).json({ error: 'Missing data' });
   const events = getUserEvents(req.user.email);
   let addedCount = 0;
-  for (const [, ev] of events) {
+  const updates = [];
+  for (const [id, ev] of await events.entries()) {
     if (ev.calendar_id === calendarId && ev.status === 'draft') {
       if (selectedCategories.includes(ev.category)) { ev.status = 'pending'; addedCount++; }
       else { ev.status = 'rejected'; }
+      updates.push([id, ev]);
     }
   }
+  await events.setMany(updates);
   const cals = getUserCalendars(req.user.email);
-  const cal = cals.get(calendarId);
-  if (cal) { cal.event_count = addedCount; cals.set(calendarId, cal); }
+  const cal = await cals.get(calendarId);
+  if (cal) { cal.event_count = addedCount; await cals.set(calendarId, cal); }
   res.json({ ok: true, addedCount });
 });
 

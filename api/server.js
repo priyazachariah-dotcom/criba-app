@@ -167,18 +167,40 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
   try {
     const auth = getOAuthClient(req.user);
     const people = google.people({ version: 'v1', auth });
+
+    // The People API's searchContacts endpoint uses a lazy, per-account
+    // cache: the first search after login (or after the cache expires)
+    // silently returns zero results until a "warmup" request with an
+    // empty query has synced it. See:
+    // https://developers.google.com/people/api/rest/v1/people/searchContacts
+    // https://github.com/googleapis/google-api-nodejs-client/issues/3277
+    // We warm it at most once every 10 minutes per user (tracked in Redis)
+    // so normal keystroke-by-keystroke searches don't pay for it every time.
+    const warmKey = `contacts_warm:${req.user.email}`;
+    const alreadyWarm = await redis.get(warmKey);
+    if (!alreadyWarm) {
+      try {
+        const warmup = await people.people.searchContacts({ query: '', readMask: 'names,emailAddresses', pageSize: 1 });
+        console.log('Contacts warmup response:', JSON.stringify(warmup.data));
+      } catch (warmErr) {
+        console.error('Contacts warmup error:', JSON.stringify(warmErr.response?.data || warmErr.message));
+      }
+      await redis.set(warmKey, '1', 'EX', 600);
+    }
+
     const response = await people.people.searchContacts({
       query: q,
       readMask: 'names,emailAddresses',
       pageSize: 10,
     });
+    console.log(`Contacts search "${q}" raw response:`, JSON.stringify(response.data));
     const contacts = (response.data.results || []).map(r => ({
       name: r.person?.names?.[0]?.displayName || '',
       email: r.person?.emailAddresses?.[0]?.value || '',
     })).filter(c => c.email);
     res.json(contacts);
   } catch (err) {
-    console.error('Contacts error:', err.message);
+    console.error('Contacts error:', JSON.stringify(err.response?.data || {}), err.message, err.stack);
     res.json([]);
   }
 });

@@ -246,6 +246,7 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     }
     const calEvent = await calendar.events.insert({
       calendarId: 'primary',
+      sendUpdates: 'all',
       resource: { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description: 'Added via Criba' }
     });
     event.status = 'approved';
@@ -305,6 +306,7 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     await calendar.events.patch({
       calendarId: 'primary',
       eventId: event.calEventId,
+      sendUpdates: 'all',
       resource: { summary: title, location: location || '', start, end, attendees: eventAttendees }
     });
     event.title = title; event.date = date; event.time = time || ''; event.location = location || '';

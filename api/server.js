@@ -706,6 +706,27 @@ app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
   res.json({ ok: true, count });
 });
 
+// Dismisses every draft event in one category at once (category-level
+// Dismiss button on the collapsed group card) — none of that group's
+// events will ever reach Calendar or the review queue. No confirmation
+// step by design; matches the single-event dismiss's "just gone" behavior.
+app.post('/api/calendars/group-dismiss', requireAuth, async (req, res) => {
+  const { calendarId, category } = req.body;
+  if (!calendarId || !category) return res.status(400).json({ error: 'Missing data' });
+  const events = getUserEvents(req.user.email);
+  let count = 0;
+  const updates = [];
+  for (const [id, ev] of await events.entries()) {
+    if (ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft') {
+      ev.status = 'dismissed';
+      updates.push([id, ev]);
+      count++;
+    }
+  }
+  await events.setMany(updates);
+  res.json({ ok: true, count });
+});
+
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../public', 'index.html'));
 });

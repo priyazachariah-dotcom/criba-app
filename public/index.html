@@ -116,14 +116,19 @@
   .category-item-name { font-size: 0.875rem; font-weight: 500; }
   .category-item-count { font-size: 0.75rem; color: var(--text2); }
   .category-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.625rem; overflow: hidden; }
-  .category-group-header { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; cursor: pointer; background: var(--bg); }
+  .category-group-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.75rem 1rem; background: var(--bg); }
   .category-group-header:hover { background: var(--bg2); }
   .category-group-header .chevron { color: var(--text2); font-size: 0.8rem; }
+  .category-group-header-main { display: flex; align-items: center; justify-content: space-between; flex: 1; gap: 0.5rem; cursor: pointer; }
+  .category-group-header .btn-dismiss { flex-shrink: 0; padding: 0.35rem 0.75rem; font-size: 0.8rem; }
   .category-group-body { padding: 1rem; border-top: 1px solid var(--border); background: white; }
   .group-event-list { margin: 0.75rem 0; display: flex; flex-direction: column; gap: 6px; }
-  .group-event-row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; font-size: 0.85rem; }
+  .group-event-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; font-size: 0.85rem; }
+  .ger-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .ger-title { font-weight: 500; }
   .ger-meta { color: var(--text2); font-size: 0.8rem; white-space: nowrap; }
+  .ger-dismiss { flex-shrink: 0; border: none; background: transparent; color: var(--text2); cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 2px 6px; border-radius: 4px; }
+  .ger-dismiss:hover { background: var(--border); color: var(--text); }
   .group-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-top: 0.5rem; }
   .recent-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 0.75rem; }
   .recent-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; }
@@ -650,18 +655,22 @@ async function loadCategoryGroups(calendarId) {
   }
 }
 
-function renderGroupEventRow(ev) {
+function renderGroupEventRow(ev, ei, ci) {
   const title = escHtml(ev.title);
+  let meta;
   if (ev.type === 'break') {
-    return `<div class="group-event-row"><span class="ger-title">${title}</span><span class="ger-meta">${formatDate(ev.date)} – ${formatDate(ev.end_date || ev.date)}</span></div>`;
+    meta = `${formatDate(ev.date)} – ${formatDate(ev.end_date || ev.date)}`;
+  } else if ((ev.type === 'timed' || ev.type === 'minimum_day') && ev.time) {
+    meta = `${formatDate(ev.date)} · ${formatTime(ev.time)}${ev.end_time ? ' – ' + formatTime(ev.end_time) : ''}`;
+  } else if (ev.type === 'recurring') {
+    meta = `🔁 ${escHtml(ev.recurring_note || 'Recurring')}`;
+  } else {
+    meta = `${formatDate(ev.date)} · All day`;
   }
-  if ((ev.type === 'timed' || ev.type === 'minimum_day') && ev.time) {
-    return `<div class="group-event-row"><span class="ger-title">${title}</span><span class="ger-meta">${formatDate(ev.date)} · ${formatTime(ev.time)}${ev.end_time ? ' – ' + formatTime(ev.end_time) : ''}</span></div>`;
-  }
-  if (ev.type === 'recurring') {
-    return `<div class="group-event-row"><span class="ger-title">${title}</span><span class="ger-meta">🔁 ${escHtml(ev.recurring_note || 'Recurring')}</span></div>`;
-  }
-  return `<div class="group-event-row"><span class="ger-title">${title}</span><span class="ger-meta">${formatDate(ev.date)} · All day</span></div>`;
+  return `<div class="group-event-row">
+    <div class="ger-info"><span class="ger-title">${title}</span><span class="ger-meta">${meta}</span></div>
+    <button class="ger-dismiss" title="Dismiss this event" onclick="dismissGroupEvent(${ci}, ${ei})">×</button>
+  </div>`;
 }
 
 function renderCategoryGroups() {
@@ -677,9 +686,12 @@ function renderCategoryGroups() {
     groupSelectedPeople[ci] = [];
     return `
     <div class="category-group">
-      <div class="category-group-header" onclick="toggleGroup(${ci})">
-        <div class="category-item-name">${escHtml(cat.name)} (${cat.events.length})</div>
-        <span class="chevron" id="chevron-${ci}">▾</span>
+      <div class="category-group-header">
+        <div class="category-group-header-main" onclick="toggleGroup(${ci})">
+          <div class="category-item-name">${escHtml(cat.name)} (${cat.events.length})</div>
+          <span class="chevron" id="chevron-${ci}">▾</span>
+        </div>
+        <button class="btn-dismiss" title="Dismiss this whole group" onclick="event.stopPropagation(); dismissGroup(${ci})">Dismiss</button>
       </div>
       <div class="category-group-body" id="group-body-${ci}" style="display:none">
         <div class="add-people-section">
@@ -690,7 +702,7 @@ function renderCategoryGroups() {
           </div>
           <div class="selected-people" id="group-selected-people-${ci}"></div>
         </div>
-        <div class="group-event-list">${cat.events.map(renderGroupEventRow).join('')}</div>
+        <div class="group-event-list" id="group-event-list-${ci}">${cat.events.map((ev, ei) => renderGroupEventRow(ev, ei, ci)).join('')}</div>
         <div class="group-actions">
           <button class="btn-approve" onclick="groupApprove(${ci})">Add all to Calendar</button>
           <button class="btn-secondary" onclick="groupReview(${ci})">Review individually</button>
@@ -699,6 +711,40 @@ function renderCategoryGroups() {
       </div>
     </div>`;
   }).join('');
+}
+
+// Category-level Dismiss: removes the whole group from the queue.
+// No confirmation prompt — matches the existing single-event Dismiss
+// behavior in the review queue.
+async function dismissGroup(ci) {
+  const cat = groupsState.categories[ci];
+  if (!cat) return;
+  groupsState.categories.splice(ci, 1);
+  renderCategoryGroups();
+  try {
+    await fetch('/api/calendars/group-dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }) });
+  } catch {}
+}
+
+// Event-level Dismiss: removes just one event row from its group; the
+// rest of the group is untouched and can still be bulk-added.
+async function dismissGroupEvent(ci, ei) {
+  const cat = groupsState.categories[ci];
+  if (!cat || !cat.events[ei]) return;
+  const ev = cat.events[ei];
+  cat.events.splice(ei, 1);
+  if (!cat.events.length) {
+    groupsState.categories.splice(ci, 1);
+    renderCategoryGroups();
+  } else {
+    const list = document.getElementById(`group-event-list-${ci}`);
+    if (list) list.innerHTML = cat.events.map((e, i) => renderGroupEventRow(e, i, ci)).join('');
+    const header = document.querySelector(`#group-body-${ci}`)?.previousElementSibling?.querySelector('.category-item-name');
+    if (header) header.textContent = `${cat.name} (${cat.events.length})`;
+  }
+  try {
+    await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id: ev.id }) });
+  } catch {}
 }
 
 function toggleGroup(ci) {

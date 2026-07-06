@@ -115,6 +115,16 @@
   .category-item input { width: 16px; height: 16px; }
   .category-item-name { font-size: 0.875rem; font-weight: 500; }
   .category-item-count { font-size: 0.75rem; color: var(--text2); }
+  .category-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.625rem; overflow: hidden; }
+  .category-group-header { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; cursor: pointer; background: var(--bg); }
+  .category-group-header:hover { background: var(--bg2); }
+  .category-group-header .chevron { color: var(--text2); font-size: 0.8rem; }
+  .category-group-body { padding: 1rem; border-top: 1px solid var(--border); background: white; }
+  .group-event-list { margin: 0.75rem 0; display: flex; flex-direction: column; gap: 6px; }
+  .group-event-row { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; font-size: 0.85rem; }
+  .ger-title { font-weight: 500; }
+  .ger-meta { color: var(--text2); font-size: 0.8rem; white-space: nowrap; }
+  .group-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-top: 0.5rem; }
   .recent-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 0.75rem; }
   .recent-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; }
   .recent-card-title { font-weight: 500; font-size: 0.95rem; }
@@ -212,7 +222,8 @@ let pendingEvents = [];
 let recentEvents = [];
 let calendars = [];
 let selectedFile = null;
-let extractedCategories = [];
+let groupsState = { calendarId: null, categories: [] };
+let groupSelectedPeople = {};
 let selectedPeople = {};
 let showingAll = false;
 
@@ -524,6 +535,8 @@ function showCalForm() {
   document.getElementById('add-cal-btn').style.display = 'none';
   document.getElementById('extract-status').innerHTML = '';
   document.getElementById('category-selection').style.display = 'none';
+  document.getElementById('category-selection').innerHTML = '';
+  groupsState = { calendarId: null, categories: [] };
   document.getElementById('cal-name').value = '';
   document.getElementById('cal-url').value = '';
   selectedFile = null;
@@ -536,7 +549,8 @@ function showCalForm() {
 function hideCalForm() {
   document.getElementById('cal-form-container').style.display = 'none';
   document.getElementById('add-cal-btn').style.display = 'flex';
-  extractedCategories = [];
+  groupsState = { calendarId: null, categories: [] };
+  loadPendingEvents();
 }
 
 function switchSource(type, btn) {
@@ -583,11 +597,10 @@ async function submitCalendar() {
       const res = await fetch('/api/calendars/add-ical', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, url}) });
       const data = await res.json();
       if (res.ok && data.categories) {
-        status.innerHTML = `<div style="color:var(--green);font-size:0.875rem;padding:0.5rem 0">✓ Found ${data.totalEvents} events — select what to add</div>`;
-        extractedCategories = data.categories;
-        showCategorySelection(data.categories);
-        btn.textContent = 'Add selected events';
-        btn.onclick = () => confirmCategorySelection(data.calendarId);
+        status.innerHTML = `<div style="color:var(--green);font-size:0.875rem;padding:0.5rem 0">✓ Found ${data.totalEvents} events — review each group below</div>`;
+        await loadCategoryGroups(data.calendarId);
+        btn.textContent = 'Done';
+        btn.onclick = () => hideCalForm();
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
       }
@@ -604,10 +617,9 @@ async function submitCalendar() {
       const data = await res.json();
       if (res.ok && data.categories) {
         status.innerHTML = `<div style="color:var(--green);font-size:0.875rem;padding:0.5rem 0">✓ Found ${data.totalEvents} events in ${data.categories.length} categories</div>`;
-        extractedCategories = data.categories;
-        showCategorySelection(data.categories);
-        btn.textContent = 'Add selected events';
-        btn.onclick = () => confirmCategorySelection(data.calendarId);
+        await loadCategoryGroups(data.calendarId);
+        btn.textContent = 'Done';
+        btn.onclick = () => hideCalForm();
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
       }
@@ -616,32 +628,191 @@ async function submitCalendar() {
   }
 }
 
-function showCategorySelection(categories) {
-  const container = document.getElementById('category-selection');
-  container.style.display = 'block';
-  container.innerHTML = `<div class="category-selection"><h4>What do you want to add to your Review queue?</h4>${categories.map((cat,i) => `<label class="category-item"><input type="checkbox" id="cat-${i}" checked><div><div class="category-item-name">${cat.name}</div><div class="category-item-count">${cat.count} event${cat.count!==1?'s':''}</div></div></label>`).join('')}</div>`;
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-async function confirmCategorySelection(calendarId) {
-  const selected = extractedCategories.filter((_,i) => document.getElementById(`cat-${i}`)?.checked);
-  if (!selected.length) { alert('Please select at least one category'); return; }
-  const btn = document.getElementById('cal-submit-btn');
-  const status = document.getElementById('extract-status');
-  btn.disabled = true;
-  status.innerHTML = '<div class="loading"><div class="spinner"></div>Adding to Review queue...</div>';
+// Fetches the full draft-event list for a calendar and groups it by
+// category client-side, then renders the expandable group cards.
+async function loadCategoryGroups(calendarId) {
   try {
-    const res = await fetch('/api/calendars/confirm-categories', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({calendarId, selectedCategories: selected.map(c=>c.name)}) });
+    const res = await fetch(`/api/calendars/${calendarId}/draft-events`);
+    const events = await res.json();
+    const map = new Map();
+    for (const ev of events) {
+      if (!map.has(ev.category)) map.set(ev.category, []);
+      map.get(ev.category).push(ev);
+    }
+    groupsState = { calendarId, categories: [...map.entries()].map(([name, evs]) => ({ name, events: evs })) };
+    renderCategoryGroups();
+  } catch {
+    groupsState = { calendarId, categories: [] };
+  }
+}
+
+function renderGroupEventRow(ev) {
+  const title = escHtml(ev.title);
+  if (ev.type === 'break') {
+    return `<div class="group-event-row"><span class="ger-title">${title}</span><span class="ger-meta">${formatDate(ev.date)} – ${formatDate(ev.end_date || ev.date)}</span></div>`;
+  }
+  if ((ev.type === 'timed' || ev.type === 'minimum_day') && ev.time) {
+    return `<div class="group-event-row"><span class="ger-title">${title}</span><span class="ger-meta">${formatDate(ev.date)} · ${formatTime(ev.time)}${ev.end_time ? ' – ' + formatTime(ev.end_time) : ''}</span></div>`;
+  }
+  if (ev.type === 'recurring') {
+    return `<div class="group-event-row"><span class="ger-title">${title}</span><span class="ger-meta">🔁 ${escHtml(ev.recurring_note || 'Recurring')}</span></div>`;
+  }
+  return `<div class="group-event-row"><span class="ger-title">${title}</span><span class="ger-meta">${formatDate(ev.date)} · All day</span></div>`;
+}
+
+function renderCategoryGroups() {
+  const container = document.getElementById('category-selection');
+  if (!groupsState.categories.length) {
+    container.style.display = groupsState.calendarId ? 'block' : 'none';
+    container.innerHTML = groupsState.calendarId ? `<div style="font-size:0.875rem;color:var(--text2);padding:0.5rem 0">All groups handled — click Done to close.</div>` : '';
+    return;
+  }
+  container.style.display = 'block';
+  groupSelectedPeople = {};
+  container.innerHTML = `<h4 style="font-size:0.875rem;font-weight:500;margin:1rem 0 0.75rem">Review by group</h4>` + groupsState.categories.map((cat, ci) => {
+    groupSelectedPeople[ci] = [];
+    return `
+    <div class="category-group">
+      <div class="category-group-header" onclick="toggleGroup(${ci})">
+        <div class="category-item-name">${escHtml(cat.name)} (${cat.events.length})</div>
+        <span class="chevron" id="chevron-${ci}">▾</span>
+      </div>
+      <div class="category-group-body" id="group-body-${ci}" style="display:none">
+        <div class="add-people-section">
+          <label>Add people to every event in this group</label>
+          <div class="people-search-wrap">
+            <input type="text" class="people-search-input" id="group-people-search-${ci}" placeholder="Search contacts..." oninput="searchGroupContacts(${ci}, this.value)" autocomplete="off" />
+            <div class="contacts-dropdown" id="group-contacts-drop-${ci}" style="display:none"></div>
+          </div>
+          <div class="selected-people" id="group-selected-people-${ci}"></div>
+        </div>
+        <div class="group-event-list">${cat.events.map(renderGroupEventRow).join('')}</div>
+        <div class="group-actions">
+          <button class="btn-approve" onclick="groupApprove(${ci})">Add all to Calendar</button>
+          <button class="btn-secondary" onclick="groupReview(${ci})">Review individually</button>
+          <span id="group-status-${ci}"></span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleGroup(ci) {
+  const body = document.getElementById(`group-body-${ci}`);
+  const chevron = document.getElementById(`chevron-${ci}`);
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  chevron.textContent = isOpen ? '▾' : '▴';
+}
+
+let groupSearchTimers = {};
+async function searchGroupContacts(ci, q) {
+  clearTimeout(groupSearchTimers[ci]);
+  const drop = document.getElementById(`group-contacts-drop-${ci}`);
+  if (!q || q.length < 2) { drop.style.display = 'none'; return; }
+  groupSearchTimers[ci] = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
+      const contacts = await res.json();
+      if (!contacts.length) { drop.style.display = 'none'; return; }
+      drop.innerHTML = contacts.map(c => `<div class="contact-option" onclick="addGroupPerson(${ci}, '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${c.name}</div><div class="contact-email">${c.email}</div></div>`).join('');
+      drop.style.display = 'block';
+    } catch { drop.style.display = 'none'; }
+  }, 300);
+}
+
+function addGroupPerson(ci, name, email) {
+  if (!groupSelectedPeople[ci]) groupSelectedPeople[ci] = [];
+  if (groupSelectedPeople[ci].find(p => p.email === email)) return;
+  groupSelectedPeople[ci].push({ name, email });
+  renderGroupSelectedPeople(ci);
+  document.getElementById(`group-people-search-${ci}`).value = '';
+  document.getElementById(`group-contacts-drop-${ci}`).style.display = 'none';
+}
+
+function removeGroupPerson(ci, email) {
+  groupSelectedPeople[ci] = (groupSelectedPeople[ci] || []).filter(p => p.email !== email);
+  renderGroupSelectedPeople(ci);
+}
+
+function renderGroupSelectedPeople(ci) {
+  const container = document.getElementById(`group-selected-people-${ci}`);
+  container.innerHTML = (groupSelectedPeople[ci] || []).map(p => `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removeGroupPerson(${ci}, '${p.email}')">×</button></div>`).join('');
+}
+
+// Persists any people added to this group before the group-level action
+// (add-all or review-individually) runs, so they're attached to every
+// event in the group. Returns true if there was nothing to do or the
+// save succeeded.
+async function commitGroupPeople(ci) {
+  const people = groupSelectedPeople[ci] || [];
+  if (!people.length) return true;
+  try {
+    const res = await fetch('/api/calendars/group-add-people', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ calendarId: groupsState.calendarId, category: groupsState.categories[ci].name, people }) });
+    return res.ok;
+  } catch { return false; }
+}
+
+async function groupApprove(ci) {
+  const cat = groupsState.categories[ci];
+  const status = document.getElementById(`group-status-${ci}`);
+  const body = document.getElementById(`group-body-${ci}`);
+  body.querySelectorAll('button').forEach(b => b.disabled = true);
+  status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Adding...</span>';
+  const peopleOk = await commitGroupPeople(ci);
+  if (!peopleOk) {
+    status.innerHTML = '<span class="error-msg">Failed to add people</span>';
+    body.querySelectorAll('button').forEach(b => b.disabled = false);
+    return;
+  }
+  try {
+    const res = await fetch('/api/calendars/group-approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }) });
     const data = await res.json();
     if (res.ok) {
-      status.innerHTML = `<div style="color:var(--green);font-size:0.875rem;padding:0.5rem 0">✓ ${data.addedCount} events added to Review</div>`;
-      await loadCalendars(); await loadPendingEvents();
-      showPage('review', document.querySelector('.nav-btn'));
-      setTimeout(hideCalForm, 1500);
+      status.innerHTML = `<span class="success-msg">✓ Added ${data.addedCount}${data.failed?.length ? ` · ${data.failed.length} failed` : ''}</span>`;
+      await loadCalendars();
+      setTimeout(() => loadCategoryGroups(groupsState.calendarId), 1200);
     } else {
-      status.innerHTML = `<div style="color:var(--red);font-size:0.875rem">${data.error || 'Failed'}</div>`;
+      status.innerHTML = `<span class="error-msg">${data.error || 'Failed'}</span>`;
+      body.querySelectorAll('button').forEach(b => b.disabled = false);
     }
-  } catch { status.innerHTML = '<div style="color:var(--red);font-size:0.875rem">Network error</div>'; }
-  btn.disabled = false;
+  } catch {
+    status.innerHTML = '<span class="error-msg">Network error</span>';
+    body.querySelectorAll('button').forEach(b => b.disabled = false);
+  }
+}
+
+async function groupReview(ci) {
+  const cat = groupsState.categories[ci];
+  const status = document.getElementById(`group-status-${ci}`);
+  const body = document.getElementById(`group-body-${ci}`);
+  body.querySelectorAll('button').forEach(b => b.disabled = true);
+  status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Sending to review...</span>';
+  const peopleOk = await commitGroupPeople(ci);
+  if (!peopleOk) {
+    status.innerHTML = '<span class="error-msg">Failed to add people</span>';
+    body.querySelectorAll('button').forEach(b => b.disabled = false);
+    return;
+  }
+  try {
+    const res = await fetch('/api/calendars/group-review', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }) });
+    const data = await res.json();
+    if (res.ok) {
+      status.innerHTML = `<span class="success-msg">✓ ${data.count} sent to review</span>`;
+      await loadPendingEvents();
+      setTimeout(() => loadCategoryGroups(groupsState.calendarId), 1200);
+    } else {
+      status.innerHTML = `<span class="error-msg">${data.error || 'Failed'}</span>`;
+      body.querySelectorAll('button').forEach(b => b.disabled = false);
+    }
+  } catch {
+    status.innerHTML = '<span class="error-msg">Network error</span>';
+    body.querySelectorAll('button').forEach(b => b.disabled = false);
+  }
 }
 
 function showPage(page, btn) {

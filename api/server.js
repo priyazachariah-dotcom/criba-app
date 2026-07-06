@@ -516,7 +516,7 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
     const events = getUserEvents(req.user.email);
     const eventPairs = finalEvents.map(ev => {
       const evId = randomUUID();
-      return [evId, { id: evId, calendar_id: calId, ...ev, source: name, status: 'draft', created_at: new Date().toISOString() }];
+      return [evId, { id: evId, calendar_id: calId, ...ev, attendees: [], source: name, status: 'draft', created_at: new Date().toISOString() }];
     });
     await events.setMany(eventPairs);
 
@@ -565,7 +565,7 @@ Return JSON: ${EVENT_JSON_SCHEMA}. Group by category from the document. Return O
       for (const ev of (cat.events || [])) {
         const evId = randomUUID();
         const norm = normalizeExtractedEvent(ev);
-        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
+        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, attendees: [], category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
       }
     }
     await events.setMany(eventPairs);
@@ -596,6 +596,114 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
   const cal = await cals.get(calendarId);
   if (cal) { cal.event_count = addedCount; await cals.set(calendarId, cal); }
   res.json({ ok: true, addedCount });
+});
+
+// Returns the full draft event list for a calendar (not just name+count), so
+// the category screen can render expandable, type-aware rows per group.
+app.get('/api/calendars/:calendarId/draft-events', requireAuth, async (req, res) => {
+  const { calendarId } = req.params;
+  const events = getUserEvents(req.user.email);
+  const draftEvents = (await events.values())
+    .filter(e => e.calendar_id === calendarId && e.status === 'draft')
+    .sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
+  res.json(draftEvents);
+});
+
+// Adds a set of people to every draft event in one category, so a single
+// "Add people" field on the group card applies to the whole group at once.
+app.post('/api/calendars/group-add-people', requireAuth, async (req, res) => {
+  const { calendarId, category, people } = req.body;
+  if (!calendarId || !category || !Array.isArray(people)) return res.status(400).json({ error: 'Missing data' });
+  const events = getUserEvents(req.user.email);
+  const updates = [];
+  for (const [id, ev] of await events.entries()) {
+    if (ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft') {
+      const existing = ev.attendees || [];
+      const merged = [...existing];
+      for (const p of people) {
+        if (p.email && !merged.find(m => m.email === p.email)) merged.push({ name: p.name || '', email: p.email });
+      }
+      ev.attendees = merged;
+      updates.push([id, ev]);
+    }
+  }
+  await events.setMany(updates);
+  res.json({ ok: true, updatedCount: updates.length });
+});
+
+// Bulk-adds every draft event in one category straight to Google Calendar,
+// skipping the individual review queue. Continues past per-event failures
+// (e.g. a single bad date) so one bad event doesn't block the rest of the
+// group — failures are reported back for the user to review individually.
+app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
+  const { calendarId, category } = req.body;
+  if (!calendarId || !category) return res.status(400).json({ error: 'Missing data' });
+  const events = getUserEvents(req.user.email);
+  const all = await events.entries();
+  const groupEvents = all.filter(([, ev]) => ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft');
+  if (!groupEvents.length) return res.status(404).json({ error: 'No draft events found for this category' });
+
+  const auth = getOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  let addedCount = 0;
+  const failed = [];
+  const updates = [];
+  for (const [id, ev] of groupEvents) {
+    try {
+      if (!ev.date) throw new Error('Missing date');
+      const { start, end } = buildCalendarTimes(ev.date, ev.time, ev.end_date, ev.end_time);
+      const eventAttendees = (ev.attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
+      const description = ev.type === 'recurring' && ev.recurring_note
+        ? `Added via Criba — recurring: ${ev.recurring_note}`
+        : 'Added via Criba';
+      const calEvent = await calendar.events.insert({
+        calendarId: 'primary',
+        sendUpdates: 'all',
+        resource: { summary: ev.title, location: ev.location || '', start, end, attendees: eventAttendees, description }
+      });
+      ev.status = 'approved';
+      ev.calEventId = calEvent.data.id;
+      ev.approved_at = new Date().toISOString();
+      updates.push([id, ev]);
+      addedCount++;
+    } catch (err) {
+      console.error(`Group-approve failed for event ${id}:`, err.message);
+      failed.push({ id, title: ev.title, error: err.message });
+    }
+  }
+  await events.setMany(updates);
+  if (addedCount > 0) {
+    const cals = getUserCalendars(req.user.email);
+    const cal = await cals.get(calendarId);
+    if (cal) { cal.event_count = (cal.event_count || 0) + addedCount; await cals.set(calendarId, cal); }
+  }
+  res.json({ ok: true, addedCount, failed });
+});
+
+// Sends every draft event in one category into the existing per-event
+// review queue (status 'pending'), leaving other categories untouched so
+// the user can act on groups independently instead of an all-or-nothing
+// confirm step.
+app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
+  const { calendarId, category } = req.body;
+  if (!calendarId || !category) return res.status(400).json({ error: 'Missing data' });
+  const events = getUserEvents(req.user.email);
+  let count = 0;
+  const updates = [];
+  for (const [id, ev] of await events.entries()) {
+    if (ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft') {
+      ev.status = 'pending';
+      updates.push([id, ev]);
+      count++;
+    }
+  }
+  await events.setMany(updates);
+  if (count > 0) {
+    const cals = getUserCalendars(req.user.email);
+    const cal = await cals.get(calendarId);
+    if (cal) { cal.event_count = (cal.event_count || 0) + count; await cals.set(calendarId, cal); }
+  }
+  res.json({ ok: true, count });
 });
 
 app.get('*', (req, res) => {

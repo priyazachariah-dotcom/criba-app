@@ -264,6 +264,9 @@ function renderReview() {
   selectedPeople = {};
   container.innerHTML = pendingEvents.map((ev, i) => {
     selectedPeople[i] = [];
+    const isBreak = ev.type === 'break';
+    const isTimed = ev.type === 'timed' || ev.type === 'minimum_day';
+    const isRecurring = ev.type === 'recurring';
     return `
     <div class="event-card" id="card-${i}">
       <div class="event-header">
@@ -273,15 +276,26 @@ function renderReview() {
         </div>
         <span class="event-tag">${ev.category || 'Event'}</span>
       </div>
+      ${isRecurring ? `<div class="recurring-note" style="background:var(--bg2,#f5f5f5);border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.85rem">🔁 Recurring: ${(ev.recurring_note || 'This event repeats on a pattern.').replace(/</g,'&lt;')}</div>` : ''}
       <div class="event-fields">
         <div class="event-field">
-          <label>Date</label>
+          <label>${isBreak ? 'Start date' : 'Date'}</label>
           <input type="date" id="date-${i}" value="${ev.date || ''}" />
         </div>
+        ${isBreak ? `
         <div class="event-field">
-          <label>Time <span style="font-weight:300">(blank = all-day)</span></label>
+          <label>End date</label>
+          <input type="date" id="enddate-${i}" value="${ev.end_date || ''}" />
+        </div>` : `
+        <div class="event-field">
+          <label>${isTimed ? 'Start time' : 'Time'} <span style="font-weight:300">(blank = all-day)</span></label>
           <input type="time" id="time-${i}" value="${ev.time || ''}" />
-        </div>
+        </div>`}
+        ${isTimed ? `
+        <div class="event-field">
+          <label>End time <span style="font-weight:300">(blank = 1hr default)</span></label>
+          <input type="time" id="endtime-${i}" value="${ev.end_time || ''}" />
+        </div>` : ''}
         <div class="event-field full">
           <label>Location</label>
           <input type="text" id="loc-${i}" value="${(ev.location||'').replace(/"/g,'&quot;')}" placeholder="Add location" />
@@ -327,13 +341,22 @@ function renderRecent() {
       <div id="edit-${ev.id}" style="display:none">
         <div class="event-fields" style="margin-bottom:0.75rem">
           <div class="event-field">
-            <label>Date</label>
+            <label>${ev.type === 'break' ? 'Start date' : 'Date'}</label>
             <input type="date" id="redate-${ev.id}" value="${ev.date||''}" />
           </div>
+          ${ev.type === 'break' ? `
+          <div class="event-field">
+            <label>End date</label>
+            <input type="date" id="reenddate-${ev.id}" value="${ev.end_date||''}" />
+          </div>` : `
           <div class="event-field">
             <label>Time (blank = all-day)</label>
             <input type="time" id="retime-${ev.id}" value="${ev.time||''}" />
           </div>
+          <div class="event-field">
+            <label>End time <span style="font-weight:300">(blank = 1hr default)</span></label>
+            <input type="time" id="reendtime-${ev.id}" value="${ev.end_time||''}" />
+          </div>`}
           <div class="event-field full">
             <label>Location</label>
             <input type="text" id="reloc-${ev.id}" value="${(ev.location||'').replace(/"/g,'&quot;')}" placeholder="Add location" />
@@ -358,11 +381,13 @@ function toggleEdit(id) {
 async function saveEdit(id, title) {
   const date = document.getElementById(`redate-${id}`)?.value;
   const time = document.getElementById(`retime-${id}`)?.value || '';
+  const endDate = document.getElementById(`reenddate-${id}`)?.value || '';
+  const endTime = document.getElementById(`reendtime-${id}`)?.value || '';
   const location = document.getElementById(`reloc-${id}`)?.value || '';
   const status = document.getElementById(`edit-status-${id}`);
   status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Saving...</span>';
   try {
-    const res = await fetch('/api/events/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id, title, date, time, location, attendees: []}) });
+    const res = await fetch('/api/events/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id, title, date, time, endDate, endTime, location, attendees: []}) });
     if (res.ok) {
       status.innerHTML = '<span class="success-msg">✓ Updated</span>';
       await loadRecentEvents();
@@ -436,6 +461,8 @@ async function approveEvent(i) {
     title: document.getElementById(`title-${i}`)?.value || ev.title,
     date: document.getElementById(`date-${i}`)?.value || ev.date,
     time: document.getElementById(`time-${i}`)?.value || '',
+    endDate: document.getElementById(`enddate-${i}`)?.value || '',
+    endTime: document.getElementById(`endtime-${i}`)?.value || '',
     location: document.getElementById(`loc-${i}`)?.value || '',
     attendees: selectedPeople[i] || [],
     shareToBharat: document.getElementById(`bharat-${i}`)?.checked || false,

@@ -64,6 +64,77 @@ function getUserCalendars(email) {
   return new RedisHashMap(`calendars:${email}`);
 }
 
+// Shared event-classification rules used by both the PDF and iCal
+// extraction prompts, so a break/holiday/timed-event/minimum-day/
+// recurring-pattern is turned into the right shape of calendar entry
+// instead of being copied verbatim from the source.
+const EVENT_CLASSIFICATION_RULES = `Classify every event into exactly one "type" and follow its rules:
+- "break": a multi-day break or vacation (Thanksgiving Break, Winter Break, Spring Break, or any other span of consecutive non-school days). Output ONE event for the whole break: "date" = first day, "end_date" = last day. Never output one event per day of a break.
+- "holiday": a single-day public/federal holiday (Columbus Day, Veterans Day, MLK Day, Labor Day, etc). Output one all-day event on that date. Leave "time", "end_time" and "end_date" null.
+- "timed": a school event with a specific time (Back to School Night, Open House, Picture Day with a time, concerts, games). Set "time" to the start time. Set "end_time" to the given end time, or exactly one hour after "time" if no end time is stated.
+- "minimum_day": a minimum/early-dismissal day or a late-start day tied to one specific date. Set "time" if a dismissal/start time is given, otherwise leave it null (all-day).
+- "recurring": a pattern that repeats on a schedule rather than fixed one-off dates (e.g. "every Tuesday is a late start day", "early dismissal every first Friday"). Output ONE event with "recurring_note" describing the pattern in plain English (e.g. "Every Tuesday"). Never expand this into one event per occurrence.
+- "other": anything that doesn't fit the above — treat as a normal single event, all-day unless a specific time is stated.`;
+
+const EVENT_JSON_SCHEMA = `{"categories":[{"name":"Category name","events":[{"title":"Event name","type":"holiday|break|timed|minimum_day|recurring|other","date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null (only for type=break)","time":"HH:MM or null (24hr)","end_time":"HH:MM or null (only for type=timed/minimum_day)","location":"string or null","recurring_note":"string or null (only for type=recurring)"}]}]}`;
+
+// Applies defaults/safety-net rules server-side in case the model's
+// output doesn't perfectly follow the schema (e.g. a timed event missing
+// end_time, or a break missing end_date).
+function normalizeExtractedEvent(ev) {
+  const validTypes = ['break', 'holiday', 'timed', 'minimum_day', 'recurring', 'other'];
+  const type = validTypes.includes(ev.type) ? ev.type : 'other';
+  const time = ev.time || '';
+  let endTime = ev.end_time || '';
+  if (time && !endTime && (type === 'timed' || type === 'minimum_day')) {
+    const [h, m] = time.split(':').map(Number);
+    const endHour = h + 1 > 23 ? 23 : h + 1;
+    endTime = `${String(endHour).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+  return {
+    type,
+    date: ev.date,
+    end_date: type === 'break' ? (ev.end_date || ev.date) : '',
+    time,
+    end_time: (type === 'timed' || type === 'minimum_day') ? endTime : '',
+    location: ev.location || '',
+    recurring_note: type === 'recurring' ? (ev.recurring_note || '') : '',
+  };
+}
+
+function addDaysToDateStr(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
+}
+
+// Builds Google Calendar start/end objects, honoring an explicit end date
+// (multi-day all-day events, e.g. a school break) and/or end time (timed
+// events). Falls back to the original single-day / start+1hr behavior
+// when no end date/time is supplied, so existing callers keep working.
+function buildCalendarTimes(date, time, endDate, endTime) {
+  const tz = 'America/Los_Angeles';
+  if (time && time.trim() !== '') {
+    const start = { dateTime: `${date}T${time}:00`, timeZone: tz };
+    let finalEndTime = endTime && endTime.trim() !== '' ? endTime : null;
+    if (!finalEndTime) {
+      const [h, m] = time.split(':').map(Number);
+      const endHour = h + 1 > 23 ? 23 : h + 1;
+      finalEndTime = `${String(endHour).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    }
+    const finalEndDate = endDate && endDate.trim() !== '' ? endDate : date;
+    const end = { dateTime: `${finalEndDate}T${finalEndTime}:00`, timeZone: tz };
+    return { start, end };
+  }
+  if (endDate && endDate.trim() !== '' && endDate !== date) {
+    // Multi-day all-day event (e.g. a school break). Google Calendar's
+    // end.date for all-day events is EXCLUSIVE, so the last inclusive day
+    // needs +1.
+    return { start: { date }, end: { date: addDaysToDateStr(endDate, 1) } };
+  }
+  return { start: { date }, end: { date } };
+}
+
 function signData(data) {
   const str = JSON.stringify(data);
   const encoded = Buffer.from(str).toString('base64');
@@ -220,34 +291,29 @@ app.get('/api/events/recent', requireAuth, async (req, res) => {
 });
 
 app.post('/api/events/approve', requireAuth, async (req, res) => {
-  const { id, title, date, time, location, attendees, shareToBharat } = req.body;
+  const { id, title, date, time, endDate, endTime, location, attendees, shareToBharat } = req.body;
   const events = getUserEvents(req.user.email);
   const event = await events.get(id);
   if (!event) return res.status(404).json({ error: 'Event not found' });
   try {
     const auth = getOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    const tz = 'America/Los_Angeles';
-    let start, end;
     if (!date) return res.status(400).json({ error: 'Date is required' });
-    if (time && time.trim() !== '') {
-      start = { dateTime: `${date}T${time}:00`, timeZone: tz };
-      const [h, m] = time.split(':').map(Number);
-      const endHour = h + 1 > 23 ? 23 : h + 1;
-      end = { dateTime: `${date}T${String(endHour).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`, timeZone: tz };
-    } else {
-      start = { date };
-      end = { date };
-    }
+    const finalEndDate = endDate || event.end_date || '';
+    const finalEndTime = endTime || event.end_time || '';
+    const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime);
     const eventAttendees = [];
     if (shareToBharat) eventAttendees.push({ email: 'bharatguruprakash@gmail.com' });
     if (attendees && Array.isArray(attendees)) {
       attendees.forEach(a => { if (a.email) eventAttendees.push({ email: a.email }); });
     }
+    const description = event.type === 'recurring' && event.recurring_note
+      ? `Added via Criba — recurring: ${event.recurring_note}`
+      : 'Added via Criba';
     const calEvent = await calendar.events.insert({
       calendarId: 'primary',
       sendUpdates: 'all',
-      resource: { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description: 'Added via Criba' }
+      resource: { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description }
     });
     event.status = 'approved';
     event.calEventId = calEvent.data.id;
@@ -255,6 +321,8 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     event.title = title || event.title;
     event.date = date;
     event.time = time || '';
+    event.end_date = finalEndDate;
+    event.end_time = finalEndTime;
     event.location = location || event.location || '';
     await events.set(id, event);
     res.json({ ok: true, calEventId: calEvent.data.id });
@@ -285,23 +353,16 @@ app.post('/api/events/undo', requireAuth, async (req, res) => {
 });
 
 app.post('/api/events/update', requireAuth, async (req, res) => {
-  const { id, title, date, time, location, attendees } = req.body;
+  const { id, title, date, time, endDate, endTime, location, attendees } = req.body;
   const events = getUserEvents(req.user.email);
   const event = await events.get(id);
   if (!event || !event.calEventId) return res.status(404).json({ error: 'Event not found' });
   try {
     const auth = getOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    const tz = 'America/Los_Angeles';
-    let start, end;
-    if (time && time.trim() !== '') {
-      start = { dateTime: `${date}T${time}:00`, timeZone: tz };
-      const [h, m] = time.split(':').map(Number);
-      const endHour = h + 1 > 23 ? 23 : h + 1;
-      end = { dateTime: `${date}T${String(endHour).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`, timeZone: tz };
-    } else {
-      start = { date }; end = { date };
-    }
+    const finalEndDate = endDate || event.end_date || '';
+    const finalEndTime = endTime || event.end_time || '';
+    const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime);
     const eventAttendees = (attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
     await calendar.events.patch({
       calendarId: 'primary',
@@ -309,7 +370,9 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
       sendUpdates: 'all',
       resource: { summary: title, location: location || '', start, end, attendees: eventAttendees }
     });
-    event.title = title; event.date = date; event.time = time || ''; event.location = location || '';
+    event.title = title; event.date = date; event.time = time || '';
+    event.end_date = finalEndDate; event.end_time = finalEndTime;
+    event.location = location || '';
     await events.set(id, event);
     res.json({ ok: true });
   } catch (err) {
@@ -339,6 +402,67 @@ app.delete('/api/calendars/:id', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Deterministically turns a parsed VEVENT into {date, end_date, time, end_time,
+// all_day} using the feed's own DTSTART/DTEND — this is the source of truth
+// for dates/times. AI is only used afterward to classify *type*, never to
+// invent or rewrite dates, so a bad model response can't corrupt calendar data.
+function parseIcalEventDates(ev) {
+  const tz = 'America/Los_Angeles';
+  const start = new Date(ev.start);
+  const isAllDay = ev.datetype === 'date';
+  const date = start.toLocaleDateString('en-CA', { timeZone: tz });
+  const time = isAllDay ? '' : start.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: tz });
+  let end_date = '';
+  let end_time = '';
+  if (ev.end) {
+    const end = new Date(ev.end);
+    if (isAllDay) {
+      // iCal all-day DTEND is exclusive (the day after the last day).
+      const inclusiveEnd = addDaysToDateStr(end.toLocaleDateString('en-CA', { timeZone: tz }), -1);
+      if (inclusiveEnd > date) end_date = inclusiveEnd;
+    } else {
+      end_time = end.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: tz });
+    }
+  }
+  return { date, end_date, time, end_time, all_day: isAllDay };
+}
+
+// Sends the feed's own events (already date/time-accurate) to Claude purely
+// for semantic classification — type, grouping category, and recurring-note
+// detection — referenced by index so the model can't alter the real dates.
+// Falls back to the old heuristic (ics `categories` field, type "other") if
+// the AI call fails or returns something unparseable, so an Anthropic outage
+// doesn't break a previously-reliable, non-AI import path.
+async function classifyIcalEventsWithAI(rawEvents) {
+  const compact = rawEvents.map((r, index) => ({
+    index,
+    title: r.title,
+    date: r.date,
+    end_date: r.end_date || undefined,
+    time: r.time || undefined,
+    end_time: r.end_time || undefined,
+    all_day: r.all_day,
+    source_category: r.source_category,
+  }));
+  const prompt = `Here is a list of events from a school calendar feed, as JSON. The dates/times are already correct — do not change them. For each event, classify it and choose a review-queue category grouping.
+
+${EVENT_CLASSIFICATION_RULES}
+
+Events:
+${JSON.stringify(compact)}
+
+Return ONLY valid JSON, no markdown, in this shape: {"results":[{"index":0,"type":"holiday|break|timed|minimum_day|recurring|other","category":"Category name for grouping in the review queue","recurring_note":"string or null (only for type=recurring)"}]}. Include every index exactly once.`;
+  const response = await anthropic.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: Math.min(8192, 1000 + rawEvents.length * 40),
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const text = response.content[0].text;
+  const parsed = JSON.parse(text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim());
+  if (!Array.isArray(parsed.results)) throw new Error('AI classification response missing results array');
+  return parsed.results;
+}
+
 app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
   const { name, url } = req.body;
   if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
@@ -353,32 +477,50 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
     });
     if (futureEvents.length === 0) return res.status(400).json({ error: 'No upcoming events found in this calendar' });
 
-    // Group by category for selection
-    const categoryMap = new Map();
-    for (const ev of futureEvents) {
-      const cat = ev.categories?.[0] || 'School Events';
-      if (!categoryMap.has(cat)) categoryMap.set(cat, []);
-      categoryMap.get(cat).push(ev);
+    const rawEvents = futureEvents.map(ev => ({
+      title: ev.summary || 'Untitled Event',
+      location: ev.location || '',
+      source_category: ev.categories?.[0] || 'School Events',
+      ...parseIcalEventDates(ev),
+    }));
+
+    // AI classification is best-effort: if it fails, fall back to the
+    // previous behavior (group by the feed's own category, type "other")
+    // rather than failing the whole import.
+    let classifications;
+    try {
+      classifications = await classifyIcalEventsWithAI(rawEvents);
+    } catch (aiErr) {
+      console.error('iCal AI classification failed, falling back to raw categories:', aiErr.message);
+      classifications = rawEvents.map((r, index) => ({ index, type: 'other', category: r.source_category, recurring_note: null }));
     }
-    const categories = [...categoryMap.entries()].map(([name, evs]) => ({ name, count: evs.length }));
+    const classByIndex = new Map(classifications.map(c => [c.index, c]));
+
+    const finalEvents = rawEvents.map((r, index) => {
+      const cls = classByIndex.get(index) || { type: 'other', category: r.source_category, recurring_note: null };
+      const norm = normalizeExtractedEvent({ ...r, type: cls.type, recurring_note: cls.recurring_note });
+      return { title: r.title, ...norm, category: cls.category || r.source_category };
+    });
+
+    const categoryMap = new Map();
+    for (const ev of finalEvents) {
+      if (!categoryMap.has(ev.category)) categoryMap.set(ev.category, 0);
+      categoryMap.set(ev.category, categoryMap.get(ev.category) + 1);
+    }
+    const categories = [...categoryMap.entries()].map(([catName, count]) => ({ name: catName, count }));
 
     const calId = randomUUID();
     const cals = getUserCalendars(req.user.email);
     await cals.set(calId, { id: calId, name, source: 'ical', url, event_count: 0, created_at: new Date().toISOString() });
 
     const events = getUserEvents(req.user.email);
-    const eventPairs = futureEvents.map(ev => {
-      const start = new Date(ev.start);
-      const dateStr = start.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
-      const isAllDay = ev.datetype === 'date';
-      const timeStr = isAllDay ? '' : start.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' });
-      const cat = ev.categories?.[0] || 'School Events';
+    const eventPairs = finalEvents.map(ev => {
       const evId = randomUUID();
-      return [evId, { id: evId, calendar_id: calId, title: ev.summary || 'Untitled Event', date: dateStr, time: timeStr, location: ev.location || '', category: cat, source: name, status: 'draft', created_at: new Date().toISOString() }];
+      return [evId, { id: evId, calendar_id: calId, ...ev, source: name, status: 'draft', created_at: new Date().toISOString() }];
     });
     await events.setMany(eventPairs);
 
-    res.json({ ok: true, calendarId: calId, totalEvents: futureEvents.length, categories });
+    res.json({ ok: true, calendarId: calId, totalEvents: finalEvents.length, categories });
   } catch (err) {
     console.error('iCal error:', err);
     res.status(500).json({ error: 'Failed to fetch calendar: ' + err.message });
@@ -400,7 +542,11 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
         role: 'user',
         content: [
           { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-          { type: 'text', text: `This is a school calendar PDF. Extract ALL events, dates and holidays. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward. Return JSON: {"categories":[{"name":"Category name","count":number,"events":[{"title":"Event name","date":"YYYY-MM-DD","time":null,"location":null}]}]}. Group by category from the document. Return ONLY valid JSON, no markdown.` }
+          { type: 'text', text: `This is a school calendar PDF. Extract ALL events, dates and holidays. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward.
+
+${EVENT_CLASSIFICATION_RULES}
+
+Return JSON: ${EVENT_JSON_SCHEMA}. Group by category from the document. Return ONLY valid JSON, no markdown.` }
         ]
       }]
     });
@@ -418,7 +564,8 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     for (const cat of parsed.categories) {
       for (const ev of (cat.events || [])) {
         const evId = randomUUID();
-        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, date: ev.date, time: ev.time || '', location: ev.location || '', category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
+        const norm = normalizeExtractedEvent(ev);
+        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
       }
     }
     await events.setMany(eventPairs);

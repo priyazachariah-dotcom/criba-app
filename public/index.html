@@ -232,6 +232,54 @@ let groupSelectedPeople = {};
 let selectedPeople = {};
 let showingAll = false;
 
+// ── Google Places autocomplete ────────────────────────────────────────────
+// Loaded lazily after auth; inputs rendered before the script finishes
+// loading are queued and initialised once the callback fires.
+let placesReady = false;
+let placesInitQueue = [];
+
+window.onPlacesLoaded = function () {
+  placesReady = true;
+  placesInitQueue.forEach(_initAC);
+  placesInitQueue = [];
+};
+
+function _initAC(inputId) {
+  const input = document.getElementById(inputId);
+  if (!input || input._acInit) return;
+  input._acInit = true;
+  const ac = new google.maps.places.Autocomplete(input, {
+    types: ['establishment', 'geocode'],
+    fields: ['formatted_address', 'name'],
+  });
+  ac.addListener('place_changed', () => {
+    const place = ac.getPlace();
+    if (place && (place.formatted_address || place.name)) {
+      input.value = place.formatted_address || place.name;
+    }
+  });
+}
+
+function initLocationAutocomplete(inputId) {
+  if (placesReady) { _initAC(inputId); }
+  else { if (!placesInitQueue.includes(inputId)) placesInitQueue.push(inputId); }
+}
+
+async function loadPlacesScript() {
+  try {
+    const res = await fetch('/api/config');
+    if (!res.ok) return;
+    const { placesApiKey } = await res.json();
+    if (!placesApiKey) return;
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(placesApiKey)}&libraries=places&callback=onPlacesLoaded`;
+    script.async = true;
+    script.defer = true;
+    document.head.appendChild(script);
+  } catch {}
+}
+// ─────────────────────────────────────────────────────────────────────────
+
 const CAL_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0891b2'];
 
 window.addEventListener('load', async () => { await checkAuth(); });
@@ -250,6 +298,7 @@ function showApp() {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app-screen').style.display = 'block';
   document.getElementById('user-name').textContent = user.name || user.email;
+  loadPlacesScript();
   loadData();
 }
 
@@ -336,6 +385,8 @@ function renderReview() {
       </div>
     </div>`;
   }).join('');
+  // Wire up Places autocomplete on every location input now that the DOM exists.
+  setTimeout(() => pendingEvents.forEach((_, i) => initLocationAutocomplete(`loc-${i}`)), 0);
 }
 
 function renderRecent() {
@@ -391,7 +442,9 @@ function showAllRecent() { showingAll = true; renderRecent(); }
 
 function toggleEdit(id) {
   const el = document.getElementById(`edit-${id}`);
-  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  const opening = el.style.display === 'none';
+  el.style.display = opening ? 'block' : 'none';
+  if (opening) initLocationAutocomplete(`reloc-${id}`);
 }
 
 async function saveEdit(id, title) {

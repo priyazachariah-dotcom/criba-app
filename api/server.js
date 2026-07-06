@@ -186,6 +186,8 @@ const SCOPES = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/contacts.readonly',
+  'https://www.googleapis.com/auth/contacts.other.readonly',
+  'https://www.googleapis.com/auth/directory.readonly',
 ];
 
 app.use(express.json());
@@ -239,36 +241,99 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
     const auth = getOAuthClient(req.user);
     const people = google.people({ version: 'v1', auth });
 
-    // The People API's searchContacts endpoint uses a lazy, per-account
-    // cache: the first search after login (or after the cache expires)
-    // silently returns zero results until a "warmup" request with an
-    // empty query has synced it. See:
+    // The People API's searchContacts/otherContacts.search endpoints both use
+    // a lazy, per-account cache: the first search after login (or after the
+    // cache expires) silently returns zero results until a "warmup" request
+    // with an empty query has synced it. See:
     // https://developers.google.com/people/api/rest/v1/people/searchContacts
+    // https://developers.google.com/people/api/rest/v1/otherContacts/search
     // https://github.com/googleapis/google-api-nodejs-client/issues/3277
-    // We warm it at most once every 10 minutes per user (tracked in Redis)
+    // We warm each at most once every 10 minutes per user (tracked in Redis)
     // so normal keystroke-by-keystroke searches don't pay for it every time.
     const warmKey = `contacts_warm:${req.user.email}`;
     const alreadyWarm = await redis.get(warmKey);
     if (!alreadyWarm) {
       try {
         const warmup = await people.people.searchContacts({ query: '', readMask: 'names,emailAddresses', pageSize: 1 });
-        console.log('Contacts warmup response:', JSON.stringify(warmup.data));
+        console.log('Contacts (My Contacts) warmup response:', JSON.stringify(warmup.data));
       } catch (warmErr) {
-        console.error('Contacts warmup error:', JSON.stringify(warmErr.response?.data || warmErr.message));
+        console.error('Contacts (My Contacts) warmup error:', JSON.stringify(warmErr.response?.data || warmErr.message));
+      }
+      try {
+        const otherWarmup = await people.otherContacts.search({ query: '', readMask: 'names,emailAddresses', pageSize: 1 });
+        console.log('Contacts (Other Contacts) warmup response:', JSON.stringify(otherWarmup.data));
+      } catch (warmErr) {
+        console.error('Contacts (Other Contacts) warmup error:', JSON.stringify(warmErr.response?.data || warmErr.message));
       }
       await redis.set(warmKey, '1', 'EX', 600);
     }
 
-    const response = await people.people.searchContacts({
+    // "My Contacts" — people explicitly saved in the user's Google Contacts.
+    const myContactsPromise = people.people.searchContacts({
       query: q,
       readMask: 'names,emailAddresses',
       pageSize: 10,
+    }).catch(err => {
+      console.error('Contacts (My Contacts) search error:', JSON.stringify(err.response?.data || {}), err.message);
+      return { data: { results: [] } };
     });
-    console.log(`Contacts search "${q}" raw response:`, JSON.stringify(response.data));
-    const contacts = (response.data.results || []).map(r => ({
+
+    // "Other contacts" — people auto-collected from Gmail correspondence
+    // that the user never explicitly saved. This is what makes Gmail/Google
+    // Calendar's guest-autocomplete feel complete, and requires the
+    // separate contacts.other.readonly scope.
+    const otherContactsPromise = people.otherContacts.search({
+      query: q,
+      readMask: 'names,emailAddresses',
+      pageSize: 10,
+    }).catch(err => {
+      console.error('Contacts (Other Contacts) search error:', JSON.stringify(err.response?.data || {}), err.message);
+      return { data: { results: [] } };
+    });
+
+    // Google Workspace / G Suite domain directory — surfaces co-workers and
+    // org members that aren't in the user's personal contacts. Returns an
+    // empty list (not an error) for personal @gmail.com accounts, so it's
+    // safe to call unconditionally. Requires directory.readonly scope.
+    const directoryPromise = people.people.searchDirectoryPeople({
+      query: q,
+      readMask: 'names,emailAddresses',
+      pageSize: 10,
+      sources: ['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
+    }).catch(err => {
+      console.error('Contacts (Directory) search error:', JSON.stringify(err.response?.data || {}), err.message);
+      return { data: { people: [] } };
+    });
+
+    const [myContactsRes, otherContactsRes, directoryRes] = await Promise.all([myContactsPromise, otherContactsPromise, directoryPromise]);
+    console.log(`Contacts search "${q}" My Contacts raw response:`, JSON.stringify(myContactsRes.data));
+    console.log(`Contacts search "${q}" Other Contacts raw response:`, JSON.stringify(otherContactsRes.data));
+    console.log(`Contacts search "${q}" Directory raw response:`, JSON.stringify(directoryRes.data));
+
+    // searchContacts / otherContacts.search return { results: [{ person }] }
+    // searchDirectoryPeople returns { people: [Person] } (no wrapper object)
+    const toContact = r => ({
       name: r.person?.names?.[0]?.displayName || '',
       email: r.person?.emailAddresses?.[0]?.value || '',
-    })).filter(c => c.email);
+    });
+    const toDirContact = p => ({
+      name: p.names?.[0]?.displayName || '',
+      email: p.emailAddresses?.[0]?.value || '',
+    });
+    const all = [
+      ...(myContactsRes.data.results || []).map(toContact),
+      ...(otherContactsRes.data.results || []).map(toContact),
+      ...(directoryRes.data.people || []).map(toDirContact),
+    ].filter(c => c.email);
+
+    const seen = new Set();
+    const contacts = [];
+    for (const c of all) {
+      const key = c.email.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      contacts.push(c);
+    }
     res.json(contacts);
   } catch (err) {
     console.error('Contacts error:', JSON.stringify(err.response?.data || {}), err.message, err.stack);
@@ -725,6 +790,13 @@ app.post('/api/calendars/group-dismiss', requireAuth, async (req, res) => {
   }
   await events.setMany(updates);
   res.json({ ok: true, count });
+});
+
+// Exposes non-secret client-side configuration. The Places API key is
+// publishable (it's restricted by HTTP referrer in Google Cloud Console)
+// so returning it here is safe — it never exposes server secrets.
+app.get('/api/config', (req, res) => {
+  res.json({ placesApiKey: process.env.GOOGLE_PLACES_API_KEY || '' });
 });
 
 app.get('*', (req, res) => {

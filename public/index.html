@@ -4,14 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Criba — Filter the noise.</title>
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
     --bg: #f5f0e8; --bg2: #ede8df; --text: #1a1714; --text2: #6b6560;
-    --border: #d4cfc7; --accent: #1a1714; --green: #2d6a4f; --red: #c1392b; --radius: 10px;
+    --border: #d4cfc7; --accent: #1a1714; --green: #2d6a4f; --red: #c1392b;
+    --blue: #1a73e8; --blue-dark: #1557b0; --gcal-icon: #5f6368; --radius: 10px;
   }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
 
+  /* ── Auth ─────────────────────────────────────────────────────────── */
   #auth-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 2rem; }
   .auth-logo { font-size: 2.5rem; font-weight: 600; letter-spacing: -1px; margin-bottom: 0.375rem; }
   .auth-tagline { color: var(--text2); font-size: 0.95rem; margin-bottom: 3rem; letter-spacing: 0.02em; }
@@ -23,6 +26,7 @@
   .google-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
   .auth-privacy { margin-top: 1.5rem; font-size: 0.75rem; color: var(--text2); line-height: 1.5; }
 
+  /* ── Shell ─────────────────────────────────────────────────────────── */
   #app-screen { display: none; min-height: 100vh; }
   header { background: white; border-bottom: 1px solid var(--border); padding: 0 2rem; height: 60px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
   .header-left { display: flex; align-items: center; gap: 2rem; }
@@ -31,7 +35,6 @@
   .nav-btn { padding: 0.4rem 1rem; border-radius: 6px; border: none; background: transparent; font-size: 0.9rem; cursor: pointer; color: var(--text2); transition: all 0.15s; }
   .nav-btn.active { background: var(--bg); color: var(--text); font-weight: 500; }
   .nav-btn:hover:not(.active) { background: var(--bg); }
-  .badge { background: var(--accent); color: white; font-size: 0.7rem; padding: 1px 6px; border-radius: 10px; margin-left: 4px; }
   .header-right { display: flex; align-items: center; gap: 1rem; }
   .user-name { font-size: 0.875rem; color: var(--text2); }
   .logout-btn { font-size: 0.875rem; color: var(--text2); background: none; border: none; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 6px; }
@@ -47,6 +50,7 @@
   .empty-state h3 { font-size: 1.1rem; font-weight: 500; color: var(--text); margin-bottom: 0.5rem; }
   .empty-state p { font-size: 0.875rem; line-height: 1.6; }
 
+  /* ── Review queue (Gmail / iMessage / WhatsApp — future stages) ───── */
   .event-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
   .event-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1rem; }
   .event-title-input { font-size: 1rem; font-weight: 500; border: none; background: transparent; width: 100%; padding: 0; color: var(--text); font-family: inherit; }
@@ -66,7 +70,7 @@
   .people-search-wrap { position: relative; }
   .people-search-input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.875rem; background: var(--bg); color: var(--text); font-family: inherit; }
   .people-search-input:focus { outline: none; border-color: var(--accent); background: white; }
-  .contacts-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); z-index: 50; max-height: 200px; overflow-y: auto; }
+  .contacts-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: white; border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); z-index: 200; max-height: 200px; overflow-y: auto; }
   .contact-option { padding: 0.625rem 0.875rem; cursor: pointer; font-size: 0.875rem; }
   .contact-option:hover { background: var(--bg); }
   .contact-name { font-weight: 500; }
@@ -83,6 +87,17 @@
   .success-msg { font-size: 0.8rem; color: var(--green); }
   .error-msg { font-size: 0.8rem; color: var(--red); }
 
+  /* ── My Calendar (recent approved events) ─────────────────────────── */
+  .recent-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 0.75rem; }
+  .recent-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; }
+  .recent-card-title { font-weight: 500; font-size: 0.95rem; }
+  .recent-card-meta { font-size: 0.8rem; color: var(--text2); margin-top: 2px; }
+  .btn-edit { font-size: 0.8rem; color: var(--text2); background: none; border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+  .btn-edit:hover { background: var(--bg); }
+  .view-more-btn { width: 100%; padding: 0.75rem; background: transparent; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; color: var(--text2); cursor: pointer; margin-top: 0.5rem; }
+  .view-more-btn:hover { background: var(--bg); }
+
+  /* ── Calendars page (form + list) ─────────────────────────────────── */
   .add-cal-btn { display: flex; align-items: center; gap: 6px; padding: 0.625rem 1.25rem; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 0.875rem; font-weight: 500; cursor: pointer; margin-bottom: 2rem; }
   .cal-form { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1.5rem; margin-bottom: 2rem; }
   .cal-form h3 { font-size: 1rem; font-weight: 500; margin-bottom: 1.25rem; }
@@ -109,40 +124,117 @@
   .loading { display: flex; align-items: center; gap: 8px; color: var(--text2); font-size: 0.875rem; padding: 1rem 0; }
   .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .category-selection h4 { font-size: 0.875rem; font-weight: 500; margin-bottom: 0.75rem; margin-top: 1rem; }
-  .category-item { display: flex; align-items: center; gap: 10px; padding: 0.625rem 0.875rem; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 0.5rem; cursor: pointer; }
-  .category-item:hover { background: var(--bg); }
-  .category-item input { width: 16px; height: 16px; }
-  .category-item-name { font-size: 0.875rem; font-weight: 500; }
-  .category-item-count { font-size: 0.75rem; color: var(--text2); }
-  .category-group { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.625rem; overflow: hidden; }
-  .category-group-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.75rem 1rem; background: var(--bg); }
-  .category-group-header:hover { background: var(--bg2); }
-  .category-group-header .chevron { color: var(--text2); font-size: 0.8rem; }
-  .category-group-header-main { display: flex; align-items: center; justify-content: space-between; flex: 1; gap: 0.5rem; cursor: pointer; }
-  .category-group-header .btn-dismiss { flex-shrink: 0; padding: 0.35rem 0.75rem; font-size: 0.8rem; }
-  .category-group-body { padding: 1rem; border-top: 1px solid var(--border); background: white; }
-  .group-event-list { margin: 0.75rem 0; display: flex; flex-direction: column; gap: 6px; }
-  .group-event-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: 6px; font-size: 0.85rem; }
-  .ger-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .ger-title { font-weight: 500; }
-  .ger-meta { color: var(--text2); font-size: 0.8rem; white-space: nowrap; }
-  .ger-dismiss { flex-shrink: 0; border: none; background: transparent; color: var(--text2); cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 2px 6px; border-radius: 4px; }
-  .ger-dismiss:hover { background: var(--border); color: var(--text); }
-  .group-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-top: 0.5rem; }
-  .recent-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 0.75rem; }
-  .recent-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; }
-  .recent-card-title { font-weight: 500; font-size: 0.95rem; }
-  .recent-card-meta { font-size: 0.8rem; color: var(--text2); margin-top: 2px; }
-  .btn-edit { font-size: 0.8rem; color: var(--text2); background: none; border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
-  .btn-edit:hover { background: var(--bg); }
-  .view-more-btn { width: 100%; padding: 0.75rem; background: transparent; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; color: var(--text2); cursor: pointer; margin-top: 0.5rem; }
-  .view-more-btn:hover { background: var(--bg); }
-  @media (max-width: 600px) { .page { padding: 1rem; } .event-fields { grid-template-columns: 1fr; } header { padding: 0 1rem; } .header-left { gap: 1rem; } }
+
+  /* ── Category review page ─────────────────────────────────────────── */
+  .cat-back-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; cursor: pointer; color: var(--text2); font-size: 0.875rem; padding: 0.25rem 0; margin-bottom: 1rem; }
+  .cat-back-btn:hover { color: var(--text); }
+  .cat-back-btn .material-icons { font-size: 18px; }
+
+  .cat-card { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.75rem; overflow: hidden; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+  .cat-card-header { display: flex; align-items: center; padding: 0.875rem 1rem; gap: 0.75rem; }
+  .cat-card-header:hover { background: var(--bg); }
+  .cat-header-left { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; cursor: pointer; user-select: none; }
+  .cat-chevron { color: var(--text2); transition: transform 0.18s; font-size: 20px !important; flex-shrink: 0; }
+  .cat-chevron.open { transform: rotate(180deg); }
+  .cat-name { font-size: 0.925rem; font-weight: 500; }
+  .cat-header-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+  .cat-header-status { font-size: 0.8rem; white-space: nowrap; }
+
+  .btn-cat-add { padding: 0.35rem 0.875rem; background: var(--accent); color: white; border: none; border-radius: 6px; font-size: 0.8rem; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-cat-add:hover { opacity: 0.88; }
+  .btn-cat-add:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn-cat-dismiss { padding: 0.35rem 0.75rem; background: transparent; color: var(--text2); border: 1px solid var(--border); border-radius: 6px; font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
+  .btn-cat-dismiss:hover { background: var(--bg2); }
+  .btn-cat-dismiss:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .cat-card-body { border-top: 1px solid var(--border); }
+
+  /* Event rows inside a category */
+  .cat-event-item { border-bottom: 1px solid var(--border); }
+  .cat-event-item:last-child { border-bottom: none; }
+  .cat-event-row { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1rem; cursor: pointer; gap: 0.75rem; transition: background 0.1s; }
+  .cat-event-row:hover { background: var(--bg); }
+  .cat-event-row.open { background: #f0f4ff; }
+  .cer-info { display: flex; align-items: baseline; gap: 0.625rem; min-width: 0; flex: 1; }
+  .cer-title { font-size: 0.875rem; font-weight: 500; flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cer-date { font-size: 0.775rem; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cer-dismiss { flex-shrink: 0; background: none; border: none; cursor: pointer; color: var(--text2); display: flex; align-items: center; padding: 4px; border-radius: 4px; line-height: 1; }
+  .cer-dismiss:hover { background: var(--border); color: var(--text); }
+  .cer-dismiss .material-icons { font-size: 17px !important; }
+
+  /* Category bottom action bar */
+  .cat-body-footer { display: flex; gap: 0.75rem; align-items: center; padding: 0.875rem 1rem; background: var(--bg); border-top: 1px solid var(--border); }
+
+  /* ── Google Calendar–style inline event editor ─────────────────────── */
+  .cat-event-editor { border-top: 1px solid var(--border); background: white; }
+  .gcal-editor { padding: 1.5rem 1.25rem 1.25rem; }
+
+  /* Large title field — GCal places it above all rows with a coloured underline */
+  .gcal-title {
+    width: 100%; font-size: 1.3rem; font-weight: 400; border: none;
+    border-bottom: 2px solid var(--blue); color: var(--text); font-family: inherit;
+    padding: 0.2rem 0 0.4rem; margin-bottom: 1.375rem; outline: none; background: transparent;
+  }
+  .gcal-title::placeholder { color: #bbb; }
+
+  /* Recurring callout */
+  .gcal-recurring { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--text2); background: var(--bg); border-radius: 6px; padding: 0.5rem 0.75rem; margin-bottom: 1rem; }
+  .gcal-recurring .material-icons { font-size: 16px !important; color: var(--gcal-icon); flex-shrink: 0; }
+
+  /* Each field row: icon on left, input(s) on right */
+  .gcal-row { display: flex; align-items: flex-start; gap: 1.125rem; margin-bottom: 0.75rem; }
+  .gcal-icon { font-size: 20px !important; color: var(--gcal-icon); flex-shrink: 0; margin-top: 5px; }
+
+  .gcal-fields { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; flex: 1; }
+  .gcal-fields-col { display: flex; flex-direction: column; gap: 0.5rem; flex: 1; }
+
+  /* Inputs look like GCal's borderless hover-to-reveal fields */
+  .gcal-input {
+    padding: 0.4rem 0.625rem; border: 1px solid transparent; border-radius: 4px;
+    font-size: 0.875rem; color: var(--text); font-family: inherit;
+    background: transparent; cursor: pointer; transition: background 0.1s, border-color 0.1s;
+  }
+  .gcal-input::placeholder { color: #aaa; }
+  .gcal-input:hover { background: var(--bg); }
+  .gcal-input:focus { border-color: var(--blue); background: white; outline: none; cursor: text; }
+  .gcal-input-date { width: 150px; }
+  .gcal-input-time { width: 125px; }
+  .gcal-input-wide { flex: 1; min-width: 180px; }
+  .gcal-sep { font-size: 0.875rem; color: var(--text2); padding: 0 2px; }
+  .gcal-hint { font-size: 0.75rem; color: var(--text2); padding-top: 6px; }
+
+  .gcal-checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 0.875rem; color: var(--text2); cursor: pointer; padding-top: 4px; }
+  .gcal-checkbox-label input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--blue); }
+
+  /* Action buttons — GCal-style: blue primary, grey ghost secondary */
+  .gcal-actions { display: flex; gap: 0.75rem; align-items: center; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+  .btn-gcal-add {
+    padding: 0.5rem 1.5rem; background: var(--blue); color: white; border: none;
+    border-radius: 4px; font-size: 0.875rem; font-weight: 500; cursor: pointer;
+    letter-spacing: 0.01em; transition: background 0.15s;
+  }
+  .btn-gcal-add:hover { background: var(--blue-dark); }
+  .btn-gcal-add:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-gcal-dismiss {
+    padding: 0.5rem 1rem; background: transparent; color: var(--gcal-icon);
+    border: 1px solid transparent; border-radius: 4px; font-size: 0.875rem; cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .btn-gcal-dismiss:hover { background: var(--bg); border-color: var(--border); }
+
+  /* ── Misc ─────────────────────────────────────────────────────────── */
+  @media (max-width: 600px) {
+    .page { padding: 1rem; }
+    .event-fields { grid-template-columns: 1fr; }
+    header { padding: 0 1rem; }
+    .header-left { gap: 1rem; }
+    .cer-title { max-width: 50%; }
+  }
 </style>
 </head>
 <body>
 
+<!-- ── Auth screen ──────────────────────────────────────────────────────── -->
 <div id="auth-screen">
   <div class="auth-logo">Criba</div>
   <div class="auth-tagline">Filter the noise.</div>
@@ -156,14 +248,19 @@
     <p class="auth-privacy">Criba reads your calendar to add events. We never store your messages or sell your data.</p>
   </div>
 </div>
+
+<!-- ── App shell ────────────────────────────────────────────────────────── -->
 <div id="app-screen">
   <header>
     <div class="header-left">
       <div class="logo">Criba</div>
       <nav>
-        <button class="nav-btn active" onclick="showPage('review', this)">Review <span class="badge" id="pending-badge" style="display:none">0</span></button>
+        <!-- Review tab: reserved for Gmail/iMessage/WhatsApp (Stage 2-4).
+             Count reflects all pending events; will be scoped to message
+             sources once those extraction stages are built. -->
+        <button class="nav-btn active" id="nav-review-btn" onclick="showPage('review', this)">Review<span id="review-count-label"></span></button>
         <button class="nav-btn" onclick="showPage('recent', this)">My Calendar</button>
-        <button class="nav-btn" onclick="showPage('calendars', this)">Calendars</button>
+        <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendars</button>
       </nav>
     </div>
     <div class="header-right">
@@ -172,18 +269,21 @@
     </div>
   </header>
 
+  <!-- Review queue (message-source events) -->
   <div class="page active" id="page-review">
     <div class="page-title">Review</div>
-    <div class="page-sub">Approve events to add them to your Google Calendar.</div>
+    <div class="page-sub">Events from Gmail, iMessage, and WhatsApp will appear here for approval.</div>
     <div id="review-list"></div>
   </div>
 
+  <!-- My Calendar (recently approved events) -->
   <div class="page" id="page-recent">
     <div class="page-title">My Calendar</div>
     <div class="page-sub">Recently added events — edit or update any time.</div>
     <div id="recent-list"></div>
   </div>
 
+  <!-- Calendars management (add form + list) -->
   <div class="page" id="page-calendars">
     <div class="page-title">Calendars</div>
     <div class="page-sub">Add school or sports calendars via URL or PDF upload.</div>
@@ -209,7 +309,6 @@
           </div>
         </div>
         <div id="extract-status"></div>
-        <div id="category-selection" style="display:none"></div>
         <div class="form-actions">
           <button class="btn-primary" id="cal-submit-btn" onclick="submitCalendar()">Add calendar</button>
           <button class="btn-secondary" onclick="hideCalForm()">Cancel</button>
@@ -219,22 +318,40 @@
     <button class="add-cal-btn" onclick="showCalForm()" id="add-cal-btn">+ Add calendar</button>
     <div id="cal-list"></div>
   </div>
-</div>
+
+  <!-- Category review page (shown after PDF/iCal import) -->
+  <div class="page" id="page-category">
+    <button class="cat-back-btn" onclick="leaveCategoryPage()">
+      <span class="material-icons">arrow_back</span>
+      Back to Calendars
+    </button>
+    <div class="page-title" id="cat-page-title">Review Events</div>
+    <div class="page-sub" id="cat-page-sub">Review events by group and add them to your calendar.</div>
+    <div id="category-groups-container"></div>
+  </div>
+</div><!-- /#app-screen -->
 
 <script>
+// ── Global state ──────────────────────────────────────────────────────────
 let user = null;
 let pendingEvents = [];
 let recentEvents = [];
 let calendars = [];
 let selectedFile = null;
-let groupsState = { calendarId: null, categories: [] };
-let groupSelectedPeople = {};
-let selectedPeople = {};
 let showingAll = false;
 
+// Category page state
+let groupsState = { calendarId: null, calName: '', categories: [] };
+let cedPeople = {};           // key `${ci}-${ei}` → [{name, email}]
+let cedSearchTimers = {};     // debounce timers for inline editor people-search
+
+// Review queue people state
+let selectedPeople = {};
+let searchTimers = {};
+
+const CAL_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0891b2'];
+
 // ── Google Places autocomplete ────────────────────────────────────────────
-// Loaded lazily after auth; inputs rendered before the script finishes
-// loading are queued and initialised once the callback fires.
 let placesReady = false;
 let placesInitQueue = [];
 
@@ -254,15 +371,14 @@ function _initAC(inputId) {
   });
   ac.addListener('place_changed', () => {
     const place = ac.getPlace();
-    if (place && (place.formatted_address || place.name)) {
+    if (place && (place.formatted_address || place.name))
       input.value = place.formatted_address || place.name;
-    }
   });
 }
 
 function initLocationAutocomplete(inputId) {
-  if (placesReady) { _initAC(inputId); }
-  else { if (!placesInitQueue.includes(inputId)) placesInitQueue.push(inputId); }
+  if (placesReady) _initAC(inputId);
+  else if (!placesInitQueue.includes(inputId)) placesInitQueue.push(inputId);
 }
 
 async function loadPlacesScript() {
@@ -271,17 +387,15 @@ async function loadPlacesScript() {
     if (!res.ok) return;
     const { placesApiKey } = await res.json();
     if (!placesApiKey) return;
-    const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(placesApiKey)}&libraries=places&callback=onPlacesLoaded`;
-    script.async = true;
-    script.defer = true;
-    document.head.appendChild(script);
+    const s = document.createElement('script');
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(placesApiKey)}&libraries=places&callback=onPlacesLoaded`;
+    s.async = true; s.defer = true;
+    document.head.appendChild(s);
   } catch {}
 }
 // ─────────────────────────────────────────────────────────────────────────
 
-const CAL_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0891b2'];
-
+// ── Boot ──────────────────────────────────────────────────────────────────
 window.addEventListener('load', async () => { await checkAuth(); });
 
 async function checkAuth() {
@@ -292,7 +406,10 @@ async function checkAuth() {
   } catch { showAuth(); }
 }
 
-function showAuth() { document.getElementById('auth-screen').style.display = 'flex'; document.getElementById('app-screen').style.display = 'none'; }
+function showAuth() {
+  document.getElementById('auth-screen').style.display = 'flex';
+  document.getElementById('app-screen').style.display = 'none';
+}
 
 function showApp() {
   document.getElementById('auth-screen').style.display = 'none';
@@ -302,30 +419,55 @@ function showApp() {
   loadData();
 }
 
-async function loadData() { await Promise.all([loadPendingEvents(), loadRecentEvents(), loadCalendars()]); }
+async function loadData() {
+  await Promise.all([loadPendingEvents(), loadRecentEvents(), loadCalendars()]);
+}
 
+// ── Data fetchers ─────────────────────────────────────────────────────────
 async function loadPendingEvents() {
-  try { const res = await fetch('/api/events/pending'); if (res.ok) { pendingEvents = await res.json(); renderReview(); } } catch {}
+  try {
+    const res = await fetch('/api/events/pending');
+    if (res.ok) { pendingEvents = await res.json(); renderReview(); }
+  } catch {}
 }
 
 async function loadRecentEvents() {
-  try { const res = await fetch('/api/events/recent'); if (res.ok) { recentEvents = await res.json(); renderRecent(); } } catch {}
+  try {
+    const res = await fetch('/api/events/recent');
+    if (res.ok) { recentEvents = await res.json(); renderRecent(); }
+  } catch {}
 }
 
 async function loadCalendars() {
-  try { const res = await fetch('/api/calendars'); if (res.ok) { calendars = await res.json(); renderCalendars(); } } catch {}
+  try {
+    const res = await fetch('/api/calendars');
+    if (res.ok) { calendars = await res.json(); renderCalendars(); }
+  } catch {}
 }
 
+// ── Nav ───────────────────────────────────────────────────────────────────
+function showPage(page, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(`page-${page}`).classList.add('active');
+  if (btn) btn.classList.add('active');
+}
+
+function updateReviewCount(n) {
+  const label = document.getElementById('review-count-label');
+  if (label) label.textContent = n > 0 ? ` (${n} pending)` : '';
+}
+
+// ── Review queue render ───────────────────────────────────────────────────
+// The Review queue is reserved for Gmail, iMessage, and WhatsApp events
+// (Stages 2–4). Calendar/iCal events do not route through here.
 function renderReview() {
   const container = document.getElementById('review-list');
-  const badge = document.getElementById('pending-badge');
+  updateReviewCount(pendingEvents.length);
   if (!pendingEvents.length) {
-    badge.style.display = 'none';
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">✓</div><h3>All caught up</h3><p>Add a school calendar in the Calendars tab<br>and events will appear here for review.</p></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">✓</div><h3>All caught up</h3><p>Events from Gmail, iMessage, and WhatsApp<br>will appear here for review once those sources are connected.</p></div>`;
     return;
   }
-  badge.style.display = 'inline';
-  badge.textContent = pendingEvents.length;
   selectedPeople = {};
   container.innerHTML = pendingEvents.map((ev, i) => {
     selectedPeople[i] = [];
@@ -341,26 +483,15 @@ function renderReview() {
         </div>
         <span class="event-tag">${ev.category || 'Event'}</span>
       </div>
-      ${isRecurring ? `<div class="recurring-note" style="background:var(--bg2,#f5f5f5);border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.85rem">🔁 Recurring: ${(ev.recurring_note || 'This event repeats on a pattern.').replace(/</g,'&lt;')}</div>` : ''}
+      ${isRecurring ? `<div style="background:var(--bg2);border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.85rem">🔁 Recurring: ${(ev.recurring_note || '').replace(/</g,'&lt;')}</div>` : ''}
       <div class="event-fields">
         <div class="event-field">
           <label>${isBreak ? 'Start date' : 'Date'}</label>
           <input type="date" id="date-${i}" value="${ev.date || ''}" />
         </div>
-        ${isBreak ? `
-        <div class="event-field">
-          <label>End date</label>
-          <input type="date" id="enddate-${i}" value="${ev.end_date || ''}" />
-        </div>` : `
-        <div class="event-field">
-          <label>${isTimed ? 'Start time' : 'Time'} <span style="font-weight:300">(blank = all-day)</span></label>
-          <input type="time" id="time-${i}" value="${ev.time || ''}" />
-        </div>`}
-        ${isTimed ? `
-        <div class="event-field">
-          <label>End time <span style="font-weight:300">(blank = 1hr default)</span></label>
-          <input type="time" id="endtime-${i}" value="${ev.end_time || ''}" />
-        </div>` : ''}
+        ${isBreak ? `<div class="event-field"><label>End date</label><input type="date" id="enddate-${i}" value="${ev.end_date || ''}" /></div>`
+          : `<div class="event-field"><label>${isTimed ? 'Start time' : 'Time'} <span style="font-weight:300">(blank = all-day)</span></label><input type="time" id="time-${i}" value="${ev.time || ''}" /></div>`}
+        ${isTimed ? `<div class="event-field"><label>End time <span style="font-weight:300">(blank = 1hr default)</span></label><input type="time" id="endtime-${i}" value="${ev.end_time || ''}" /></div>` : ''}
         <div class="event-field full">
           <label>Location</label>
           <input type="text" id="loc-${i}" value="${(ev.location||'').replace(/"/g,'&quot;')}" placeholder="Add location" />
@@ -385,10 +516,10 @@ function renderReview() {
       </div>
     </div>`;
   }).join('');
-  // Wire up Places autocomplete on every location input now that the DOM exists.
   setTimeout(() => pendingEvents.forEach((_, i) => initLocationAutocomplete(`loc-${i}`)), 0);
 }
 
+// ── My Calendar render ────────────────────────────────────────────────────
 function renderRecent() {
   const container = document.getElementById('recent-list');
   if (!recentEvents.length) {
@@ -400,8 +531,8 @@ function renderRecent() {
     <div class="recent-card" id="recent-${ev.id}">
       <div class="recent-card-header">
         <div>
-          <div class="recent-card-title">${ev.title}</div>
-          <div class="recent-card-meta">${formatDate(ev.date)}${ev.time ? ' · ' + formatTime(ev.time) : ' · All day'} · ${ev.source}</div>
+          <div class="recent-card-title">${escHtml(ev.title)}</div>
+          <div class="recent-card-meta">${formatDate(ev.date)}${ev.time ? ' · ' + formatTime(ev.time) : ' · All day'} · ${escHtml(ev.source)}</div>
         </div>
         <button class="btn-edit" onclick="toggleEdit('${ev.id}')">Edit</button>
       </div>
@@ -411,19 +542,10 @@ function renderRecent() {
             <label>${ev.type === 'break' ? 'Start date' : 'Date'}</label>
             <input type="date" id="redate-${ev.id}" value="${ev.date||''}" />
           </div>
-          ${ev.type === 'break' ? `
-          <div class="event-field">
-            <label>End date</label>
-            <input type="date" id="reenddate-${ev.id}" value="${ev.end_date||''}" />
-          </div>` : `
-          <div class="event-field">
-            <label>Time (blank = all-day)</label>
-            <input type="time" id="retime-${ev.id}" value="${ev.time||''}" />
-          </div>
-          <div class="event-field">
-            <label>End time <span style="font-weight:300">(blank = 1hr default)</span></label>
-            <input type="time" id="reendtime-${ev.id}" value="${ev.end_time||''}" />
-          </div>`}
+          ${ev.type === 'break'
+            ? `<div class="event-field"><label>End date</label><input type="date" id="reenddate-${ev.id}" value="${ev.end_date||''}" /></div>`
+            : `<div class="event-field"><label>Time (blank = all-day)</label><input type="time" id="retime-${ev.id}" value="${ev.time||''}" /></div>
+               <div class="event-field"><label>End time <span style="font-weight:300">(blank = 1hr default)</span></label><input type="time" id="reendtime-${ev.id}" value="${ev.end_time||''}" /></div>`}
           <div class="event-field full">
             <label>Location</label>
             <input type="text" id="reloc-${ev.id}" value="${(ev.location||'').replace(/"/g,'&quot;')}" placeholder="Add location" />
@@ -435,7 +557,8 @@ function renderRecent() {
           <span id="edit-status-${ev.id}"></span>
         </div>
       </div>
-    </div>`).join('') + (!showingAll && recentEvents.length > 20 ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${recentEvents.length - 20} older events)</button>` : '');
+    </div>`).join('') + (!showingAll && recentEvents.length > 20
+      ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${recentEvents.length - 20} older events)</button>` : '');
 }
 
 function showAllRecent() { showingAll = true; renderRecent(); }
@@ -457,31 +580,35 @@ async function saveEdit(id, title) {
   status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Saving...</span>';
   try {
     const res = await fetch('/api/events/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id, title, date, time, endDate, endTime, location, attendees: []}) });
-    if (res.ok) {
-      status.innerHTML = '<span class="success-msg">✓ Updated</span>';
-      await loadRecentEvents();
-    } else {
-      const err = await res.json();
-      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-    }
+    if (res.ok) { status.innerHTML = '<span class="success-msg">✓ Updated</span>'; await loadRecentEvents(); }
+    else { const err = await res.json(); status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`; }
   } catch { status.innerHTML = '<span class="error-msg">Network error</span>'; }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function formatDate(d) {
   if (!d) return '';
-  const date = new Date(d + 'T12:00:00');
-  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Short date without year, used in category row summaries
+function shortDate(d) {
+  if (!d) return '';
+  return new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function formatTime(t) {
   if (!t) return '';
   const [h, m] = t.split(':').map(Number);
   const ampm = h >= 12 ? 'PM' : 'AM';
-  const hour = h % 12 || 12;
-  return `${hour}:${String(m).padStart(2,'0')} ${ampm}`;
+  return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${ampm}`;
 }
 
-let searchTimers = {};
+// ── Review queue contacts search ──────────────────────────────────────────
 async function searchContacts(i, q) {
   clearTimeout(searchTimers[i]);
   const drop = document.getElementById(`contacts-drop-${i}`);
@@ -491,7 +618,9 @@ async function searchContacts(i, q) {
       const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
       const contacts = await res.json();
       if (!contacts.length) { drop.style.display = 'none'; return; }
-      drop.innerHTML = contacts.map(c => `<div class="contact-option" onclick="addPerson(${i}, '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${c.name}</div><div class="contact-email">${c.email}</div></div>`).join('');
+      drop.innerHTML = contacts.map(c =>
+        `<div class="contact-option" onclick="addPerson(${i}, '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${escHtml(c.name)}</div><div class="contact-email">${escHtml(c.email)}</div></div>`
+      ).join('');
       drop.style.display = 'block';
     } catch { drop.style.display = 'none'; }
   }, 300);
@@ -512,14 +641,18 @@ function removePerson(i, email) {
 }
 
 function renderSelectedPeople(i) {
-  const container = document.getElementById(`selected-people-${i}`);
-  container.innerHTML = (selectedPeople[i] || []).map(p => `<div class="person-chip">${p.name || p.email}<button onclick="removePerson(${i}, '${p.email}')">×</button></div>`).join('');
+  const el = document.getElementById(`selected-people-${i}`);
+  el.innerHTML = (selectedPeople[i] || []).map(p =>
+    `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removePerson(${i}, '${p.email}')">×</button></div>`
+  ).join('');
 }
 
 document.addEventListener('click', e => {
-  if (!e.target.closest('.people-search-wrap')) document.querySelectorAll('.contacts-dropdown').forEach(d => d.style.display = 'none');
+  if (!e.target.closest('.people-search-wrap'))
+    document.querySelectorAll('.contacts-dropdown').forEach(d => d.style.display = 'none');
 });
 
+// ── Review queue event actions ────────────────────────────────────────────
 async function approveEvent(i) {
   const ev = pendingEvents[i];
   const btn = document.querySelector(`#card-${i} .btn-approve`);
@@ -567,6 +700,7 @@ async function dismissEvent(i) {
   renderReview();
 }
 
+// ── Calendars page ────────────────────────────────────────────────────────
 function renderCalendars() {
   const container = document.getElementById('cal-list');
   if (!calendars.length) {
@@ -576,8 +710,8 @@ function renderCalendars() {
   container.innerHTML = calendars.map((cal, i) => `
     <div class="cal-list-item">
       <div style="display:flex;align-items:center">
-        <div class="cal-dot" style="background:${CAL_COLORS[i%CAL_COLORS.length]}"></div>
-        <div><div class="cal-list-name">${cal.name}</div><div class="cal-list-meta">${cal.event_count || 0} events · ${cal.source === 'ical' ? 'iCal' : 'PDF'}</div></div>
+        <div class="cal-dot" style="background:${CAL_COLORS[i % CAL_COLORS.length]}"></div>
+        <div><div class="cal-list-name">${escHtml(cal.name)}</div><div class="cal-list-meta">${cal.event_count || 0} events · ${cal.source === 'ical' ? 'iCal' : 'PDF'}</div></div>
       </div>
       <button class="cal-delete" onclick="deleteCalendar('${cal.id}')">×</button>
     </div>`).join('');
@@ -585,30 +719,25 @@ function renderCalendars() {
 
 async function deleteCalendar(id) {
   if (!confirm('Remove this calendar?')) return;
-  try { await fetch(`/api/calendars/${id}`, {method:'DELETE'}); await loadCalendars(); } catch {}
+  try { await fetch(`/api/calendars/${id}`, { method: 'DELETE' }); await loadCalendars(); } catch {}
 }
 
 function showCalForm() {
   document.getElementById('cal-form-container').style.display = 'block';
   document.getElementById('add-cal-btn').style.display = 'none';
   document.getElementById('extract-status').innerHTML = '';
-  document.getElementById('category-selection').style.display = 'none';
-  document.getElementById('category-selection').innerHTML = '';
-  groupsState = { calendarId: null, categories: [] };
   document.getElementById('cal-name').value = '';
   document.getElementById('cal-url').value = '';
+  document.getElementById('cal-submit-btn').textContent = 'Add calendar';
+  document.getElementById('cal-submit-btn').onclick = submitCalendar;
   selectedFile = null;
   document.getElementById('drop-zone-text').textContent = 'Click to upload PDF or drag and drop';
   document.getElementById('drop-zone').classList.remove('has-file');
-  document.getElementById('cal-submit-btn').textContent = 'Add calendar';
-  document.getElementById('cal-submit-btn').onclick = submitCalendar;
 }
 
 function hideCalForm() {
   document.getElementById('cal-form-container').style.display = 'none';
   document.getElementById('add-cal-btn').style.display = 'flex';
-  groupsState = { calendarId: null, categories: [] };
-  loadPendingEvents();
 }
 
 function switchSource(type, btn) {
@@ -652,18 +781,21 @@ async function submitCalendar() {
     if (!url) { alert('Please enter a URL'); btn.disabled = false; return; }
     status.innerHTML = '<div class="loading"><div class="spinner"></div>Fetching calendar...</div>';
     try {
-      const res = await fetch('/api/calendars/add-ical', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({name, url}) });
+      const res = await fetch('/api/calendars/add-ical', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, url }) });
       const data = await res.json();
       if (res.ok && data.categories) {
-        status.innerHTML = `<div style="color:var(--green);font-size:0.875rem;padding:0.5rem 0">✓ Found ${data.totalEvents} events — review each group below</div>`;
-        await loadCategoryGroups(data.calendarId);
-        btn.textContent = 'Done';
-        btn.onclick = () => hideCalForm();
+        // Navigate straight to the category review page — do not route to the Review queue
+        hideCalForm();
+        await loadCalendars();
+        await loadCategoryGroups(data.calendarId, name, data.totalEvents);
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
+        btn.disabled = false;
       }
-    } catch { status.innerHTML = '<div style="color:var(--red);font-size:0.875rem">Network error</div>'; }
-    btn.disabled = false;
+    } catch {
+      status.innerHTML = '<div style="color:var(--red);font-size:0.875rem">Network error</div>';
+      btn.disabled = false;
+    }
   } else {
     if (!selectedFile) { alert('Please select a PDF'); btn.disabled = false; return; }
     status.innerHTML = '<div class="loading"><div class="spinner"></div>Reading PDF with AI — takes about 30 seconds...</div>';
@@ -674,25 +806,26 @@ async function submitCalendar() {
       const res = await fetch('/api/calendars/add-pdf', { method: 'POST', body: formData });
       const data = await res.json();
       if (res.ok && data.categories) {
-        status.innerHTML = `<div style="color:var(--green);font-size:0.875rem;padding:0.5rem 0">✓ Found ${data.totalEvents} events in ${data.categories.length} categories</div>`;
-        await loadCategoryGroups(data.calendarId);
-        btn.textContent = 'Done';
-        btn.onclick = () => hideCalForm();
+        hideCalForm();
+        await loadCalendars();
+        await loadCategoryGroups(data.calendarId, name, data.totalEvents);
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
+        btn.disabled = false;
       }
-    } catch { status.innerHTML = '<div style="color:var(--red);font-size:0.875rem">Network error</div>'; }
-    btn.disabled = false;
+    } catch {
+      status.innerHTML = '<div style="color:var(--red);font-size:0.875rem">Network error</div>';
+      btn.disabled = false;
+    }
   }
 }
 
-function escHtml(s) {
-  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+// ── Category review page ──────────────────────────────────────────────────
 
-// Fetches the full draft-event list for a calendar and groups it by
-// category client-side, then renders the expandable group cards.
-async function loadCategoryGroups(calendarId) {
+// Fetches draft events for a calendar, groups by category, and opens the
+// category review page. Calendar/iCal events live entirely on this page —
+// they never route through the Review queue tab.
+async function loadCategoryGroups(calendarId, calName, totalEvents) {
   try {
     const res = await fetch(`/api/calendars/${calendarId}/draft-events`);
     const events = await res.json();
@@ -701,227 +834,373 @@ async function loadCategoryGroups(calendarId) {
       if (!map.has(ev.category)) map.set(ev.category, []);
       map.get(ev.category).push(ev);
     }
-    groupsState = { calendarId, categories: [...map.entries()].map(([name, evs]) => ({ name, events: evs })) };
-    renderCategoryGroups();
+    groupsState = {
+      calendarId,
+      calName: calName || 'Review Events',
+      categories: [...map.entries()].map(([name, evs]) => ({ name, events: evs })),
+    };
   } catch {
-    groupsState = { calendarId, categories: [] };
+    groupsState = { calendarId, calName: calName || 'Review Events', categories: [] };
   }
+  cedPeople = {};
+  document.getElementById('cat-page-title').textContent = groupsState.calName;
+  document.getElementById('cat-page-sub').textContent =
+    `${totalEvents || 0} events found — review by group below`;
+  // Highlight Calendars in nav (category page is a sub-flow of Calendars)
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('nav-calendars-btn').classList.add('active');
+  document.getElementById('page-category').classList.add('active');
+  document.querySelectorAll('.page').forEach(p => { if (p.id !== 'page-category') p.classList.remove('active'); });
+  renderCategoryPage();
 }
 
-function renderGroupEventRow(ev, ei, ci) {
-  const title = escHtml(ev.title);
-  let meta;
-  if (ev.type === 'break') {
-    meta = `${formatDate(ev.date)} – ${formatDate(ev.end_date || ev.date)}`;
-  } else if ((ev.type === 'timed' || ev.type === 'minimum_day') && ev.time) {
-    meta = `${formatDate(ev.date)} · ${formatTime(ev.time)}${ev.end_time ? ' – ' + formatTime(ev.end_time) : ''}`;
-  } else if (ev.type === 'recurring') {
-    meta = `🔁 ${escHtml(ev.recurring_note || 'Recurring')}`;
-  } else {
-    meta = `${formatDate(ev.date)} · All day`;
+function leaveCategoryPage() {
+  groupsState = { calendarId: null, calName: '', categories: [] };
+  cedPeople = {};
+  showPage('calendars', document.getElementById('nav-calendars-btn'));
+}
+
+function renderCategoryPage() {
+  const container = document.getElementById('category-groups-container');
+  if (!groupsState.categories.length) {
+    container.innerHTML = groupsState.calendarId
+      ? `<div class="empty-state"><div class="empty-icon">✓</div><h3>All done</h3><p>All events have been handled. You can close this page.</p><br><button class="btn-primary" onclick="leaveCategoryPage()">Back to Calendars</button></div>`
+      : '';
+    return;
   }
-  return `<div class="group-event-row">
-    <div class="ger-info"><span class="ger-title">${title}</span><span class="ger-meta">${meta}</span></div>
-    <button class="ger-dismiss" title="Dismiss this event" onclick="dismissGroupEvent(${ci}, ${ei})">×</button>
+  container.innerHTML = groupsState.categories.map((cat, ci) => renderCatCard(cat, ci)).join('');
+}
+
+function renderCatCard(cat, ci) {
+  const rows = cat.events.map((ev, ei) => renderCatEventRow(ev, ei, ci)).join('');
+  return `
+  <div class="cat-card" id="cat-card-${ci}">
+    <div class="cat-card-header">
+      <div class="cat-header-left" onclick="toggleCat(${ci})">
+        <span class="material-icons cat-chevron" id="cat-chevron-${ci}">expand_more</span>
+        <span class="cat-name" id="cat-name-${ci}">${escHtml(cat.name)} (${cat.events.length})</span>
+      </div>
+      <div class="cat-header-actions">
+        <span class="cat-header-status" id="cat-status-${ci}"></span>
+        <button class="btn-cat-add" id="cat-add-btn-${ci}" onclick="event.stopPropagation(); catAddAll(${ci})">Add all</button>
+        <button class="btn-cat-dismiss" id="cat-dis-btn-${ci}" onclick="event.stopPropagation(); catDismiss(${ci})">Dismiss</button>
+      </div>
+    </div>
+    <div class="cat-card-body" id="cat-body-${ci}" style="display:none">
+      <div id="cat-event-list-${ci}">${rows}</div>
+      <div class="cat-body-footer">
+        <button class="btn-cat-add" onclick="catAddAll(${ci})">Add all to Calendar</button>
+        <button class="btn-secondary" onclick="catReviewAll(${ci})">Review all</button>
+      </div>
+    </div>
   </div>`;
 }
 
-function renderCategoryGroups() {
-  const container = document.getElementById('category-selection');
-  if (!groupsState.categories.length) {
-    container.style.display = groupsState.calendarId ? 'block' : 'none';
-    container.innerHTML = groupsState.calendarId ? `<div style="font-size:0.875rem;color:var(--text2);padding:0.5rem 0">All groups handled — click Done to close.</div>` : '';
-    return;
+function renderCatEventRow(ev, ei, ci) {
+  // Date summary shown inline (no year — keeps rows compact)
+  let dateSummary;
+  if (ev.type === 'break') {
+    dateSummary = `${shortDate(ev.date)} → ${shortDate(ev.end_date || ev.date)}`;
+  } else if ((ev.type === 'timed' || ev.type === 'minimum_day') && ev.time) {
+    dateSummary = `${shortDate(ev.date)} · ${formatTime(ev.time)}`;
+  } else if (ev.type === 'recurring') {
+    dateSummary = `🔁 ${escHtml(ev.recurring_note || 'Recurring')}`;
+  } else {
+    dateSummary = shortDate(ev.date);
   }
-  container.style.display = 'block';
-  groupSelectedPeople = {};
-  container.innerHTML = `<h4 style="font-size:0.875rem;font-weight:500;margin:1rem 0 0.75rem">Review by group</h4>` + groupsState.categories.map((cat, ci) => {
-    groupSelectedPeople[ci] = [];
-    return `
-    <div class="category-group">
-      <div class="category-group-header">
-        <div class="category-group-header-main" onclick="toggleGroup(${ci})">
-          <div class="category-item-name">${escHtml(cat.name)} (${cat.events.length})</div>
-          <span class="chevron" id="chevron-${ci}">▾</span>
-        </div>
-        <button class="btn-dismiss" title="Dismiss this whole group" onclick="event.stopPropagation(); dismissGroup(${ci})">Dismiss</button>
+  return `
+  <div class="cat-event-item" id="cat-item-${ci}-${ei}">
+    <div class="cat-event-row" id="cat-row-${ci}-${ei}" onclick="toggleEventEditor(${ci}, ${ei})">
+      <div class="cer-info">
+        <span class="cer-title">${escHtml(ev.title)}</span>
+        <span class="cer-date">${dateSummary}</span>
       </div>
-      <div class="category-group-body" id="group-body-${ci}" style="display:none">
-        <div class="add-people-section">
-          <label>Add people to every event in this group</label>
-          <div class="people-search-wrap">
-            <input type="text" class="people-search-input" id="group-people-search-${ci}" placeholder="Search contacts..." oninput="searchGroupContacts(${ci}, this.value)" autocomplete="off" />
-            <div class="contacts-dropdown" id="group-contacts-drop-${ci}" style="display:none"></div>
-          </div>
-          <div class="selected-people" id="group-selected-people-${ci}"></div>
-        </div>
-        <div class="group-event-list" id="group-event-list-${ci}">${cat.events.map((ev, ei) => renderGroupEventRow(ev, ei, ci)).join('')}</div>
-        <div class="group-actions">
-          <button class="btn-approve" onclick="groupApprove(${ci})">Add all to Calendar</button>
-          <button class="btn-secondary" onclick="groupReview(${ci})">Review individually</button>
-          <span id="group-status-${ci}"></span>
-        </div>
-      </div>
-    </div>`;
-  }).join('');
+      <button class="cer-dismiss" title="Dismiss this event" onclick="event.stopPropagation(); dismissCatEvent(${ci}, ${ei})">
+        <span class="material-icons">close</span>
+      </button>
+    </div>
+    <div class="cat-event-editor" id="cat-editor-${ci}-${ei}" style="display:none">
+      ${renderInlineEditor(ev, ci, ei)}
+    </div>
+  </div>`;
 }
 
-// Category-level Dismiss: removes the whole group from the queue.
-// No confirmation prompt — matches the existing single-event Dismiss
-// behavior in the review queue.
-async function dismissGroup(ci) {
+// Renders a Google Calendar–style inline editor for one event.
+// All editing and approval happens here — no navigation to another page.
+function renderInlineEditor(ev, ci, ei) {
+  const key = `${ci}-${ei}`;
+  const isBreak    = ev.type === 'break';
+  const isTimed    = ev.type === 'timed' || ev.type === 'minimum_day';
+  const isRecurring = ev.type === 'recurring';
+
+  const dateFields = isBreak
+    ? `<input type="date" class="gcal-input gcal-input-date" id="ced-date-${key}" value="${ev.date || ''}" />
+       <span class="gcal-sep">→</span>
+       <input type="date" class="gcal-input gcal-input-date" id="ced-enddate-${key}" value="${ev.end_date || ''}" />`
+    : `<input type="date" class="gcal-input gcal-input-date" id="ced-date-${key}" value="${ev.date || ''}" />`;
+
+  const timeFields = `
+    <input type="time" class="gcal-input gcal-input-time" id="ced-time-${key}" value="${ev.time || ''}" />
+    ${isTimed ? `<span class="gcal-sep">–</span><input type="time" class="gcal-input gcal-input-time" id="ced-endtime-${key}" value="${ev.end_time || ''}" />` : ''}
+    <span class="gcal-hint">blank = all-day</span>`;
+
+  return `
+  <div class="gcal-editor">
+    <input class="gcal-title" id="ced-title-${key}" value="${escHtml(ev.title)}" placeholder="Add title" />
+    ${isRecurring ? `<div class="gcal-recurring"><span class="material-icons">repeat</span><span>${escHtml(ev.recurring_note || 'This event repeats on a pattern.')}</span></div>` : ''}
+
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">calendar_today</span>
+      <div class="gcal-fields">${dateFields}</div>
+    </div>
+
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">schedule</span>
+      <div class="gcal-fields">${timeFields}</div>
+    </div>
+
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">place</span>
+      <input type="text" class="gcal-input gcal-input-wide" id="ced-loc-${key}"
+             value="${(ev.location || '').replace(/"/g,'&quot;')}" placeholder="Add location" />
+    </div>
+
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">person_add</span>
+      <div class="gcal-fields-col">
+        <div class="people-search-wrap">
+          <input type="text" class="gcal-input gcal-input-wide people-search-input"
+                 id="ced-people-${key}" placeholder="Add guests"
+                 oninput="searchCedContacts('${key}', this.value)" autocomplete="off" />
+          <div class="contacts-dropdown" id="ced-drop-${key}" style="display:none"></div>
+        </div>
+        <div class="selected-people" id="ced-selected-${key}"></div>
+      </div>
+    </div>
+
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">check_box_outline_blank</span>
+      <label class="gcal-checkbox-label">
+        <input type="checkbox" id="ced-bharat-${key}" />
+        Add to Bharat's calendar too
+      </label>
+    </div>
+
+    <div class="gcal-actions">
+      <button class="btn-gcal-add" id="ced-add-${key}" onclick="cedApprove('${ev.id}', '${key}', ${ci}, ${ei})">Add to Calendar</button>
+      <button class="btn-gcal-dismiss" onclick="dismissCatEvent(${ci}, ${ei})">Dismiss</button>
+      <span id="ced-status-${key}" style="font-size:0.8rem"></span>
+    </div>
+  </div>`;
+}
+
+// ── Category page interactions ────────────────────────────────────────────
+
+function toggleCat(ci) {
+  const body = document.getElementById(`cat-body-${ci}`);
+  const chevron = document.getElementById(`cat-chevron-${ci}`);
+  if (!body) return;
+  const opening = body.style.display === 'none';
+  body.style.display = opening ? 'block' : 'none';
+  chevron.classList.toggle('open', opening);
+}
+
+function toggleEventEditor(ci, ei) {
+  const editor = document.getElementById(`cat-editor-${ci}-${ei}`);
+  const row    = document.getElementById(`cat-row-${ci}-${ei}`);
+  if (!editor) return;
+  const opening = editor.style.display === 'none';
+  editor.style.display = opening ? 'block' : 'none';
+  row?.classList.toggle('open', opening);
+  if (opening) {
+    // Wire up Places autocomplete on the location field
+    setTimeout(() => initLocationAutocomplete(`ced-loc-${ci}-${ei}`), 0);
+    // Initialise people state from event's existing attendees (if any)
+    const key = `${ci}-${ei}`;
+    if (!cedPeople[key]) {
+      const ev = groupsState.categories[ci]?.events[ei];
+      cedPeople[key] = ev?.attendees ? [...ev.attendees] : [];
+      renderCedPeople(key);
+    }
+  }
+}
+
+// "Review all" — expands every event row in the category for inline review.
+// Does NOT route events to the Review queue tab (which is reserved for
+// message-source events from Gmail/iMessage/WhatsApp).
+function catReviewAll(ci) {
   const cat = groupsState.categories[ci];
   if (!cat) return;
-  groupsState.categories.splice(ci, 1);
-  renderCategoryGroups();
+  // Make sure the category body is open
+  const body = document.getElementById(`cat-body-${ci}`);
+  if (body && body.style.display === 'none') toggleCat(ci);
+  // Open every event editor that isn't already open
+  cat.events.forEach((ev, ei) => {
+    const editor = document.getElementById(`cat-editor-${ci}-${ei}`);
+    if (editor && editor.style.display === 'none') toggleEventEditor(ci, ei);
+  });
+}
+
+// "Add all" — bulk-approves every remaining draft event in the category.
+async function catAddAll(ci) {
+  const cat = groupsState.categories[ci];
+  if (!cat || !cat.events.length) return;
+  const statusEl  = document.getElementById(`cat-status-${ci}`);
+  const addBtn    = document.getElementById(`cat-add-btn-${ci}`);
+  const disBtn    = document.getElementById(`cat-dis-btn-${ci}`);
+  if (addBtn) addBtn.disabled = true;
+  if (disBtn) disBtn.disabled = true;
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text2)">Adding…</span>';
   try {
-    await fetch('/api/calendars/group-dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }) });
+    const res = await fetch('/api/calendars/group-approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      const msg = `✓ Added ${data.addedCount}${data.failed?.length ? ` · ${data.failed.length} failed` : ''}`;
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">${msg}</span>`;
+      await loadCalendars();
+      groupsState.categories.splice(ci, 1);
+      setTimeout(renderCategoryPage, 900);
+    } else {
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">${data.error || 'Failed'}</span>`;
+      if (addBtn) addBtn.disabled = false;
+      if (disBtn) disBtn.disabled = false;
+    }
+  } catch {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Network error</span>';
+    if (addBtn) addBtn.disabled = false;
+    if (disBtn) disBtn.disabled = false;
+  }
+}
+
+// "Dismiss" at category level — marks every event in the group as dismissed.
+// No confirmation prompt, matching the single-event dismiss behaviour.
+async function catDismiss(ci) {
+  const cat = groupsState.categories[ci];
+  if (!cat) return;
+  const name = cat.name;
+  groupsState.categories.splice(ci, 1);
+  renderCategoryPage();
+  try {
+    await fetch('/api/calendars/group-dismiss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ calendarId: groupsState.calendarId, category: name }),
+    });
   } catch {}
 }
 
-// Event-level Dismiss: removes just one event row from its group; the
-// rest of the group is untouched and can still be bulk-added.
-async function dismissGroupEvent(ci, ei) {
+// "Dismiss" at event level — removes just this one event row; the rest of
+// the category is untouched and can still be bulk-added.
+async function dismissCatEvent(ci, ei) {
   const cat = groupsState.categories[ci];
   if (!cat || !cat.events[ei]) return;
   const ev = cat.events[ei];
   cat.events.splice(ei, 1);
   if (!cat.events.length) {
     groupsState.categories.splice(ci, 1);
-    renderCategoryGroups();
+    renderCategoryPage();
   } else {
-    const list = document.getElementById(`group-event-list-${ci}`);
-    if (list) list.innerHTML = cat.events.map((e, i) => renderGroupEventRow(e, i, ci)).join('');
-    const header = document.querySelector(`#group-body-${ci}`)?.previousElementSibling?.querySelector('.category-item-name');
-    if (header) header.textContent = `${cat.name} (${cat.events.length})`;
+    // Re-render only this category's event list with corrected indices
+    const list = document.getElementById(`cat-event-list-${ci}`);
+    if (list) list.innerHTML = cat.events.map((e, ni) => renderCatEventRow(e, ni, ci)).join('');
+    const nameEl = document.getElementById(`cat-name-${ci}`);
+    if (nameEl) nameEl.textContent = `${cat.name} (${cat.events.length})`;
   }
   try {
-    await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id: ev.id }) });
+    await fetch('/api/events/dismiss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: ev.id }),
+    });
   } catch {}
 }
 
-function toggleGroup(ci) {
-  const body = document.getElementById(`group-body-${ci}`);
-  const chevron = document.getElementById(`chevron-${ci}`);
-  const isOpen = body.style.display !== 'none';
-  body.style.display = isOpen ? 'none' : 'block';
-  chevron.textContent = isOpen ? '▾' : '▴';
+// ── Inline editor: "Add to Calendar" ─────────────────────────────────────
+// Calls /api/events/approve directly on the draft event — the server does
+// not require pending status, so draft events can be approved in one step.
+async function cedApprove(evId, key, ci, ei) {
+  const addBtn  = document.getElementById(`ced-add-${key}`);
+  const statusEl = document.getElementById(`ced-status-${key}`);
+  if (addBtn) addBtn.disabled = true;
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text2)">Adding…</span>';
+
+  const payload = {
+    id: evId,
+    title:    document.getElementById(`ced-title-${key}`)?.value || '',
+    date:     document.getElementById(`ced-date-${key}`)?.value || '',
+    time:     document.getElementById(`ced-time-${key}`)?.value || '',
+    endDate:  document.getElementById(`ced-enddate-${key}`)?.value || '',
+    endTime:  document.getElementById(`ced-endtime-${key}`)?.value || '',
+    location: document.getElementById(`ced-loc-${key}`)?.value || '',
+    attendees: cedPeople[key] || [],
+    shareToBharat: document.getElementById(`ced-bharat-${key}`)?.checked || false,
+  };
+  try {
+    const res = await fetch('/api/events/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">✓ Added</span>';
+      await loadRecentEvents();
+      // Remove this event from state and re-render after a brief success pause
+      setTimeout(() => dismissCatEvent(ci, ei), 1000);
+    } else {
+      const err = await res.json();
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">${err.error || 'Failed'}</span>`;
+      if (addBtn) addBtn.disabled = false;
+    }
+  } catch {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--red)">Network error</span>';
+    if (addBtn) addBtn.disabled = false;
+  }
 }
 
-let groupSearchTimers = {};
-async function searchGroupContacts(ci, q) {
-  clearTimeout(groupSearchTimers[ci]);
-  const drop = document.getElementById(`group-contacts-drop-${ci}`);
-  if (!q || q.length < 2) { drop.style.display = 'none'; return; }
-  groupSearchTimers[ci] = setTimeout(async () => {
+// ── Inline editor: contacts search ───────────────────────────────────────
+async function searchCedContacts(key, q) {
+  clearTimeout(cedSearchTimers[key]);
+  const drop = document.getElementById(`ced-drop-${key}`);
+  if (!q || q.length < 2) { if (drop) drop.style.display = 'none'; return; }
+  cedSearchTimers[key] = setTimeout(async () => {
     try {
       const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
       const contacts = await res.json();
       if (!contacts.length) { drop.style.display = 'none'; return; }
-      drop.innerHTML = contacts.map(c => `<div class="contact-option" onclick="addGroupPerson(${ci}, '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${c.name}</div><div class="contact-email">${c.email}</div></div>`).join('');
+      drop.innerHTML = contacts.map(c =>
+        `<div class="contact-option" onclick="addCedPerson('${key}', '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${escHtml(c.name)}</div><div class="contact-email">${escHtml(c.email)}</div></div>`
+      ).join('');
       drop.style.display = 'block';
-    } catch { drop.style.display = 'none'; }
+    } catch { if (drop) drop.style.display = 'none'; }
   }, 300);
 }
 
-function addGroupPerson(ci, name, email) {
-  if (!groupSelectedPeople[ci]) groupSelectedPeople[ci] = [];
-  if (groupSelectedPeople[ci].find(p => p.email === email)) return;
-  groupSelectedPeople[ci].push({ name, email });
-  renderGroupSelectedPeople(ci);
-  document.getElementById(`group-people-search-${ci}`).value = '';
-  document.getElementById(`group-contacts-drop-${ci}`).style.display = 'none';
+function addCedPerson(key, name, email) {
+  if (!cedPeople[key]) cedPeople[key] = [];
+  if (cedPeople[key].find(p => p.email === email)) return;
+  cedPeople[key].push({ name, email });
+  renderCedPeople(key);
+  const inp = document.getElementById(`ced-people-${key}`);
+  const drop = document.getElementById(`ced-drop-${key}`);
+  if (inp) inp.value = '';
+  if (drop) drop.style.display = 'none';
 }
 
-function removeGroupPerson(ci, email) {
-  groupSelectedPeople[ci] = (groupSelectedPeople[ci] || []).filter(p => p.email !== email);
-  renderGroupSelectedPeople(ci);
+function removeCedPerson(key, email) {
+  cedPeople[key] = (cedPeople[key] || []).filter(p => p.email !== email);
+  renderCedPeople(key);
 }
 
-function renderGroupSelectedPeople(ci) {
-  const container = document.getElementById(`group-selected-people-${ci}`);
-  container.innerHTML = (groupSelectedPeople[ci] || []).map(p => `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removeGroupPerson(${ci}, '${p.email}')">×</button></div>`).join('');
+function renderCedPeople(key) {
+  const el = document.getElementById(`ced-selected-${key}`);
+  if (!el) return;
+  el.innerHTML = (cedPeople[key] || []).map(p =>
+    `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removeCedPerson('${key}', '${p.email}')">×</button></div>`
+  ).join('');
 }
 
-// Persists any people added to this group before the group-level action
-// (add-all or review-individually) runs, so they're attached to every
-// event in the group. Returns true if there was nothing to do or the
-// save succeeded.
-async function commitGroupPeople(ci) {
-  const people = groupSelectedPeople[ci] || [];
-  if (!people.length) return true;
-  try {
-    const res = await fetch('/api/calendars/group-add-people', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ calendarId: groupsState.calendarId, category: groupsState.categories[ci].name, people }) });
-    return res.ok;
-  } catch { return false; }
-}
-
-async function groupApprove(ci) {
-  const cat = groupsState.categories[ci];
-  const status = document.getElementById(`group-status-${ci}`);
-  const body = document.getElementById(`group-body-${ci}`);
-  body.querySelectorAll('button').forEach(b => b.disabled = true);
-  status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Adding...</span>';
-  const peopleOk = await commitGroupPeople(ci);
-  if (!peopleOk) {
-    status.innerHTML = '<span class="error-msg">Failed to add people</span>';
-    body.querySelectorAll('button').forEach(b => b.disabled = false);
-    return;
-  }
-  try {
-    const res = await fetch('/api/calendars/group-approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }) });
-    const data = await res.json();
-    if (res.ok) {
-      status.innerHTML = `<span class="success-msg">✓ Added ${data.addedCount}${data.failed?.length ? ` · ${data.failed.length} failed` : ''}</span>`;
-      await loadCalendars();
-      setTimeout(() => loadCategoryGroups(groupsState.calendarId), 1200);
-    } else {
-      status.innerHTML = `<span class="error-msg">${data.error || 'Failed'}</span>`;
-      body.querySelectorAll('button').forEach(b => b.disabled = false);
-    }
-  } catch {
-    status.innerHTML = '<span class="error-msg">Network error</span>';
-    body.querySelectorAll('button').forEach(b => b.disabled = false);
-  }
-}
-
-async function groupReview(ci) {
-  const cat = groupsState.categories[ci];
-  const status = document.getElementById(`group-status-${ci}`);
-  const body = document.getElementById(`group-body-${ci}`);
-  body.querySelectorAll('button').forEach(b => b.disabled = true);
-  status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Sending to review...</span>';
-  const peopleOk = await commitGroupPeople(ci);
-  if (!peopleOk) {
-    status.innerHTML = '<span class="error-msg">Failed to add people</span>';
-    body.querySelectorAll('button').forEach(b => b.disabled = false);
-    return;
-  }
-  try {
-    const res = await fetch('/api/calendars/group-review', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }) });
-    const data = await res.json();
-    if (res.ok) {
-      status.innerHTML = `<span class="success-msg">✓ ${data.count} sent to review</span>`;
-      await loadPendingEvents();
-      setTimeout(() => loadCategoryGroups(groupsState.calendarId), 1200);
-    } else {
-      status.innerHTML = `<span class="error-msg">${data.error || 'Failed'}</span>`;
-      body.querySelectorAll('button').forEach(b => b.disabled = false);
-    }
-  } catch {
-    status.innerHTML = '<span class="error-msg">Network error</span>';
-    body.querySelectorAll('button').forEach(b => b.disabled = false);
-  }
-}
-
-function showPage(page, btn) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById(`page-${page}`).classList.add('active');
-  if (btn) btn.classList.add('active');
-}
-
-async function logout() { await fetch('/api/auth/logout', {method:'POST'}); user = null; showAuth(); }
+// ── Logout ────────────────────────────────────────────────────────────────
+async function logout() { await fetch('/api/auth/logout', { method: 'POST' }); user = null; showAuth(); }
 </script>
 </body>
-</html> 
+</html>

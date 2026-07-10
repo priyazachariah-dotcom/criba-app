@@ -355,25 +355,29 @@ const CAL_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777',
 let placesReady = false;
 let placesInitQueue = [];
 
-window.onPlacesLoaded = function () {
-  placesReady = true;
-  placesInitQueue.forEach(_initAC);
-  placesInitQueue = [];
-};
-
+// Wire autocomplete onto a single input. Called either immediately (if the
+// Maps API is already loaded) or when the queue drains after load.
 function _initAC(inputId) {
   const input = document.getElementById(inputId);
   if (!input || input._acInit) return;
-  input._acInit = true;
-  const ac = new google.maps.places.Autocomplete(input, {
-    types: ['establishment', 'geocode'],
-    fields: ['formatted_address', 'name'],
-  });
-  ac.addListener('place_changed', () => {
-    const place = ac.getPlace();
-    if (place && (place.formatted_address || place.name))
-      input.value = place.formatted_address || place.name;
-  });
+  try {
+    input._acInit = true;
+    // Do not pass `types` — mixing 'establishment' and 'geocode' in the same
+    // array is invalid and silently kills the widget. Omitting it returns all
+    // place types, which is exactly what a location field needs.
+    const ac = new google.maps.places.Autocomplete(input, {
+      fields: ['formatted_address', 'name'],
+    });
+    ac.addListener('place_changed', () => {
+      const place = ac.getPlace();
+      if (place?.formatted_address || place?.name)
+        input.value = place.formatted_address || place.name;
+    });
+  } catch (e) {
+    // Reset flag so callers can retry on the next open
+    input._acInit = false;
+    console.warn('[Criba] Places init failed for', inputId, e);
+  }
 }
 
 function initLocationAutocomplete(inputId) {
@@ -387,11 +391,33 @@ async function loadPlacesScript() {
     if (!res.ok) return;
     const { placesApiKey } = await res.json();
     if (!placesApiKey) return;
-    const s = document.createElement('script');
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(placesApiKey)}&libraries=places&callback=onPlacesLoaded`;
-    s.async = true; s.defer = true;
-    document.head.appendChild(s);
-  } catch {}
+
+    // Resolve immediately if a previous call already loaded the API.
+    if (window.google?.maps?.places) {
+      placesReady = true;
+      placesInitQueue.forEach(_initAC);
+      placesInitQueue = [];
+      return;
+    }
+
+    // Use a Promise so queue drain is guaranteed to run after the full API
+    // namespace (including google.maps.places) is available.
+    // `loading=async` is required by the new Maps JS API when using callback=.
+    await new Promise((resolve, reject) => {
+      const callbackName = '__cribaMapsReady';
+      window[callbackName] = resolve;
+      const s = document.createElement('script');
+      s.src = `https://maps.googleapis.com/maps/api/js?key=${placesApiKey}&libraries=places&loading=async&callback=${callbackName}`;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+
+    placesReady = true;
+    placesInitQueue.forEach(_initAC);
+    placesInitQueue = [];
+  } catch (e) {
+    console.warn('[Criba] Places script failed to load:', e);
+  }
 }
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -729,6 +755,7 @@ function showCalForm() {
   document.getElementById('cal-name').value = '';
   document.getElementById('cal-url').value = '';
   document.getElementById('cal-submit-btn').textContent = 'Add calendar';
+  document.getElementById('cal-submit-btn').disabled = false;
   document.getElementById('cal-submit-btn').onclick = submitCalendar;
   selectedFile = null;
   document.getElementById('drop-zone-text').textContent = 'Click to upload PDF or drag and drop';

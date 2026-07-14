@@ -222,6 +222,21 @@
   }
   .btn-gcal-dismiss:hover { background: var(--bg); border-color: var(--border); }
 
+  /* ── Review queue collapsed cards ─────────────────────────────────── */
+  .review-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 0.625rem; overflow: hidden; }
+  .review-card-row { display: flex; align-items: center; padding: 0.875rem 1rem; gap: 0.75rem; cursor: pointer; user-select: none; transition: background 0.1s; }
+  .review-card-row:hover { background: var(--bg); }
+  .review-card-row.open { background: #f0f4ff; }
+  .review-card-content { flex: 1; min-width: 0; }
+  .review-card-title { font-size: 0.9rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .review-card-meta { font-size: 0.775rem; color: var(--text2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .review-card-tags { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+  .review-badge-gmail { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e8f0fe; color: #1a73e8; border: 1px solid #c5d8fa; white-space: nowrap; font-weight: 500; }
+  .review-badge { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--border); color: var(--text2); white-space: nowrap; }
+  .review-from { font-size: 0.75rem; color: var(--text2); white-space: nowrap; }
+  .review-chevron { color: var(--text2); font-size: 20px !important; transition: transform 0.18s; }
+  .review-card-editor { border-top: 1px solid var(--border); }
+
   /* ── Settings page ─────────────────────────────────────────────────── */
   .settings-section { margin-bottom: 2rem; }
   .settings-section-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.875rem; }
@@ -305,10 +320,10 @@
     </div>
   </header>
 
-  <!-- Review queue (message-source events) -->
+  <!-- Review queue (Gmail events) -->
   <div class="page active" id="page-review">
     <div class="page-title">Review</div>
-    <div class="page-sub">Events from Gmail, iMessage, and WhatsApp will appear here for approval.</div>
+    <div class="page-sub">Events extracted from Gmail appear here for your approval before reaching Google Calendar.</div>
     <div id="review-list"></div>
   </div>
 
@@ -419,9 +434,12 @@ let groupsState = { calendarId: null, calName: '', categories: [] };
 let cedPeople = {};           // key `${ci}-${ei}` → [{name, email}]
 let cedSearchTimers = {};     // debounce timers for inline editor people-search
 
-// Review queue people state
+// Review queue people state (legacy index-based kept for reference)
 let selectedPeople = {};
 let searchTimers = {};
+// New id-keyed people state for redesigned review cards
+let rvPeople = {};
+let rvSearchTimers = {};
 
 // Family members state
 let familyMembers = [];        // loaded from /api/family on boot
@@ -685,7 +703,10 @@ function showApp() {
 }
 
 async function loadData() {
-  await Promise.all([loadPendingEvents(), loadRecentEvents(), loadCalendars(), loadFamily()]);
+  // Load family members first so the member dropdown is available when the
+  // review queue renders (pending events reference familyMembers array)
+  await loadFamily();
+  await Promise.all([loadPendingEvents(), loadRecentEvents(), loadCalendars()]);
 }
 
 // ── Data fetchers ─────────────────────────────────────────────────────────
@@ -730,59 +751,218 @@ function updateReviewCount(n) {
 function renderReview() {
   const container = document.getElementById('review-list');
   updateReviewCount(pendingEvents.length);
+  rvPeople = {};
   if (!pendingEvents.length) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">✓</div><h3>All caught up</h3><p>Events from Gmail, iMessage, and WhatsApp<br>will appear here for review once those sources are connected.</p></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">✓</div><h3>All caught up</h3><p>Events from Gmail will appear here for review.</p></div>`;
     return;
   }
-  selectedPeople = {};
-  container.innerHTML = pendingEvents.map((ev, i) => {
-    selectedPeople[i] = [];
-    const isBreak = ev.type === 'break';
-    const isTimed = ev.type === 'timed' || ev.type === 'minimum_day';
-    const isRecurring = ev.type === 'recurring';
-    return `
-    <div class="event-card" id="card-${i}">
-      <div class="event-header">
-        <div style="flex:1;margin-right:1rem">
-          <input class="event-title-input" type="text" id="title-${i}" value="${(ev.title||'').replace(/"/g,'&quot;')}" placeholder="Event title" />
-          <div class="event-source">${ev.source || 'Calendar'}</div>
-        </div>
-        <span class="event-tag">${ev.category || 'Event'}</span>
+  container.innerHTML = pendingEvents.map(ev => renderReviewCard(ev)).join('');
+}
+
+function renderReviewCard(ev) {
+  const id = ev.id;
+  const isGmail = ev.source === 'gmail';
+  const dateStr = ev.date ? shortDate(ev.date) : '';
+  const timeStr = (ev.is_all_day || !ev.time) ? 'All day' : formatTime(ev.time);
+  const meta = [dateStr, timeStr, ev.location ? escHtml(ev.location) : ''].filter(Boolean).join(' · ');
+  return `
+  <div class="review-card" id="rcard-${id}">
+    <div class="review-card-row" id="rrow-${id}" onclick="toggleReviewCard('${id}')">
+      <div class="review-card-content">
+        <div class="review-card-title">${escHtml(ev.title)}</div>
+        <div class="review-card-meta">${meta}</div>
       </div>
-      ${isRecurring ? `<div style="background:var(--bg2);border-radius:6px;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.85rem">🔁 Recurring: ${(ev.recurring_note || '').replace(/</g,'&lt;')}</div>` : ''}
-      <div class="event-fields">
-        <div class="event-field">
-          <label>${isBreak ? 'Start date' : 'Date'}</label>
-          <input type="date" id="date-${i}" value="${ev.date || ''}" />
-        </div>
-        ${isBreak ? `<div class="event-field"><label>End date</label><input type="date" id="enddate-${i}" value="${ev.end_date || ''}" /></div>`
-          : `<div class="event-field"><label>${isTimed ? 'Start time' : 'Time'} <span style="font-weight:300">(blank = all-day)</span></label><input type="time" id="time-${i}" value="${ev.time || ''}" /></div>`}
-        ${isTimed ? `<div class="event-field"><label>End time <span style="font-weight:300">(blank = 1hr default)</span></label><input type="time" id="endtime-${i}" value="${ev.end_time || ''}" /></div>` : ''}
-        <div class="event-field full">
-          <label>Location</label>
-          <input type="text" id="loc-${i}" value="${(ev.location||'').replace(/"/g,'&quot;')}" placeholder="Add location" />
-        </div>
+      <div class="review-card-tags">
+        ${isGmail ? `<span class="review-badge-gmail">via Gmail</span>` : `<span class="review-badge">${escHtml(ev.source || 'Event')}</span>`}
+        ${ev.sender_name ? `<span class="review-from">from ${escHtml(ev.sender_name)}</span>` : ''}
+        <span class="material-icons review-chevron" id="rchev-${id}">expand_more</span>
       </div>
-      <div class="add-people-section">
-        <label>Add people</label>
+    </div>
+    <div class="review-card-editor" id="reditor-${id}" style="display:none">
+      ${renderReviewEditor(ev)}
+    </div>
+  </div>`;
+}
+
+function renderReviewEditor(ev) {
+  const id = ev.id;
+  const allDay = ev.is_all_day || !ev.time;
+  const memberSelect = familyMembers.length
+    ? `<div class="gcal-row">
+        <span class="material-icons gcal-icon">group</span>
+        <div class="gcal-fields">
+          <select class="gcal-input" id="rv-member-${id}" style="cursor:pointer;min-width:180px">
+            <option value="">Primary calendar</option>
+            ${familyMembers.map(m => `<option value="${m.id}">${escHtml(m.name)}</option>`).join('')}
+          </select>
+        </div>
+      </div>` : '';
+  return `
+  <div class="gcal-editor">
+    <input class="gcal-title" id="rv-title-${id}" value="${escHtml(ev.title)}" placeholder="Title" />
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">calendar_today</span>
+      <div class="gcal-fields">
+        <input type="date" class="gcal-input gcal-input-date" id="rv-date-${id}" value="${ev.date || ''}" />
+        ${ev.end_date ? `<span class="gcal-sep">→</span><input type="date" class="gcal-input gcal-input-date" id="rv-enddate-${id}" value="${ev.end_date || ''}" />` : ''}
+      </div>
+    </div>
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">schedule</span>
+      <div class="gcal-fields" style="flex-wrap:wrap;gap:0.5rem">
+        <label class="gcal-checkbox-label">
+          <input type="checkbox" id="rv-allday-${id}" ${allDay ? 'checked' : ''} onchange="toggleReviewAllDay('${id}')">
+          All day
+        </label>
+        <span id="rv-time-wrap-${id}" style="${allDay ? 'display:none' : 'display:flex;align-items:center;gap:4px'}">
+          <input type="time" class="gcal-input gcal-input-time" id="rv-time-${id}" value="${ev.time || ''}" />
+          <span class="gcal-sep">–</span>
+          <input type="time" class="gcal-input gcal-input-time" id="rv-endtime-${id}" value="${ev.end_time || ''}" />
+        </span>
+      </div>
+    </div>
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">place</span>
+      <div class="gcal-fields-col" style="flex:1">
+        <input type="text" class="gcal-input gcal-input-wide" id="rv-loc-${id}" value="${escHtml(ev.location || '')}" placeholder="Add location" />
+      </div>
+    </div>
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">person_add</span>
+      <div class="gcal-fields-col" style="flex:1">
         <div class="people-search-wrap">
-          <input type="text" class="people-search-input" id="people-search-${i}" placeholder="Search contacts..." oninput="searchContacts(${i}, this.value)" autocomplete="off" />
-          <div class="contacts-dropdown" id="contacts-drop-${i}" style="display:none"></div>
+          <input type="text" class="people-search-input" id="rv-psearch-${id}" placeholder="Add guests" oninput="searchRvContacts('${id}', this.value)" autocomplete="off" />
+          <div class="contacts-dropdown" id="rv-cdrop-${id}" style="display:none"></div>
         </div>
-        <div class="selected-people" id="selected-people-${i}"></div>
+        <div class="selected-people" id="rv-speople-${id}"></div>
       </div>
-      <div class="bharat-check">
-        <input type="checkbox" id="bharat-${i}">
-        <label for="bharat-${i}">Add to Bharat's calendar too</label>
-      </div>
-      <div class="event-actions">
-        <button class="btn-approve" onclick="approveEvent(${i})">Add to Calendar</button>
-        <button class="btn-dismiss" onclick="dismissEvent(${i})">Dismiss</button>
-        <span id="status-${i}"></span>
-      </div>
-    </div>`;
-  }).join('');
-  setTimeout(() => pendingEvents.forEach((_, i) => initLocationAutocomplete(`loc-${i}`)), 0);
+    </div>
+    ${memberSelect}
+    <div class="gcal-actions">
+      <button class="btn-gcal-add" id="rv-addbtn-${id}" onclick="approveReviewEvent('${id}')">Add to Calendar</button>
+      <button class="btn-gcal-dismiss" onclick="dismissReviewEvent('${id}')">Dismiss</button>
+      <span id="rv-status-${id}"></span>
+    </div>
+  </div>`;
+}
+
+function toggleReviewCard(id) {
+  const editor = document.getElementById(`reditor-${id}`);
+  const row = document.getElementById(`rrow-${id}`);
+  const chevron = document.getElementById(`rchev-${id}`);
+  const isOpen = editor.style.display !== 'none';
+
+  // Close all other open editors first
+  document.querySelectorAll('.review-card-editor').forEach(e => { e.style.display = 'none'; });
+  document.querySelectorAll('.review-card-row').forEach(r => r.classList.remove('open'));
+  document.querySelectorAll('.review-chevron').forEach(c => { c.style.transform = ''; });
+
+  if (!isOpen) {
+    editor.style.display = 'block';
+    row.classList.add('open');
+    chevron.style.transform = 'rotate(180deg)';
+    // Init Places autocomplete on location field
+    initLocationAutocomplete(`rv-loc-${id}`);
+    // Pre-populate attendees from event (e.g. Gmail sender)
+    const ev = pendingEvents.find(e => e.id === id);
+    if (ev?.attendees?.length && !rvPeople[id]) {
+      rvPeople[id] = [...ev.attendees];
+      renderRvPeople(id);
+    }
+  }
+}
+
+function toggleReviewAllDay(id) {
+  const checked = document.getElementById(`rv-allday-${id}`)?.checked;
+  const wrap = document.getElementById(`rv-time-wrap-${id}`);
+  if (wrap) wrap.style.display = checked ? 'none' : 'flex';
+}
+
+// ── Review queue contacts search (id-keyed) ───────────────────────────────
+async function searchRvContacts(id, q) {
+  clearTimeout(rvSearchTimers[id]);
+  const drop = document.getElementById(`rv-cdrop-${id}`);
+  if (!q || q.length < 2) { if (drop) drop.style.display = 'none'; return; }
+  rvSearchTimers[id] = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
+      const contacts = await res.json();
+      if (!contacts.length) { drop.style.display = 'none'; return; }
+      drop.innerHTML = contacts.map(c =>
+        `<div class="contact-option" onclick="addRvPerson('${id}','${c.name.replace(/'/g,"\\'")}','${c.email}')">
+          <div class="contact-name">${escHtml(c.name)}</div>
+          <div class="contact-email">${escHtml(c.email)}</div>
+        </div>`
+      ).join('');
+      drop.style.display = 'block';
+    } catch { if (drop) drop.style.display = 'none'; }
+  }, 300);
+}
+
+function addRvPerson(id, name, email) {
+  if (!rvPeople[id]) rvPeople[id] = [];
+  if (rvPeople[id].find(p => p.email === email)) return;
+  rvPeople[id].push({ name, email });
+  renderRvPeople(id);
+  const inp = document.getElementById(`rv-psearch-${id}`);
+  if (inp) inp.value = '';
+  const drop = document.getElementById(`rv-cdrop-${id}`);
+  if (drop) drop.style.display = 'none';
+}
+
+function removeRvPerson(id, email) {
+  if (rvPeople[id]) rvPeople[id] = rvPeople[id].filter(p => p.email !== email);
+  renderRvPeople(id);
+}
+
+function renderRvPeople(id) {
+  const el = document.getElementById(`rv-speople-${id}`);
+  if (!el) return;
+  el.innerHTML = (rvPeople[id] || []).map(p =>
+    `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removeRvPerson('${id}','${p.email}')">×</button></div>`
+  ).join('');
+}
+
+// ── Review queue event actions ────────────────────────────────────────────
+async function approveReviewEvent(id) {
+  const ev = pendingEvents.find(e => e.id === id);
+  if (!ev) return;
+  const btn = document.getElementById(`rv-addbtn-${id}`);
+  const status = document.getElementById(`rv-status-${id}`);
+  if (btn) { btn.disabled = true; }
+  const allDay = document.getElementById(`rv-allday-${id}`)?.checked;
+  const payload = {
+    id,
+    title: document.getElementById(`rv-title-${id}`)?.value || ev.title,
+    date: document.getElementById(`rv-date-${id}`)?.value || ev.date,
+    endDate: document.getElementById(`rv-enddate-${id}`)?.value || ev.end_date || '',
+    time: allDay ? '' : (document.getElementById(`rv-time-${id}`)?.value || ev.time || ''),
+    endTime: allDay ? '' : (document.getElementById(`rv-endtime-${id}`)?.value || ev.end_time || ''),
+    location: document.getElementById(`rv-loc-${id}`)?.value || ev.location || '',
+    attendees: rvPeople[id] || [],
+    targetMemberId: document.getElementById(`rv-member-${id}`)?.value || '',
+  };
+  try {
+    const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if (res.ok) {
+      if (status) status.innerHTML = '<span class="success-msg">✓ Added</span>';
+      await loadRecentEvents();
+      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
+    } else {
+      const err = await res.json();
+      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+      if (btn) btn.disabled = false;
+    }
+  } catch {
+    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function dismissReviewEvent(id) {
+  try { await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
+  pendingEvents = pendingEvents.filter(e => e.id !== id);
+  renderReview();
 }
 
 // ── My Calendar render ────────────────────────────────────────────────────
@@ -917,54 +1097,6 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.people-search-wrap'))
     document.querySelectorAll('.contacts-dropdown').forEach(d => d.style.display = 'none');
 });
-
-// ── Review queue event actions ────────────────────────────────────────────
-async function approveEvent(i) {
-  const ev = pendingEvents[i];
-  const btn = document.querySelector(`#card-${i} .btn-approve`);
-  const status = document.getElementById(`status-${i}`);
-  btn.disabled = true; btn.textContent = 'Adding...';
-  const payload = {
-    id: ev.id,
-    title: document.getElementById(`title-${i}`)?.value || ev.title,
-    date: document.getElementById(`date-${i}`)?.value || ev.date,
-    time: document.getElementById(`time-${i}`)?.value || '',
-    endDate: document.getElementById(`enddate-${i}`)?.value || '',
-    endTime: document.getElementById(`endtime-${i}`)?.value || '',
-    location: document.getElementById(`loc-${i}`)?.value || '',
-    attendees: selectedPeople[i] || [],
-    shareToBharat: document.getElementById(`bharat-${i}`)?.checked || false,
-  };
-  try {
-    const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    if (res.ok) {
-      status.innerHTML = `<span class="success-msg">✓ Added</span> <button class="btn-undo" onclick="undoEvent(${i}, '${ev.id}')">Undo</button>`;
-      await loadRecentEvents();
-      setTimeout(() => { pendingEvents.splice(i, 1); renderReview(); }, 8000);
-    } else {
-      const err = await res.json();
-      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-      btn.disabled = false; btn.textContent = 'Add to Calendar';
-    }
-  } catch {
-    status.innerHTML = '<span class="error-msg">Network error</span>';
-    btn.disabled = false; btn.textContent = 'Add to Calendar';
-  }
-}
-
-async function undoEvent(i, id) {
-  try {
-    const res = await fetch('/api/events/undo', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id}) });
-    if (res.ok) { await loadPendingEvents(); await loadRecentEvents(); }
-  } catch {}
-}
-
-async function dismissEvent(i) {
-  const ev = pendingEvents[i];
-  try { await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id: ev.id}) }); } catch {}
-  pendingEvents.splice(i, 1);
-  renderReview();
-}
 
 // ── Calendars page ────────────────────────────────────────────────────────
 function renderCalendars() {

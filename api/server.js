@@ -659,7 +659,7 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfBase64 = pdfBuffer.toString('base64');
     const response = await anthropic.messages.create({
-      model: 'claude-opus-4-5',
+      model: 'claude-fable-5',
       max_tokens: 4096,
       messages: [{
         role: 'user',
@@ -942,7 +942,7 @@ function extractEmailBody(payload) {
 async function extractGmailEvents(body, senderName, senderEmail, subject) {
   const content = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, 8000);
   const response = await anthropic.messages.create({
-    model: 'claude-opus-4-5',
+    model: 'claude-fable-5',
     max_tokens: 2048,
     messages: [{
       role: 'user',

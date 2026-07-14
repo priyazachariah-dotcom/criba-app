@@ -242,6 +242,18 @@ app.get('/api/auth/google/callback', async (req, res) => {
     const { data } = await oauth2.userinfo.get();
     const user = { id: randomUUID(), email: data.email, name: data.name, access_token: tokens.access_token, refresh_token: tokens.refresh_token || '' };
     setUserCookie(res, user);
+
+    // Persist refresh token in Redis so the webhook can make Gmail API calls
+    // without the user being logged in. tokens.refresh_token is only returned
+    // on the first consent or when prompt=consent is forced (which we always do).
+    if (tokens.refresh_token) {
+      await redis.set(`refreshToken:${data.email}`, tokens.refresh_token);
+      // Register Gmail push notifications (fire-and-forget — don't block login)
+      registerGmailWatch(data.email, tokens.refresh_token).catch(e =>
+        console.error('Gmail watch registration failed:', e.message)
+      );
+    }
+
     res.redirect('/');
   } catch (err) {
     console.error('OAuth error:', err);
@@ -391,10 +403,16 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const calendar = google.calendar({ version: 'v3', auth });
     if (!date) return res.status(400).json({ error: 'Date is required' });
 
-    // Resolve the target Google Calendar — use the member's dedicated calendar
-    // if the source calendar is assigned to a family member, otherwise 'primary'.
+    // Resolve the target Google Calendar. Priority:
+    // 1. Explicit targetMemberId from UI (e.g. review queue family selector)
+    // 2. Member assignment stored on the source calendar (PDF/iCal flow)
+    // 3. Primary calendar
+    const { targetMemberId } = req.body;
     let targetCalId = 'primary';
-    if (event.calendar_id) {
+    if (targetMemberId) {
+      const member = await getUserFamily(req.user.email).get(targetMemberId);
+      if (member) targetCalId = await ensureMemberCalendar(calendar, member, req.user.email);
+    } else if (event.calendar_id) {
       const cals = getUserCalendars(req.user.email);
       const calSrc = await cals.get(event.calendar_id);
       if (calSrc?.memberId) {
@@ -872,6 +890,363 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
 app.delete('/api/family/:id', requireAuth, async (req, res) => {
   await getUserFamily(req.user.email).delete(req.params.id);
   res.json({ ok: true });
+});
+
+// ── Gmail push notifications ───────────────────────────────────────────────
+
+// Pre-filter keyword sets — only pay Claude if the email looks calendar-relevant.
+const PREFILTER_WORDS = new Set([
+  'monday','tuesday','wednesday','thursday','friday','saturday','sunday',
+  'tomorrow','tonight','next week',
+  'january','february','march','april','may','june','july','august',
+  'september','october','november','december',
+  'meeting','game','practice','rehearsal','appointment','coffee','lunch',
+  'dinner','breakfast','pickup','dropoff','tournament','recital','concert',
+  'performance','schedule','reminder','event','class','session','camp',
+]);
+// Patterns checked separately because they're substrings, not whole words
+const PREFILTER_PATTERNS = ['am','pm',"o'clock"];
+
+function passesPreFilter(text) {
+  const lower = text.toLowerCase();
+  if (PREFILTER_PATTERNS.some(p => lower.includes(p))) return true;
+  const words = lower.split(/\W+/);
+  return words.some(w => PREFILTER_WORDS.has(w));
+}
+
+// Parse "Name <email>" or "email" from a From header
+function parseFrom(fromHeader) {
+  const match = fromHeader.match(/^(.*?)\s*<([^>]+)>$/);
+  if (match) return { senderName: match[1].replace(/^"|"$/g, '').trim(), senderEmail: match[2].trim() };
+  return { senderName: '', senderEmail: fromHeader.trim() };
+}
+
+// Recursively find plain-text body in Gmail message payload
+function extractEmailBody(payload) {
+  if (payload.body?.data) {
+    return Buffer.from(payload.body.data, 'base64url').toString('utf-8');
+  }
+  for (const part of (payload.parts || [])) {
+    if (part.mimeType === 'text/plain' && part.body?.data) {
+      return Buffer.from(part.body.data, 'base64url').toString('utf-8');
+    }
+  }
+  for (const part of (payload.parts || [])) {
+    const text = extractEmailBody(part);
+    if (text) return text;
+  }
+  return '';
+}
+
+// Call Claude to extract calendar events from a single email
+async function extractGmailEvents(body, senderName, senderEmail, subject) {
+  const content = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, 8000);
+  const response = await anthropic.messages.create({
+    model: 'claude-opus-4-5',
+    max_tokens: 2048,
+    messages: [{
+      role: 'user',
+      content: `Extract all calendar-worthy events from this email. For each event return JSON with these fields:
+- title (string)
+- date (YYYY-MM-DD)
+- end_date (YYYY-MM-DD, only for multi-day events, else null)
+- start_time (HH:MM 24hr, null if all-day)
+- end_time (HH:MM 24hr, null if all-day; default 1hr after start if not given)
+- location (string or null)
+- is_all_day (boolean)
+- attendees (array of {name, email} — always include the sender)
+
+Classification rules:
+- A break/vacation → single multi-day event (date=first day, end_date=last day), is_all_day:true
+- A holiday → single all-day event, is_all_day:true
+- A timed event → is_all_day:false, set start_time and end_time (default +1hr)
+- No time mentioned → is_all_day:true
+- Sender is always an attendee: {name:"${senderName}",email:"${senderEmail}"}
+- If no calendar-worthy events exist, return {"events":[]}
+
+Return ONLY valid JSON like: {"events":[{...},{...}]}
+
+Email:
+${content}`
+    }]
+  });
+  const text = response.content[0].text.trim();
+  try {
+    const json = JSON.parse(text.replace(/^```json\s*/,'').replace(/\s*```$/,''));
+    return Array.isArray(json.events) ? json.events : [];
+  } catch {
+    console.error('Gmail extraction: JSON parse failed:', text.slice(0, 200));
+    return [];
+  }
+}
+
+// Check our Redis event store for an event with the same title+date.
+// NOTE: This catches duplicates already managed by Criba. It does NOT check
+// events added to Google Calendar outside of Criba (would need a slow GCal
+// API call per event).
+async function isDuplicateEvent(eventsStore, title, date) {
+  const all = await eventsStore.values();
+  const norm = (s) => (s || '').toLowerCase().trim();
+  return all.some(ev =>
+    norm(ev.title) === norm(title) &&
+    ev.date === date &&
+    ev.status !== 'dismissed'
+  );
+}
+
+// Build an OAuth2 client from a stored refresh token (no session cookie needed)
+function getOAuthClientFromRefreshToken(refreshToken) {
+  const client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+  );
+  client.setCredentials({ refresh_token: refreshToken });
+  return client;
+}
+
+// Register (or renew) a Gmail push-notification watch for one user.
+// Stores the watch state in Redis and adds the email to gmailWatchedUsers set.
+async function registerGmailWatch(email, refreshToken) {
+  const auth = getOAuthClientFromRefreshToken(refreshToken);
+  const gmail = google.gmail({ version: 'v1', auth });
+  const watchRes = await gmail.users.watch({
+    userId: 'me',
+    resource: { topicName: process.env.PUBSUB_TOPIC, labelIds: ['INBOX'] }
+  });
+  const { historyId, expiration } = watchRes.data;
+  await redis.set(`gmailWatch:${email}`, JSON.stringify({ email, historyId, expiration }));
+  await redis.sadd('gmailWatchedUsers', email);
+  console.log(`Gmail watch registered for ${email}, expires ${new Date(parseInt(expiration)).toISOString()}`);
+  return watchRes.data;
+}
+
+// Fetch new messages since the last known historyId and run extraction.
+async function processNewGmailEmails(email, refreshToken, newHistoryId) {
+  const watchDataStr = await redis.get(`gmailWatch:${email}`);
+  if (!watchDataStr) return;
+  const watchData = JSON.parse(watchDataStr);
+  const startHistoryId = watchData.historyId;
+
+  const auth = getOAuthClientFromRefreshToken(refreshToken);
+  const gmail = google.gmail({ version: 'v1', auth });
+
+  // Always advance historyId first so we don't reprocess on retry
+  watchData.historyId = newHistoryId || startHistoryId;
+  await redis.set(`gmailWatch:${email}`, JSON.stringify(watchData));
+
+  let historyData;
+  try {
+    const histRes = await gmail.users.history.list({
+      userId: 'me',
+      startHistoryId,
+      historyTypes: ['messageAdded'],
+      labelId: 'INBOX',
+    });
+    historyData = histRes.data;
+  } catch (err) {
+    console.error(`Gmail history.list error for ${email}:`, err.message);
+    return;
+  }
+
+  const messageIds = new Set();
+  for (const record of (historyData.history || [])) {
+    for (const added of (record.messagesAdded || [])) {
+      messageIds.add(added.message.id);
+    }
+  }
+  if (!messageIds.size) return;
+
+  const eventsStore = getUserEvents(email);
+
+  for (const messageId of messageIds) {
+    // Per-message lock — prevents double-processing if Pub/Sub retries
+    const lockKey = `gmailMsgLock:${email}:${messageId}`;
+    const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
+    if (!locked) continue; // already processed
+
+    try {
+      const msgRes = await gmail.users.messages.get({
+        userId: 'me',
+        id: messageId,
+        format: 'full',
+      });
+      const msg = msgRes.data;
+      const headers = msg.payload.headers || [];
+      const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
+      const from = headers.find(h => h.name.toLowerCase() === 'from')?.value || '';
+      const { senderName, senderEmail } = parseFrom(from);
+      const body = extractEmailBody(msg.payload);
+
+      if (!passesPreFilter(`${subject} ${body}`)) continue;
+
+      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject);
+
+      for (const ev of extracted) {
+        if (!ev.title || !ev.date) continue;
+        if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) continue;
+
+        const evId = randomUUID();
+        await eventsStore.set(evId, {
+          id: evId,
+          title: ev.title,
+          date: ev.date,
+          end_date: ev.end_date || '',
+          time: ev.start_time || '',
+          end_time: ev.end_time || '',
+          location: ev.location || '',
+          is_all_day: !!ev.is_all_day,
+          attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+          source: 'gmail',
+          gmail_message_id: messageId,
+          sender_name: senderName,
+          sender_email: senderEmail,
+          subject,
+          status: 'pending',
+          type: ev.is_all_day ? 'other' : 'timed',
+          created_at: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      console.error(`Gmail processing error for message ${messageId}:`, err.message);
+    }
+  }
+}
+
+// Send a Resend email notification about pending items in the review queue.
+// Silently no-ops if RESEND_API_KEY is not set.
+async function sendNotificationEmail(toEmail, count, titles) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) return;
+  try {
+    await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'Criba <notifications@criba.app>',
+        to: [toEmail],
+        subject: `You have ${count} event${count > 1 ? 's' : ''} waiting in your Criba review queue`,
+        html: `<p>Hi,</p>
+<p>You have <strong>${count} new event${count > 1 ? 's' : ''}</strong> waiting for your review:</p>
+<ul>${titles.slice(0, 10).map(t => `<li>${t}</li>`).join('')}</ul>
+<p><a href="https://criba.app" style="color:#1a73e8">Review at criba.app →</a></p>
+<p style="color:#999;font-size:12px;margin-top:2rem">You're receiving this because you use Criba to review calendar events before they're added to Google Calendar.</p>`,
+      }),
+    });
+  } catch (e) {
+    console.error('Notification email failed:', e.message);
+  }
+}
+
+// POST /api/gmail/watch — call from frontend after login to (re)register watch
+app.post('/api/gmail/watch', requireAuth, async (req, res) => {
+  const refreshToken = await redis.get(`refreshToken:${req.user.email}`);
+  if (!refreshToken) return res.status(400).json({ error: 'No refresh token stored — please sign in again' });
+  try {
+    const data = await registerGmailWatch(req.user.email, refreshToken);
+    res.json({ ok: true, expiration: data.expiration });
+  } catch (err) {
+    console.error('Gmail watch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/gmail/webhook — receives Google Pub/Sub push notifications.
+// Must be public (no requireAuth). Verified via Google-signed JWT in Authorization header.
+app.post('/api/gmail/webhook', async (req, res) => {
+  // Verify the request carries a valid Google-signed Bearer JWT
+  const authHeader = req.headers.authorization || '';
+  if (!authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing auth header' });
+  }
+  const token = authHeader.slice(7);
+  try {
+    const verifier = new google.auth.OAuth2();
+    const ticket = await verifier.verifyIdToken({ idToken: token });
+    const payload = ticket.getPayload();
+    // Gmail push notifications are signed by this Google service account
+    const validEmails = ['gmail-api-push@system.gserviceaccount.com'];
+    if (!validEmails.includes(payload.email) && !payload.email_verified) {
+      return res.status(401).json({ error: 'Invalid token issuer' });
+    }
+  } catch (err) {
+    console.error('Pub/Sub JWT verification failed:', err.message);
+    return res.status(401).json({ error: 'JWT verification failed' });
+  }
+
+  const { message } = req.body || {};
+  if (!message?.data) return res.status(200).json({ ok: true }); // ack empty messages
+
+  let emailAddress, historyId;
+  try {
+    const decoded = JSON.parse(Buffer.from(message.data, 'base64').toString('utf-8'));
+    emailAddress = decoded.emailAddress;
+    historyId = decoded.historyId;
+  } catch {
+    return res.status(200).json({ ok: true }); // ack malformed messages
+  }
+
+  if (!emailAddress) return res.status(200).json({ ok: true });
+
+  const refreshToken = await redis.get(`refreshToken:${emailAddress}`);
+  if (!refreshToken) {
+    console.log(`Gmail webhook: no refresh token for ${emailAddress}`);
+    return res.status(200).json({ ok: true });
+  }
+
+  // Process synchronously before responding — Vercel terminates functions
+  // after the response is sent. 60-second limit is enough for ~6 emails.
+  try {
+    await processNewGmailEmails(emailAddress, refreshToken, historyId);
+  } catch (err) {
+    console.error('Gmail processing error:', err.message);
+  }
+
+  res.status(200).json({ ok: true });
+});
+
+// GET /api/cron/gmail — Vercel cron job (daily at 2am UTC).
+// Renews expiring Gmail watches and sends evening notification emails.
+app.get('/api/cron/gmail', async (req, res) => {
+  // Accept calls from Vercel cron (x-vercel-cron header) or from CRON_SECRET
+  const isVercelCron = req.headers['x-vercel-cron'] === '1';
+  const hasCronSecret = process.env.CRON_SECRET && req.headers['x-cron-secret'] === process.env.CRON_SECRET;
+  if (!isVercelCron && !hasCronSecret) return res.status(401).json({ error: 'Unauthorized' });
+
+  const watchedEmails = await redis.smembers('gmailWatchedUsers');
+  const now = Date.now();
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  let renewedCount = 0;
+  let notifiedCount = 0;
+
+  for (const email of watchedEmails) {
+    try {
+      // Renew watch if expiring within 24 hours
+      const watchDataStr = await redis.get(`gmailWatch:${email}`);
+      if (watchDataStr) {
+        const watchData = JSON.parse(watchDataStr);
+        if (!watchData.expiration || parseInt(watchData.expiration) - now < oneDayMs) {
+          const refreshToken = await redis.get(`refreshToken:${email}`);
+          if (refreshToken) {
+            await registerGmailWatch(email, refreshToken);
+            renewedCount++;
+          }
+        }
+      }
+
+      // Send notification if user has pending Gmail events
+      const eventsStore = getUserEvents(email);
+      const pendingGmail = (await eventsStore.values()).filter(e => e.status === 'pending' && e.source === 'gmail');
+      if (pendingGmail.length > 0) {
+        await sendNotificationEmail(email, pendingGmail.length, pendingGmail.map(e => e.title));
+        notifiedCount++;
+      }
+    } catch (err) {
+      console.error(`Cron error for ${email}:`, err.message);
+    }
+  }
+
+  res.json({ ok: true, watchedUsers: watchedEmails.length, renewedCount, notifiedCount });
 });
 
 // Exposes non-secret client-side configuration. The Places API key is

@@ -64,6 +64,32 @@ function getUserCalendars(email) {
   return new RedisHashMap(`calendars:${email}`);
 }
 
+function getUserFamily(email) {
+  return new RedisHashMap(`family:${email}`);
+}
+
+// Creates a dedicated Google Calendar for a family member on first approval,
+// sets the chosen color, persists the calendarId back to Redis, and returns it.
+// On subsequent calls the stored calendarId is returned immediately.
+async function ensureMemberCalendar(calendarApi, member, email) {
+  if (member.googleCalendarId) return member.googleCalendarId;
+  const cal = await calendarApi.calendars.insert({
+    resource: { summary: member.name, description: `Criba calendar for ${member.name}` }
+  });
+  const gcalId = cal.data.id;
+  try {
+    await calendarApi.calendarList.patch({
+      calendarId: gcalId,
+      resource: { colorId: member.color || '7' }
+    });
+  } catch (e) {
+    console.error('Could not set calendar color:', e.message);
+  }
+  member.googleCalendarId = gcalId;
+  await getUserFamily(email).set(member.id, member);
+  return gcalId;
+}
+
 // Shared event-classification rules used by both the PDF and iCal
 // extraction prompts, so a break/holiday/timed-event/minimum-day/
 // recurring-pattern is turned into the right shape of calendar entry
@@ -364,6 +390,19 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const auth = getOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
     if (!date) return res.status(400).json({ error: 'Date is required' });
+
+    // Resolve the target Google Calendar — use the member's dedicated calendar
+    // if the source calendar is assigned to a family member, otherwise 'primary'.
+    let targetCalId = 'primary';
+    if (event.calendar_id) {
+      const cals = getUserCalendars(req.user.email);
+      const calSrc = await cals.get(event.calendar_id);
+      if (calSrc?.memberId) {
+        const member = await getUserFamily(req.user.email).get(calSrc.memberId);
+        if (member) targetCalId = await ensureMemberCalendar(calendar, member, req.user.email);
+      }
+    }
+
     const finalEndDate = endDate || event.end_date || '';
     const finalEndTime = endTime || event.end_time || '';
     const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime);
@@ -376,12 +415,13 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
       ? `Added via Criba — recurring: ${event.recurring_note}`
       : 'Added via Criba';
     const calEvent = await calendar.events.insert({
-      calendarId: 'primary',
+      calendarId: targetCalId,
       sendUpdates: 'all',
       resource: { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description }
     });
     event.status = 'approved';
     event.calEventId = calEvent.data.id;
+    event.gcalId = targetCalId;
     event.approved_at = new Date().toISOString();
     event.title = title || event.title;
     event.date = date;
@@ -405,7 +445,7 @@ app.post('/api/events/undo', requireAuth, async (req, res) => {
   try {
     const auth = getOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    await calendar.events.delete({ calendarId: 'primary', eventId: event.calEventId });
+    await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
     event.status = 'pending';
     event.calEventId = null;
     event.approved_at = null;
@@ -430,7 +470,7 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime);
     const eventAttendees = (attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
     await calendar.events.patch({
-      calendarId: 'primary',
+      calendarId: event.gcalId || 'primary',
       eventId: event.calEventId,
       sendUpdates: 'all',
       resource: { summary: title, location: location || '', start, end, attendees: eventAttendees }
@@ -529,7 +569,7 @@ Return ONLY valid JSON, no markdown, in this shape: {"results":[{"index":0,"type
 }
 
 app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
-  const { name, url } = req.body;
+  const { name, url, memberId } = req.body;
   if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
   try {
     const icalEvents = await ical.async.fromURL(url);
@@ -576,7 +616,7 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
 
     const calId = randomUUID();
     const cals = getUserCalendars(req.user.email);
-    await cals.set(calId, { id: calId, name, source: 'ical', url, event_count: 0, created_at: new Date().toISOString() });
+    await cals.set(calId, { id: calId, name, source: 'ical', url, memberId: memberId || null, event_count: 0, created_at: new Date().toISOString() });
 
     const events = getUserEvents(req.user.email);
     const eventPairs = finalEvents.map(ev => {
@@ -593,7 +633,7 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
 });
 
 app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req, res) => {
-  const { name } = req.body;
+  const { name, memberId } = req.body;
   if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
   if (!name) return res.status(400).json({ error: 'Calendar name is required' });
   const pdfPath = req.file.path;
@@ -623,7 +663,7 @@ Return JSON: ${EVENT_JSON_SCHEMA}. Group by category from the document. Return O
     const calId = randomUUID();
     const totalEvents = parsed.categories.reduce((sum, c) => sum + (c.events?.length || 0), 0);
     const cals = getUserCalendars(req.user.email);
-    await cals.set(calId, { id: calId, name, source: 'pdf', url: req.file.originalname || 'upload.pdf', event_count: 0, created_at: new Date().toISOString() });
+    await cals.set(calId, { id: calId, name, source: 'pdf', url: req.file.originalname || 'upload.pdf', memberId: memberId || null, event_count: 0, created_at: new Date().toISOString() });
     const events = getUserEvents(req.user.email);
     const eventPairs = [];
     for (const cat of parsed.categories) {
@@ -710,6 +750,16 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
 
   const auth = getOAuthClient(req.user);
   const calendar = google.calendar({ version: 'v3', auth });
+
+  // Resolve target Google Calendar once for the whole group
+  const cals = getUserCalendars(req.user.email);
+  let targetCalId = 'primary';
+  const calSrc = await cals.get(calendarId);
+  if (calSrc?.memberId) {
+    const member = await getUserFamily(req.user.email).get(calSrc.memberId);
+    if (member) targetCalId = await ensureMemberCalendar(calendar, member, req.user.email);
+  }
+
   let addedCount = 0;
   const failed = [];
   const updates = [];
@@ -722,12 +772,13 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
         ? `Added via Criba — recurring: ${ev.recurring_note}`
         : 'Added via Criba';
       const calEvent = await calendar.events.insert({
-        calendarId: 'primary',
+        calendarId: targetCalId,
         sendUpdates: 'all',
         resource: { summary: ev.title, location: ev.location || '', start, end, attendees: eventAttendees, description }
       });
       ev.status = 'approved';
       ev.calEventId = calEvent.data.id;
+      ev.gcalId = targetCalId;
       ev.approved_at = new Date().toISOString();
       updates.push([id, ev]);
       addedCount++;
@@ -738,7 +789,6 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   }
   await events.setMany(updates);
   if (addedCount > 0) {
-    const cals = getUserCalendars(req.user.email);
     const cal = await cals.get(calendarId);
     if (cal) { cal.event_count = (cal.event_count || 0) + addedCount; await cals.set(calendarId, cal); }
   }
@@ -790,6 +840,38 @@ app.post('/api/calendars/group-dismiss', requireAuth, async (req, res) => {
   }
   await events.setMany(updates);
   res.json({ ok: true, count });
+});
+
+// ── Family member management ───────────────────────────────────────────────
+// Each user maintains a list of family members (e.g. Aarav, Arin). Each member
+// gets a dedicated, color-coded Google Calendar so events are visually separated.
+
+app.get('/api/family', requireAuth, async (req, res) => {
+  res.json(await getUserFamily(req.user.email).values());
+});
+
+app.post('/api/family', requireAuth, async (req, res) => {
+  const { name, color } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
+  const id = randomUUID();
+  const member = { id, name: name.trim(), color: color || '7', googleCalendarId: null };
+  await getUserFamily(req.user.email).set(id, member);
+  res.json(member);
+});
+
+app.patch('/api/family/:id', requireAuth, async (req, res) => {
+  const fam = getUserFamily(req.user.email);
+  const member = await fam.get(req.params.id);
+  if (!member) return res.status(404).json({ error: 'Not found' });
+  if (req.body.name) member.name = req.body.name.trim();
+  if (req.body.color) member.color = req.body.color;
+  await fam.set(req.params.id, member);
+  res.json(member);
+});
+
+app.delete('/api/family/:id', requireAuth, async (req, res) => {
+  await getUserFamily(req.user.email).delete(req.params.id);
+  res.json({ ok: true });
 });
 
 // Exposes non-secret client-side configuration. The Places API key is

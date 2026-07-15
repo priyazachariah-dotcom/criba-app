@@ -918,9 +918,9 @@ async function runBackfill(days, dryRun = false) {
       const totalEst = data.totalEstTokens ? `~${data.totalEstTokens.toLocaleString()} est. tokens` : '';
       result.innerHTML = `
         <div class="dry-run-summary">
-          <span>Scanned <strong>${data.scanned}</strong> emails</span>
+          <span>Found <strong>${data.totalFound}</strong> in Gmail · scanned <strong>${data.scanned}</strong></span>
           <span><strong>${data.wouldExtract}</strong> would go to AI</span>
-          <span>Skipped: ${data.skippedLock} locked · ${data.skippedCategory} noise · ${data.skippedPreFilter} no keyword · ${data.skippedDedup} dedup</span>
+          <span>Skipped: ${data.skippedLock} already&nbsp;processed · ${data.skippedCategory} noise · ${data.skippedPreFilter} no&nbsp;keyword · ${data.skippedDedup} dedup</span>
           ${totalEst ? `<span>${totalEst}</span>` : ''}
         </div>
         <div class="dry-run-table-wrap">

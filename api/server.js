@@ -1644,12 +1644,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const gmail = google.gmail({ version: 'v1', auth });
   const eventsStore = getUserEvents(email);
 
-  // Exclude noise categories at query level so we never even fetch their metadata
+  // Exclude noise categories at query level so we never even fetch their metadata.
+  // Gmail's after: operator requires YYYY/MM/DD — Unix timestamps are silently ignored,
+  // which would cause the query to return only 1 or 0 results.
   const afterDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-  const afterUnix = Math.floor(afterDate.getTime() / 1000);
-  const q = `in:inbox after:${afterUnix} -category:promotions -category:social -category:updates -category:forums`;
+  const afterYMD = `${afterDate.getUTCFullYear()}/${String(afterDate.getUTCMonth() + 1).padStart(2, '0')}/${String(afterDate.getUTCDate()).padStart(2, '0')}`;
+  const q = `in:inbox after:${afterYMD} -category:promotions -category:social -category:updates -category:forums`;
 
-  console.log(`[backfill] START email=${email} days=${days} maxExtract=${MAX_EXTRACT} query="${q}"`);
+  console.log(`[backfill] START email=${email} days=${days} after=${afterYMD} maxExtract=${MAX_EXTRACT} query="${q}"`);
 
   // Collect message IDs from list (cheap — no body)
   let allMessageIds = [];

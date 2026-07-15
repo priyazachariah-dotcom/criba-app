@@ -982,17 +982,42 @@ app.delete('/api/family/:id', requireAuth, async (req, res) => {
 // ── Gmail push notifications ───────────────────────────────────────────────
 
 // Pre-filter keyword sets — only pay Claude if the email looks calendar-relevant.
+// Words are matched as whole tokens (split on \W+); patterns are substring matches.
+// The PRD extraction spec includes financial reminders and deadlines as first-class
+// calendar events — the word lists below must cover their vocabulary.
 const PREFILTER_WORDS = new Set([
+  // ── Days / relative time ──────────────────────────────────────────────────
   'monday','tuesday','wednesday','thursday','friday','saturday','sunday',
-  'tomorrow','tonight','next week',
+  'tomorrow','tonight','today','weekend',
+  'next week','this week',
+
+  // ── Months ────────────────────────────────────────────────────────────────
   'january','february','march','april','may','june','july','august',
   'september','october','november','december',
+
+  // ── Events / activities ───────────────────────────────────────────────────
   'meeting','game','practice','rehearsal','appointment','coffee','lunch',
   'dinner','breakfast','pickup','dropoff','tournament','recital','concert',
-  'performance','schedule','reminder','event','class','session','camp',
+  'performance','schedule','event','class','session','camp','tryout',
+  'orientation','graduation','ceremony','celebration','party','fundraiser',
+  'registration','signup','sign-up','open house','info night','information night',
+
+  // ── Deadlines / action items ──────────────────────────────────────────────
+  'reminder','deadline','due','overdue','return','submit','submission',
+  'assignment','homework','permission','slip','form','rsvp','register',
+  'sign up','sign-up','enroll','enrollment','apply','application',
+  'last day','final day','cutoff','cut-off','by friday','by monday',
+
+  // ── Financial reminders ───────────────────────────────────────────────────
+  'invoice','payment','balance','statement','charge','charged','auto-charge',
+  'autopay','auto-pay','bill','billing','tuition','fee','fees','deposit',
+  'due date','past due','overdue','refund','receipt','transaction',
 ]);
-// Patterns checked separately because they're substrings, not whole words
-const PREFILTER_PATTERNS = ['am','pm',"o'clock"];
+
+// Patterns checked as substrings (not word-boundary matched).
+// '$' catches dollar amounts in financial emails.
+// 'am'/'pm' catch time references.
+const PREFILTER_PATTERNS = ['am', 'pm', "o'clock", '$'];
 
 function passesPreFilter(text) {
   const lower = text.toLowerCase();

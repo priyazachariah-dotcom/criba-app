@@ -1026,22 +1026,27 @@ function passesPreFilter(text) {
   return words.some(w => PREFILTER_WORDS.has(w));
 }
 
-// Wrapper used inside processNewGmailEmails — logs the pre-filter decision.
-function checkPreFilter(text, subject, messageId, email) {
+// Returns the full pre-filter diagnosis — which keyword matched (or why it failed).
+// Used by checkPreFilter (for logging) and by the backfill dry-run (for reporting).
+function diagnosePreFilter(text) {
   const lower = text.toLowerCase();
   const matchedPattern = PREFILTER_PATTERNS.find(p => lower.includes(p));
-  if (matchedPattern) {
-    console.log(`[prefilter] PASS msg=${messageId} user=${email} subject="${subject}" matched pattern "${matchedPattern}"`);
-    return true;
-  }
+  if (matchedPattern) return { pass: true, matchType: 'pattern', matchValue: matchedPattern };
   const words = lower.split(/\W+/);
   const matchedWord = words.find(w => PREFILTER_WORDS.has(w));
-  if (matchedWord) {
-    console.log(`[prefilter] PASS msg=${messageId} user=${email} subject="${subject}" matched word "${matchedWord}"`);
-    return true;
+  if (matchedWord) return { pass: true, matchType: 'word', matchValue: matchedWord };
+  return { pass: false, matchType: null, matchValue: null };
+}
+
+// Wrapper used inside processNewGmailEmails — logs the pre-filter decision.
+function checkPreFilter(text, subject, messageId, email) {
+  const d = diagnosePreFilter(text);
+  if (d.pass) {
+    console.log(`[prefilter] PASS msg=${messageId} user=${email} subject="${subject}" matched ${d.matchType} "${d.matchValue}"`);
+  } else {
+    console.log(`[prefilter] SKIP msg=${messageId} user=${email} subject="${subject}" — no calendar keywords found`);
   }
-  console.log(`[prefilter] SKIP msg=${messageId} user=${email} subject="${subject}" — no calendar keywords found`);
-  return false;
+  return d.pass;
 }
 
 // Parse "Name <email>" or "email" from a From header
@@ -1603,17 +1608,34 @@ app.get('/api/config', (req, res) => {
 // Excluded at query level for backfill and by label check in the live webhook.
 const GMAIL_NOISE_LABELS = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS']);
 
+// Approximate token cost of FULL_EXTRACTION_PROMPT alone (chars / 4).
+// Used by dry-run to estimate how many input tokens a real extraction would spend.
+const PROMPT_TOKENS_ESTIMATE = Math.ceil(FULL_EXTRACTION_PROMPT.length / 4);
+// Claude's typical input token cost per inline/attached image (varies by resolution;
+// 1600 is a conservative mid-range estimate for a typical email flyer or screenshot).
+const IMAGE_TOKENS_ESTIMATE = 1600;
+
 // POST /api/gmail/backfill — scan recent Gmail inbox for calendar events.
 // Default window: 2 days (48h). Max Claude extractions per run: 10.
 // Uses two-stage fetch: metadata only first, full body only if subject passes pre-filter.
 // Safe to call multiple times — fingerprint + per-message lock prevent re-extraction.
+//
+// Dry-run mode (?dryRun=true or body.dryRun=true):
+//   Runs the full pipeline — metadata fetch, category exclusion, pre-filter, dedup check,
+//   image detection — but stops before every Claude API call.
+//   Returns a per-message verdict table: what passed, what was filtered and why,
+//   which keyword matched, how many images were found, and estimated token cost.
+//   Does NOT write the per-message lock or fingerprint, so real scans can still run afterward.
 app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const email = req.user.email;
   // Default 2 days for quick first-run; caller can request up to 30 for deeper scan
   const days = Math.min(parseInt(req.body?.days || '2'), 30);
+  // Dry-run: full filtering pipeline, no Claude calls, no Redis writes
+  const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
   // Cap Claude calls per run so we always finish within the 60s Vercel limit.
   // Each Claude call takes ~3-5s; 10 calls = ~30-50s, leaving headroom.
-  const MAX_EXTRACT = 10;
+  // Dry-run has no cap — it scans all messages (no Claude calls to time-budget).
+  const MAX_EXTRACT = dryRun ? Infinity : 10;
 
   const refreshToken = await redis.get(`refreshToken:${email}`);
   if (!refreshToken) return res.status(400).json({ error: 'No refresh token — please sign out and sign back in' });
@@ -1658,21 +1680,34 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   let eventsExtracted = 0;
   let eventsStored = 0;
   let truncated = false;
+  // Dry-run: collect per-message diagnostic rows instead of calling Claude
+  const dryRunMessages = [];
 
   for (const messageId of allMessageIds) {
     // Stop calling Claude if we've hit the per-run cap — still finish the loop
     // for accounting, but don't fetch full bodies we can't process this run.
-    if (claudeCalls >= MAX_EXTRACT) {
+    if (!dryRun && claudeCalls >= MAX_EXTRACT) {
       truncated = true;
       break; // remaining messages will be re-eligible on the next backfill run
     }
 
     scanned++;
 
-    // Per-message lock — skip if already processed by live webhook or a prior backfill
+    // Per-message lock
+    // Dry-run: read-only check (exists) so we don't consume the lock
+    // Live:    SET NX to claim the message for this run
     const lockKey = `gmailMsgLock:${email}:${messageId}`;
-    const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
-    if (!locked) { skippedLock++; continue; }
+    if (dryRun) {
+      const lockExists = await redis.exists(lockKey);
+      if (lockExists) {
+        skippedLock++;
+        dryRunMessages.push({ messageId, verdict: 'SKIP', reason: 'already-locked' });
+        continue;
+      }
+    } else {
+      const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
+      if (!locked) { skippedLock++; continue; }
+    }
 
     try {
       // Stage 1: metadata-only fetch (headers only — much cheaper than format:full)
@@ -1686,7 +1721,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const labelIds = meta.labelIds || [];
       if (labelIds.some(l => GMAIL_NOISE_LABELS.has(l))) {
         skippedCategory++;
-        await redis.del(lockKey); // let the live webhook handle if it somehow gets it
+        const noiseLabel = labelIds.find(l => GMAIL_NOISE_LABELS.has(l));
+        if (dryRun) {
+          dryRunMessages.push({ messageId, verdict: 'SKIP', reason: 'noise-category', detail: noiseLabel });
+        } else {
+          await redis.del(lockKey);
+        }
         continue;
       }
 
@@ -1696,7 +1736,8 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const dateSent = metaHeaders.find(h => h.name.toLowerCase() === 'date')?.value || '';
       const sizeEstimate = meta.sizeEstimate || 0;
 
-      const subjectPassesFilter = checkPreFilter(subject, subject, messageId, email);
+      const subjectDiag = diagnosePreFilter(subject);
+      const subjectPassesFilter = subjectDiag.pass;
       // Route to Stage 2 if: subject matches keywords, OR email is large enough to
       // plausibly contain image attachments (>30 KB threshold). Small emails with no
       // subject keywords are text-only and safe to skip.
@@ -1704,7 +1745,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const mightHaveImages = sizeEstimate >= LARGE_EMAIL_BYTES;
       if (!subjectPassesFilter && !mightHaveImages) {
         skippedPreFilter++;
-        await redis.del(lockKey); // release — webhook will handle live arrivals
+        if (dryRun) {
+          dryRunMessages.push({
+            messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'prefilter-subject',
+            prefilterMatch: null,
+          });
+        } else {
+          await redis.del(lockKey);
+        }
         continue;
       }
       if (!subjectPassesFilter && mightHaveImages) {
@@ -1719,7 +1767,11 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const alreadyProcessed = await redis.exists(fpKey);
       if (alreadyProcessed) {
         skippedDedup++;
-        await redis.del(lockKey);
+        if (dryRun) {
+          dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'already-processed-fingerprint' });
+        } else {
+          await redis.del(lockKey);
+        }
         continue;
       }
 
@@ -1732,13 +1784,44 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
 
       // Full pre-filter on subject+body; image-heavy emails bypass it
-      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email) && !isImageHeavy) {
+      const fullDiag = diagnosePreFilter(`${subject} ${body}`);
+      if (!fullDiag.pass && !isImageHeavy) {
         skippedPreFilter++;
-        await redis.del(lockKey);
+        if (dryRun) {
+          dryRunMessages.push({
+            messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'prefilter-body',
+            prefilterMatch: null, imageCount: imageParts.length,
+          });
+        } else {
+          await redis.del(lockKey);
+        }
         continue;
       }
-      if (isImageHeavy && !checkPreFilter(`${subject} ${body}`, subject, messageId, email)) {
+      if (isImageHeavy && !fullDiag.pass) {
         console.log(`[backfill] IMAGE-HEAVY BYPASS msg=${messageId} — ${imageParts.length} image(s), bodyLen=${body.length}`);
+      }
+
+      // Estimate token cost for this message
+      const textTokens = PROMPT_TOKENS_ESTIMATE + Math.ceil((subject.length + body.length) / 4);
+      const imageTokens = imageParts.length * IMAGE_TOKENS_ESTIMATE;
+      const estTokens = textTokens + imageTokens;
+
+      // --- DRY-RUN BRANCH: record diagnosis and stop here (no Claude, no Redis writes) ---
+      if (dryRun) {
+        dryRunMessages.push({
+          messageId,
+          subject,
+          sizeEstimate,
+          verdict: 'WOULD_SEND',
+          reason: isImageHeavy && !fullDiag.pass ? 'image-heavy-bypass' : 'prefilter-pass',
+          prefilterMatch: fullDiag.pass
+            ? { type: fullDiag.matchType, value: fullDiag.matchValue }
+            : (subjectDiag.pass ? { type: subjectDiag.matchType, value: subjectDiag.matchValue } : null),
+          imageCount: imageParts.length,
+          bodyLength: body.length,
+          estTokens,
+        });
+        continue;
       }
 
       // Mark fingerprint before Claude call to prevent concurrent race
@@ -1791,8 +1874,20 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       }
     } catch (err) {
       console.error(`[backfill] ERROR messageId=${messageId}:`, err.message);
-      await redis.del(lockKey); // release so next run can retry
+      if (!dryRun) await redis.del(lockKey); // release so next run can retry
     }
+  }
+
+  if (dryRun) {
+    const wouldSend = dryRunMessages.filter(m => m.verdict === 'WOULD_SEND').length;
+    const totalEstTokens = dryRunMessages.filter(m => m.verdict === 'WOULD_SEND').reduce((s, m) => s + (m.estTokens || 0), 0);
+    console.log(`[backfill] DRY-RUN DONE email=${email} scanned=${scanned} wouldSend=${wouldSend} skippedLock=${skippedLock} skippedCategory=${skippedCategory} skippedPreFilter=${skippedPreFilter} skippedDedup=${skippedDedup}`);
+    return res.json({
+      dryRun: true, days, totalFound: allMessageIds.length, scanned,
+      wouldExtract: wouldSend, skippedLock, skippedCategory, skippedPreFilter, skippedDedup,
+      totalEstTokens,
+      messages: dryRunMessages,
+    });
   }
 
   console.log(`[backfill] DONE email=${email} scanned=${scanned} skippedLock=${skippedLock} skippedCategory=${skippedCategory} skippedPreFilter=${skippedPreFilter} skippedDedup=${skippedDedup} claudeCalls=${claudeCalls} eventsExtracted=${eventsExtracted} eventsStored=${eventsStored} truncated=${truncated}`);

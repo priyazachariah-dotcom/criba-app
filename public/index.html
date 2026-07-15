@@ -49,6 +49,12 @@
   .empty-icon { font-size: 2.5rem; margin-bottom: 1rem; opacity: 0.4; }
   .empty-state h3 { font-size: 1.1rem; font-weight: 500; color: var(--text); margin-bottom: 0.5rem; }
   .empty-state p { font-size: 0.875rem; line-height: 1.6; }
+  .backfill-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: white; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 1rem; }
+  .backfill-bar .material-icons { color: var(--gcal-icon); font-size: 18px !important; }
+  .backfill-bar-text { flex: 1; font-size: 0.85rem; color: var(--text2); }
+  .btn-backfill { padding: 0.4rem 0.9rem; background: var(--accent); color: white; border: none; border-radius: 7px; font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity 0.15s; }
+  .btn-backfill:disabled { opacity: 0.5; cursor: default; }
+  #backfill-result { font-size: 0.8rem; color: var(--text2); margin-top: 0.5rem; text-align: center; }
 
   /* ── Review queue (Gmail / iMessage / WhatsApp — future stages) ───── */
   .event-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
@@ -810,15 +816,52 @@ function updateReviewCount(n) {
 // ── Review queue render ───────────────────────────────────────────────────
 // The Review queue is reserved for Gmail, iMessage, and WhatsApp events
 // (Stages 2–4). Calendar/iCal events do not route through here.
+const BACKFILL_BAR_HTML = `
+<div class="backfill-bar">
+  <span class="material-icons">inbox</span>
+  <span class="backfill-bar-text">Scan the last 7 days of Gmail for calendar events</span>
+  <button class="btn-backfill" id="backfill-btn" onclick="runBackfill()">Scan recent emails</button>
+</div>
+<div id="backfill-result"></div>`;
+
 function renderReview() {
   const container = document.getElementById('review-list');
   updateReviewCount(pendingEvents.length);
   rvPeople = {};
   if (!pendingEvents.length) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">✓</div><h3>All caught up</h3><p>Events from Gmail will appear here for review.</p></div>`;
+    container.innerHTML = BACKFILL_BAR_HTML + `<div class="empty-state"><div class="empty-icon">✓</div><h3>All caught up</h3><p>Events from Gmail will appear here for review.</p></div>`;
     return;
   }
-  container.innerHTML = pendingEvents.map(ev => renderReviewCard(ev)).join('');
+  container.innerHTML = BACKFILL_BAR_HTML + pendingEvents.map(ev => renderReviewCard(ev)).join('');
+}
+
+async function runBackfill() {
+  const btn = document.getElementById('backfill-btn');
+  const result = document.getElementById('backfill-result');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  if (result) result.textContent = '';
+  try {
+    const res = await fetch('/api/gmail/backfill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    const data = await res.json();
+    if (res.ok) {
+      const msg = `Scanned ${data.scanned} emails · ${data.passedPreFilter} matched · ${data.eventsStored} new event${data.eventsStored !== 1 ? 's' : ''} added`;
+      if (result) result.textContent = msg;
+      btn.textContent = '✓ Done';
+      if (data.eventsStored > 0) {
+        await loadPendingEvents(); // refresh the review queue
+      }
+    } else {
+      if (result) result.textContent = data.error || 'Scan failed';
+      btn.textContent = 'Scan recent emails';
+      btn.disabled = false;
+    }
+  } catch {
+    if (result) result.textContent = 'Network error — try again';
+    btn.textContent = 'Scan recent emails';
+    btn.disabled = false;
+  }
 }
 
 function renderReviewCard(ev) {

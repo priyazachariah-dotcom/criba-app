@@ -1490,6 +1490,133 @@ app.get('/api/config', (req, res) => {
   res.json({ placesApiKey: process.env.GOOGLE_PLACES_API_KEY || '' });
 });
 
+// POST /api/gmail/backfill — scan the last 7 days of Gmail and extract events.
+// Uses the same pre-filter, Claude extraction, fingerprint dedup, and conflict
+// detection as the live webhook path. Safe to run multiple times.
+app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const days = Math.min(parseInt(req.body?.days || '7'), 30); // cap at 30 days
+
+  const refreshToken = await redis.get(`refreshToken:${email}`);
+  if (!refreshToken) return res.status(400).json({ error: 'No refresh token — please sign out and sign back in' });
+
+  const auth = getOAuthClientFromRefreshToken(refreshToken);
+  const gmail = google.gmail({ version: 'v1', auth });
+  const eventsStore = getUserEvents(email);
+
+  // Gmail query: inbox only, date window
+  const afterDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const afterUnix = Math.floor(afterDate.getTime() / 1000);
+  const q = `in:inbox after:${afterUnix}`;
+
+  console.log(`[backfill] START email=${email} days=${days} query="${q}"`);
+
+  let allMessageIds = [];
+  let pageToken;
+  do {
+    const listRes = await gmail.users.messages.list({
+      userId: 'me',
+      q,
+      maxResults: 100,
+      ...(pageToken ? { pageToken } : {}),
+    });
+    const msgs = listRes.data.messages || [];
+    allMessageIds.push(...msgs.map(m => m.id));
+    pageToken = listRes.data.nextPageToken;
+  } while (pageToken && allMessageIds.length < 500); // safety cap
+
+  console.log(`[backfill] email=${email} found ${allMessageIds.length} messages to scan`);
+
+  let scanned = 0;
+  let passedPreFilter = 0;
+  let skippedDedup = 0;
+  let eventsExtracted = 0;
+  let eventsStored = 0;
+
+  for (const messageId of allMessageIds) {
+    scanned++;
+    // Per-message lock — skip if already processed by webhook
+    const lockKey = `gmailMsgLock:${email}:${messageId}`;
+    const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
+    if (!locked) {
+      skippedDedup++;
+      continue;
+    }
+
+    try {
+      const msgRes = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
+      const msg = msgRes.data;
+      const headers = msg.payload.headers || [];
+      const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
+      const from = headers.find(h => h.name.toLowerCase() === 'from')?.value || '';
+      const dateSent = headers.find(h => h.name.toLowerCase() === 'date')?.value || '';
+      const { senderName, senderEmail } = parseFrom(from);
+      const body = extractEmailBody(msg.payload);
+
+      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email)) continue;
+      passedPreFilter++;
+
+      // Cross-user fingerprint dedup
+      const fpRaw = `${senderEmail.toLowerCase()}:${subject.trim()}:${dateSent.trim()}`;
+      const fingerprint = crypto.createHash('sha256').update(fpRaw).digest('hex');
+      const fpKey = `processedEmail:${fingerprint}`;
+      const alreadyProcessed = await redis.exists(fpKey);
+      if (alreadyProcessed) {
+        skippedDedup++;
+        await redis.del(lockKey); // release lock — was set by another user's webhook, not this message's own lock
+        continue;
+      }
+      await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
+
+      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject);
+      eventsExtracted += extracted.length;
+
+      for (const ev of extracted) {
+        if (!ev.title || !ev.date) continue;
+        if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) continue;
+
+        const startTime = ev.start_time || '';
+        const endTime = ev.end_time || '';
+        const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
+        const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
+
+        const evId = randomUUID();
+        await eventsStore.set(evId, {
+          id: evId,
+          title: ev.title,
+          date: ev.date,
+          end_date: ev.end_date || '',
+          time: startTime,
+          end_time: endTime,
+          location: ev.location || '',
+          is_all_day: !!ev.is_all_day,
+          attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+          notes: combinedNotes,
+          conflict_note: conflictNote || null,
+          source_type: ev.source_type || null,
+          recurrence_rule: ev.recurrence || null,
+          source: 'gmail',
+          gmail_message_id: messageId,
+          sender_name: senderName,
+          sender_email: senderEmail,
+          subject,
+          status: 'pending',
+          type: ev.is_all_day ? 'other' : 'timed',
+          created_at: new Date().toISOString(),
+        });
+        eventsStored++;
+      }
+    } catch (err) {
+      console.error(`[backfill] ERROR messageId=${messageId}:`, err.message);
+      // Release the lock on error so a future backfill can retry
+      await redis.del(lockKey);
+    }
+  }
+
+  console.log(`[backfill] DONE email=${email} scanned=${scanned} passedPreFilter=${passedPreFilter} skippedDedup=${skippedDedup} eventsExtracted=${eventsExtracted} eventsStored=${eventsStored}`);
+  res.json({ ok: true, scanned, passedPreFilter, skippedDedup, eventsExtracted, eventsStored, days });
+});
+
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../public', 'index.html'));
 });

@@ -233,6 +233,9 @@
   .review-card-tags { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
   .review-badge-gmail { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e8f0fe; color: #1a73e8; border: 1px solid #c5d8fa; white-space: nowrap; font-weight: 500; }
   .review-badge { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--border); color: var(--text2); white-space: nowrap; }
+  .review-badge-deadline { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fce8e6; color: #c5221f; border: 1px solid #f5c6c4; white-space: nowrap; font-weight: 500; }
+  .review-badge-action { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fef7e0; color: #b06000; border: 1px solid #f6d98a; white-space: nowrap; font-weight: 500; }
+  .review-badge-financial { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e6f4ea; color: #137333; border: 1px solid #a8d5b5; white-space: nowrap; font-weight: 500; }
   .review-from { font-size: 0.75rem; color: var(--text2); white-space: nowrap; }
   .review-chevron { color: var(--text2); font-size: 20px !important; transition: transform 0.18s; }
   .review-card-editor { border-top: 1px solid var(--border); }
@@ -774,6 +777,10 @@ function renderReviewCard(ev) {
       </div>
       <div class="review-card-tags">
         ${isGmail ? `<span class="review-badge-gmail">via Gmail</span>` : `<span class="review-badge">${escHtml(ev.source || 'Event')}</span>`}
+        ${ev.source_type === 'deadline' ? `<span class="review-badge-deadline">Deadline</span>`
+          : ev.source_type === 'action_item' ? `<span class="review-badge-action">Action</span>`
+          : ev.source_type === 'financial_reminder' ? `<span class="review-badge-financial">Financial</span>`
+          : ''}
         ${ev.sender_name ? `<span class="review-from">from ${escHtml(ev.sender_name)}</span>` : ''}
         <span class="material-icons review-chevron" id="rchev-${id}">expand_more</span>
       </div>

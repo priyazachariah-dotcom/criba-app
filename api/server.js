@@ -90,10 +90,8 @@ async function ensureMemberCalendar(calendarApi, member, email) {
   return gcalId;
 }
 
-// Shared event-classification rules used by both the PDF and iCal
-// extraction prompts, so a break/holiday/timed-event/minimum-day/
-// recurring-pattern is turned into the right shape of calendar entry
-// instead of being copied verbatim from the source.
+// Shared event-classification rules used by the iCal extraction prompt.
+// PDF and Gmail now use the richer FULL_EXTRACTION_PROMPT below.
 const EVENT_CLASSIFICATION_RULES = `Classify every event into exactly one "type" and follow its rules:
 - "break": a multi-day break or vacation (Thanksgiving Break, Winter Break, Spring Break, or any other span of consecutive non-school days). Output ONE event for the whole break: "date" = first day, "end_date" = last day. Never output one event per day of a break.
 - "holiday": a single-day public/federal holiday (Columbus Day, Veterans Day, MLK Day, Labor Day, etc). Output one all-day event on that date. Leave "time", "end_time" and "end_date" null.
@@ -102,7 +100,63 @@ const EVENT_CLASSIFICATION_RULES = `Classify every event into exactly one "type"
 - "recurring": a pattern that repeats on a schedule rather than fixed one-off dates (e.g. "every Tuesday is a late start day", "early dismissal every first Friday"). Output ONE event with "recurring_note" describing the pattern in plain English (e.g. "Every Tuesday"). Never expand this into one event per occurrence.
 - "other": anything that doesn't fit the above — treat as a normal single event, all-day unless a specific time is stated.`;
 
-const EVENT_JSON_SCHEMA = `{"categories":[{"name":"Category name","events":[{"title":"Event name","type":"holiday|break|timed|minimum_day|recurring|other","date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null (only for type=break)","time":"HH:MM or null (24hr)","end_time":"HH:MM or null (only for type=timed/minimum_day)","location":"string or null","recurring_note":"string or null (only for type=recurring)"}]}]}`;
+const EVENT_JSON_SCHEMA = `{"categories":[{"name":"Category name","events":[{"title":"Event name","type":"holiday|break|timed|minimum_day|recurring|other","date":"YYYY-MM-DD","end_date":"YYYY-MM-DD or null (only for type=break)","time":"HH:MM or null (24hr)","end_time":"HH:MM or null (only for type=timed/minimum_day)","location":"string or null","recurring_note":"string or null (only for type=recurring)","notes":"string or null","source_type":"event|deadline|action_item|financial_reminder"}]}]}`;
+
+// Full-detail extraction prompt used for PDF calendars and Gmail emails.
+// Returns a flat JSON array (not grouped by category) so the caller can
+// store source_type / notes / family member tags without losing information.
+// NOTE: attendees here are family-member name strings (not {name,email} objects);
+// the caller injects the sender as a proper {name,email} invite attendee separately.
+const FULL_EXTRACTION_PROMPT = `You are a calendar extraction expert for busy people. Extract every single calendar-worthy item from this content — not just obvious events, but also deadlines, action items, financial reminders, and time-sensitive tasks.
+
+Rules for extraction:
+
+1. Extract everything time-bound. If something has a date, a deadline, or a time, extract it. This includes:
+- Events (meetings, parties, ceremonies, games, practices)
+- Deadlines ("submit by June 1", "due Monday", "sign up before May 14")
+- Action items with dates ("return library books before last day", "register by June 1")
+- Financial reminders ("$3,907 auto-charged June 3 — verify card is current")
+- All-day events (minimum days, last day of school, all school events)
+- Multi-day events (camps, breaks, vacations)
+
+2. Get the full address. If a location is mentioned, extract the complete street address if available. "Episcopal Day School" is not enough — "Episcopal Day School, 16 Baldwin Avenue, San Mateo, CA 94401" is correct. If only a venue name is given, use that.
+
+3. Tag family members. If the content mentions specific people (children's names, family members), tag which person each event belongs to. Use the names as found in the content.
+
+4. Capture all details in notes. Everything that isn't a date/time/location but is relevant goes in the notes field:
+- Attire requirements ("White dress, knee to ankle length, no spaghetti straps")
+- What to bring ("return athletic uniforms", "bring library books")
+- RSVP requirements ("RSVP via evite")
+- Volunteer needs ("volunteers needed for setup and cleanup")
+- Action required ("check lost and found before June 4")
+- Seating ("seating assigned randomly — check mail for pew number")
+- Any other important context a person would want to remember
+
+5. Don't summarize — extract. If an event has multiple sub-events on the same day, extract each one separately. June 4 with three things happening at different times = three separate calendar events.
+
+6. Smart interpretation:
+- "Minimum day" → all-day event, note the early dismissal time in notes
+- "No morning school" → note this explicitly
+- "All day" → is_all_day: true
+- Date ranges → start_date and end_date
+- "Due by X" or "before X" → create a deadline event on that date
+- Financial auto-charges → create a reminder event on the charge date with amount and action required in notes
+
+7. Never miss an event because it seems minor. "Return library books" is on the calendar. "Submit grad photo" is on the calendar. "Verify card is current" is on the calendar. Busy people miss these exactly because they seem small.
+
+For each extracted item return a JSON object with:
+- title (clear, specific — not generic)
+- date (YYYY-MM-DD)
+- end_date (YYYY-MM-DD, only if multi-day, else null)
+- start_time (HH:MM 24hr format, null if all-day)
+- end_time (HH:MM 24hr format, null if all-day or unknown — default 1 hour after start if timed)
+- location (full address if available, venue name if not, null if none)
+- is_all_day (boolean)
+- attendees (array of family member name strings tagged to this event, empty array if none specified)
+- notes (all relevant details — attire, what to bring, action required, financial amounts, RSVP info; null if nothing extra)
+- source_type ("event", "deadline", "action_item", or "financial_reminder")
+
+Return a JSON array only. No other text. If nothing calendar-worthy is found, return [].`;
 
 // Applies defaults/safety-net rules server-side in case the model's
 // output doesn't perfectly follow the schema (e.g. a timed event missing
@@ -125,6 +179,8 @@ function normalizeExtractedEvent(ev) {
     end_time: (type === 'timed' || type === 'minimum_day') ? endTime : '',
     location: ev.location || '',
     recurring_note: type === 'recurring' ? (ev.recurring_note || '') : '',
+    notes: ev.notes || null,
+    source_type: ev.source_type || null,
   };
 }
 
@@ -665,21 +721,32 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
         role: 'user',
         content: [
           { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-          { type: 'text', text: `This is a school calendar PDF. Extract ALL events, dates and holidays. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward.
-
-${EVENT_CLASSIFICATION_RULES}
-
-Return JSON: ${EVENT_JSON_SCHEMA}. Group by category from the document. Return ONLY valid JSON, no markdown.` }
+          { type: 'text', text: `This is a school/family calendar PDF. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward.\n\n${FULL_EXTRACTION_PROMPT}` }
         ]
       }]
     });
     const text = response.content[0].text;
-    let parsed;
-    try { parsed = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim()); }
-    catch { return res.status(500).json({ error: 'AI could not parse this PDF.' }); }
-    if (!parsed.categories?.length) return res.status(400).json({ error: 'No events found in this PDF' });
+    let flatEvents;
+    try {
+      const raw = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim());
+      flatEvents = Array.isArray(raw) ? raw : [];
+    } catch { return res.status(500).json({ error: 'AI could not parse this PDF.' }); }
+    if (!flatEvents.length) return res.status(400).json({ error: 'No events found in this PDF' });
+
+    // Group flat events into categories by source_type for the category-selection screen
+    const catMap = new Map();
+    for (const ev of flatEvents) {
+      const catName = ev.source_type === 'deadline' ? 'Deadlines'
+        : ev.source_type === 'action_item' ? 'Action Items'
+        : ev.source_type === 'financial_reminder' ? 'Financial Reminders'
+        : 'Events';
+      if (!catMap.has(catName)) catMap.set(catName, []);
+      catMap.get(catName).push(ev);
+    }
+    const parsed = { categories: Array.from(catMap.entries()).map(([n, evs]) => ({ name: n, events: evs })) };
+
     const calId = randomUUID();
-    const totalEvents = parsed.categories.reduce((sum, c) => sum + (c.events?.length || 0), 0);
+    const totalEvents = flatEvents.length;
     const cals = getUserCalendars(req.user.email);
     await cals.set(calId, { id: calId, name, source: 'pdf', url: req.file.originalname || 'upload.pdf', memberId: memberId || null, event_count: 0, created_at: new Date().toISOString() });
     const events = getUserEvents(req.user.email);
@@ -688,7 +755,7 @@ Return JSON: ${EVENT_JSON_SCHEMA}. Group by category from the document. Return O
       for (const ev of (cat.events || [])) {
         const evId = randomUUID();
         const norm = normalizeExtractedEvent(ev);
-        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, attendees: [], category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
+        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, attendees: Array.isArray(ev.attendees) ? ev.attendees : [], category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
       }
     }
     await events.setMany(eventPairs);
@@ -946,34 +1013,20 @@ async function extractGmailEvents(body, senderName, senderEmail, subject) {
     max_tokens: 2048,
     messages: [{
       role: 'user',
-      content: `Extract all calendar-worthy events from this email. For each event return JSON with these fields:
-- title (string)
-- date (YYYY-MM-DD)
-- end_date (YYYY-MM-DD, only for multi-day events, else null)
-- start_time (HH:MM 24hr, null if all-day)
-- end_time (HH:MM 24hr, null if all-day; default 1hr after start if not given)
-- location (string or null)
-- is_all_day (boolean)
-- attendees (array of {name, email} — always include the sender)
-
-Classification rules:
-- A break/vacation → single multi-day event (date=first day, end_date=last day), is_all_day:true
-- A holiday → single all-day event, is_all_day:true
-- A timed event → is_all_day:false, set start_time and end_time (default +1hr)
-- No time mentioned → is_all_day:true
-- Sender is always an attendee: {name:"${senderName}",email:"${senderEmail}"}
-- If no calendar-worthy events exist, return {"events":[]}
-
-Return ONLY valid JSON like: {"events":[{...},{...}]}
-
-Email:
-${content}`
+      content: `${FULL_EXTRACTION_PROMPT}\n\nEmail:\n${content}`
     }]
   });
   const text = response.content[0].text.trim();
   try {
-    const json = JSON.parse(text.replace(/^```json\s*/,'').replace(/\s*```$/,''));
-    return Array.isArray(json.events) ? json.events : [];
+    const raw = JSON.parse(text.replace(/^```json\s*/,'').replace(/\s*```$/,''));
+    const events = Array.isArray(raw) ? raw : [];
+    // Inject sender as attendee name string so it shows in the review card
+    return events.map(ev => ({
+      ...ev,
+      attendees: Array.isArray(ev.attendees)
+        ? (ev.attendees.includes(senderName) || !senderName ? ev.attendees : [senderName, ...ev.attendees])
+        : (senderName ? [senderName] : []),
+    }));
   } catch {
     console.error('Gmail extraction: JSON parse failed:', text.slice(0, 200));
     return [];
@@ -1097,6 +1150,8 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           location: ev.location || '',
           is_all_day: !!ev.is_all_day,
           attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+          notes: ev.notes || null,
+          source_type: ev.source_type || null,
           source: 'gmail',
           gmail_message_id: messageId,
           sender_name: senderName,

@@ -1128,10 +1128,25 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       const headers = msg.payload.headers || [];
       const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
       const from = headers.find(h => h.name.toLowerCase() === 'from')?.value || '';
+      const dateSent = headers.find(h => h.name.toLowerCase() === 'date')?.value || '';
       const { senderName, senderEmail } = parseFrom(from);
       const body = extractEmailBody(msg.payload);
 
       if (!passesPreFilter(`${subject} ${body}`)) continue;
+
+      // Cross-user duplicate guard: same email sent to multiple family members
+      // (e.g. school newsletter to both Priya and Bharat) should only be extracted once.
+      // Fingerprint = SHA-256 of senderEmail + subject + Date header (normalised).
+      const fpRaw = `${senderEmail.toLowerCase()}:${subject.trim()}:${dateSent.trim()}`;
+      const fingerprint = crypto.createHash('sha256').update(fpRaw).digest('hex');
+      const fpKey = `processedEmail:${fingerprint}`;
+      const alreadyProcessed = await redis.exists(fpKey);
+      if (alreadyProcessed) {
+        console.log(`Gmail dedup: skipping already-processed email (fingerprint ${fingerprint.slice(0, 12)}…) for ${email}`);
+        continue;
+      }
+      // Mark as processed for 30 days before extraction so concurrent webhooks don't race
+      await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject);
 

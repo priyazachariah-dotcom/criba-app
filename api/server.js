@@ -755,7 +755,9 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
       for (const ev of (cat.events || [])) {
         const evId = randomUUID();
         const norm = normalizeExtractedEvent(ev);
-        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, attendees: Array.isArray(ev.attendees) ? ev.attendees : [], category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
+        const conflictNote = await findConflict(events, ev.date, norm.time, norm.end_time);
+        const combinedNotes = [norm.notes, conflictNote].filter(Boolean).join('\n') || null;
+        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, notes: combinedNotes, conflict_note: conflictNote || null, attendees: Array.isArray(ev.attendees) ? ev.attendees : [], category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
       }
     }
     await events.setMany(eventPairs);
@@ -1047,6 +1049,36 @@ async function isDuplicateEvent(eventsStore, title, date) {
   );
 }
 
+// Convert "HH:MM" to minutes since midnight for overlap comparison
+function timeToMinutes(t) {
+  if (!t) return null;
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+// Check existing pending/approved events for time overlap on the same date.
+// Returns a conflict note string if a conflict exists, or null if clear.
+// Only checks timed events (is_all_day:false, time set).
+async function findConflict(eventsStore, date, startTime, endTime) {
+  if (!date || !startTime) return null; // all-day events — no conflict check
+  const newStart = timeToMinutes(startTime);
+  const newEnd = endTime ? timeToMinutes(endTime) : newStart + 60;
+  const all = await eventsStore.values();
+  for (const existing of all) {
+    if (existing.date !== date) continue;
+    if (existing.status === 'dismissed' || existing.status === 'rejected') continue;
+    if (existing.is_all_day || !existing.time) continue; // skip all-day existing events
+    const exStart = timeToMinutes(existing.time);
+    const exEnd = existing.end_time ? timeToMinutes(existing.end_time) : exStart + 60;
+    // Overlap: one starts before the other ends
+    if (newStart < exEnd && newEnd > exStart) {
+      const fmtTime = existing.time.replace(/^0/, '');
+      return `⚠️ Conflict: overlaps with "${existing.title}" at ${fmtTime}`;
+    }
+  }
+  return null;
+}
+
 // Build an OAuth2 client from a stored refresh token (no session cookie needed)
 function getOAuthClientFromRefreshToken(refreshToken) {
   const client = new google.auth.OAuth2(
@@ -1154,18 +1186,24 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         if (!ev.title || !ev.date) continue;
         if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) continue;
 
+        const startTime = ev.start_time || '';
+        const endTime = ev.end_time || '';
+        const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
+        const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
+
         const evId = randomUUID();
         await eventsStore.set(evId, {
           id: evId,
           title: ev.title,
           date: ev.date,
           end_date: ev.end_date || '',
-          time: ev.start_time || '',
-          end_time: ev.end_time || '',
+          time: startTime,
+          end_time: endTime,
           location: ev.location || '',
           is_all_day: !!ev.is_all_day,
           attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
-          notes: ev.notes || null,
+          notes: combinedNotes,
+          conflict_note: conflictNote || null,
           source_type: ev.source_type || null,
           source: 'gmail',
           gmail_message_id: messageId,

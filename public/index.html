@@ -245,6 +245,7 @@
   .review-badge-deadline { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fce8e6; color: #c5221f; border: 1px solid #f5c6c4; white-space: nowrap; font-weight: 500; }
   .review-badge-action { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fef7e0; color: #b06000; border: 1px solid #f6d98a; white-space: nowrap; font-weight: 500; }
   .review-badge-financial { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e6f4ea; color: #137333; border: 1px solid #a8d5b5; white-space: nowrap; font-weight: 500; }
+  .review-conflict { font-size: 0.75rem; color: #c5221f; margin-top: 2px; }
   .review-from { font-size: 0.75rem; color: var(--text2); white-space: nowrap; }
   .review-chevron { color: var(--text2); font-size: 20px !important; transition: transform 0.18s; }
   .review-card-editor { border-top: 1px solid var(--border); }
@@ -827,6 +828,7 @@ function renderReviewCard(ev) {
       <div class="review-card-content">
         <div class="review-card-title">${escHtml(ev.title)}</div>
         <div class="review-card-meta">${meta}</div>
+        ${ev.conflict_note ? `<div class="review-conflict">${escHtml(ev.conflict_note)}</div>` : ''}
       </div>
       <div class="review-card-tags">
         ${isGmail ? `<span class="review-badge-gmail">via Gmail</span>` : `<span class="review-badge">${escHtml(ev.source || 'Event')}</span>`}

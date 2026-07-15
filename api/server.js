@@ -1203,6 +1203,12 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         format: 'full',
       });
       const msg = msgRes.data;
+      // Skip Promotions / Social / noise category tabs — calendar events don't live there
+      const labelIds = msg.labelIds || [];
+      if (labelIds.some(l => GMAIL_NOISE_LABELS.has(l))) {
+        console.log(`[gmail-process] SKIP msg=${messageId} — noise category label: ${labelIds.filter(l => GMAIL_NOISE_LABELS.has(l)).join(',')}`);
+        continue;
+      }
       const headers = msg.payload.headers || [];
       const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
       const from = headers.find(h => h.name.toLowerCase() === 'from')?.value || '';
@@ -1490,12 +1496,21 @@ app.get('/api/config', (req, res) => {
   res.json({ placesApiKey: process.env.GOOGLE_PLACES_API_KEY || '' });
 });
 
-// POST /api/gmail/backfill — scan the last 7 days of Gmail and extract events.
-// Uses the same pre-filter, Claude extraction, fingerprint dedup, and conflict
-// detection as the live webhook path. Safe to run multiple times.
+// Gmail category labels that indicate noise (Promotions / Social / Updates / Forums tabs).
+// Excluded at query level for backfill and by label check in the live webhook.
+const GMAIL_NOISE_LABELS = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS']);
+
+// POST /api/gmail/backfill — scan recent Gmail inbox for calendar events.
+// Default window: 2 days (48h). Max Claude extractions per run: 10.
+// Uses two-stage fetch: metadata only first, full body only if subject passes pre-filter.
+// Safe to call multiple times — fingerprint + per-message lock prevent re-extraction.
 app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const email = req.user.email;
-  const days = Math.min(parseInt(req.body?.days || '7'), 30); // cap at 30 days
+  // Default 2 days for quick first-run; caller can request up to 30 for deeper scan
+  const days = Math.min(parseInt(req.body?.days || '2'), 30);
+  // Cap Claude calls per run so we always finish within the 60s Vercel limit.
+  // Each Claude call takes ~3-5s; 10 calls = ~30-50s, leaving headroom.
+  const MAX_EXTRACT = 10;
 
   const refreshToken = await redis.get(`refreshToken:${email}`);
   if (!refreshToken) return res.status(400).json({ error: 'No refresh token — please sign out and sign back in' });
@@ -1504,72 +1519,119 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const gmail = google.gmail({ version: 'v1', auth });
   const eventsStore = getUserEvents(email);
 
-  // Gmail query: inbox only, date window
+  // Exclude noise categories at query level so we never even fetch their metadata
   const afterDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const afterUnix = Math.floor(afterDate.getTime() / 1000);
-  const q = `in:inbox after:${afterUnix}`;
+  const q = `in:inbox after:${afterUnix} -category:promotions -category:social -category:updates -category:forums`;
 
-  console.log(`[backfill] START email=${email} days=${days} query="${q}"`);
+  console.log(`[backfill] START email=${email} days=${days} maxExtract=${MAX_EXTRACT} query="${q}"`);
 
+  // Collect message IDs from list (cheap — no body)
   let allMessageIds = [];
   let pageToken;
-  do {
-    const listRes = await gmail.users.messages.list({
-      userId: 'me',
-      q,
-      maxResults: 100,
-      ...(pageToken ? { pageToken } : {}),
-    });
-    const msgs = listRes.data.messages || [];
-    allMessageIds.push(...msgs.map(m => m.id));
-    pageToken = listRes.data.nextPageToken;
-  } while (pageToken && allMessageIds.length < 500); // safety cap
+  try {
+    do {
+      const listRes = await gmail.users.messages.list({
+        userId: 'me', q, maxResults: 100,
+        ...(pageToken ? { pageToken } : {}),
+      });
+      const msgs = listRes.data.messages || [];
+      allMessageIds.push(...msgs.map(m => m.id));
+      pageToken = listRes.data.nextPageToken;
+    } while (pageToken && allMessageIds.length < 300); // safety cap
+  } catch (err) {
+    console.error('[backfill] messages.list failed:', err.message);
+    return res.status(500).json({ error: 'Failed to list Gmail messages: ' + err.message });
+  }
 
-  console.log(`[backfill] email=${email} found ${allMessageIds.length} messages to scan`);
+  console.log(`[backfill] email=${email} found ${allMessageIds.length} message IDs`);
 
   let scanned = 0;
-  let passedPreFilter = 0;
+  let skippedLock = 0;
+  let skippedCategory = 0;
+  let skippedPreFilter = 0;
   let skippedDedup = 0;
+  let claudeCalls = 0;
   let eventsExtracted = 0;
   let eventsStored = 0;
+  let truncated = false;
 
   for (const messageId of allMessageIds) {
-    scanned++;
-    // Per-message lock — skip if already processed by webhook
-    const lockKey = `gmailMsgLock:${email}:${messageId}`;
-    const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
-    if (!locked) {
-      skippedDedup++;
-      continue;
+    // Stop calling Claude if we've hit the per-run cap — still finish the loop
+    // for accounting, but don't fetch full bodies we can't process this run.
+    if (claudeCalls >= MAX_EXTRACT) {
+      truncated = true;
+      break; // remaining messages will be re-eligible on the next backfill run
     }
 
+    scanned++;
+
+    // Per-message lock — skip if already processed by live webhook or a prior backfill
+    const lockKey = `gmailMsgLock:${email}:${messageId}`;
+    const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
+    if (!locked) { skippedLock++; continue; }
+
     try {
-      const msgRes = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
-      const msg = msgRes.data;
-      const headers = msg.payload.headers || [];
-      const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
-      const from = headers.find(h => h.name.toLowerCase() === 'from')?.value || '';
-      const dateSent = headers.find(h => h.name.toLowerCase() === 'date')?.value || '';
-      const { senderName, senderEmail } = parseFrom(from);
-      const body = extractEmailBody(msg.payload);
+      // Stage 1: metadata-only fetch (headers only — much cheaper than format:full)
+      const metaRes = await gmail.users.messages.get({
+        userId: 'me', id: messageId, format: 'metadata',
+        metadataHeaders: ['Subject', 'From', 'Date'],
+      });
+      const meta = metaRes.data;
 
-      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email)) continue;
-      passedPreFilter++;
+      // Skip noise categories even if they slipped through the query filter
+      const labelIds = meta.labelIds || [];
+      if (labelIds.some(l => GMAIL_NOISE_LABELS.has(l))) {
+        skippedCategory++;
+        await redis.del(lockKey); // let the live webhook handle if it somehow gets it
+        continue;
+      }
 
-      // Cross-user fingerprint dedup
+      const metaHeaders = meta.payload?.headers || [];
+      const subject = metaHeaders.find(h => h.name.toLowerCase() === 'subject')?.value || '';
+      const from = metaHeaders.find(h => h.name.toLowerCase() === 'from')?.value || '';
+      const dateSent = metaHeaders.find(h => h.name.toLowerCase() === 'date')?.value || '';
+
+      // Pre-filter on subject alone — if subject has no keywords, skip the full fetch
+      if (!checkPreFilter(subject, subject, messageId, email)) {
+        skippedPreFilter++;
+        // Release lock: subject alone didn't pass, body might have — allow webhook to try
+        await redis.del(lockKey);
+        continue;
+      }
+
+      // Cross-user fingerprint dedup (subject-level, before full fetch)
+      const { senderEmail } = parseFrom(from);
       const fpRaw = `${senderEmail.toLowerCase()}:${subject.trim()}:${dateSent.trim()}`;
       const fingerprint = crypto.createHash('sha256').update(fpRaw).digest('hex');
       const fpKey = `processedEmail:${fingerprint}`;
       const alreadyProcessed = await redis.exists(fpKey);
       if (alreadyProcessed) {
         skippedDedup++;
-        await redis.del(lockKey); // release lock — was set by another user's webhook, not this message's own lock
+        await redis.del(lockKey);
         continue;
       }
+
+      // Stage 2: full fetch — only for messages that passed subject pre-filter + dedup
+      const fullRes = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
+      const fullHeaders = fullRes.data.payload?.headers || [];
+      const senderName = parseFrom(from).senderName;
+      const body = extractEmailBody(fullRes.data.payload);
+
+      // Full pre-filter (subject + body)
+      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email)) {
+        skippedPreFilter++;
+        await redis.del(lockKey);
+        continue;
+      }
+
+      // Mark fingerprint before Claude call to prevent concurrent race
       await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
+      claudeCalls++;
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject);
       eventsExtracted += extracted.length;
+      console.log(`[backfill] msg=${messageId} Claude returned ${extracted.length} event(s) (call ${claudeCalls}/${MAX_EXTRACT})`);
 
       for (const ev of extracted) {
         if (!ev.title || !ev.date) continue;
@@ -1608,13 +1670,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       }
     } catch (err) {
       console.error(`[backfill] ERROR messageId=${messageId}:`, err.message);
-      // Release the lock on error so a future backfill can retry
-      await redis.del(lockKey);
+      await redis.del(lockKey); // release so next run can retry
     }
   }
 
-  console.log(`[backfill] DONE email=${email} scanned=${scanned} passedPreFilter=${passedPreFilter} skippedDedup=${skippedDedup} eventsExtracted=${eventsExtracted} eventsStored=${eventsStored}`);
-  res.json({ ok: true, scanned, passedPreFilter, skippedDedup, eventsExtracted, eventsStored, days });
+  console.log(`[backfill] DONE email=${email} scanned=${scanned} skippedLock=${skippedLock} skippedCategory=${skippedCategory} skippedPreFilter=${skippedPreFilter} skippedDedup=${skippedDedup} claudeCalls=${claudeCalls} eventsExtracted=${eventsExtracted} eventsStored=${eventsStored} truncated=${truncated}`);
+  res.json({ ok: true, scanned, skippedLock, skippedCategory, skippedPreFilter, skippedDedup, claudeCalls, eventsExtracted, eventsStored, days, truncated });
 });
 
 app.get('*', (req, res) => {

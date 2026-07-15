@@ -54,6 +54,9 @@
   .backfill-bar-text { flex: 1; font-size: 0.85rem; color: var(--text2); }
   .btn-backfill { padding: 0.4rem 0.9rem; background: var(--accent); color: white; border: none; border-radius: 7px; font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity 0.15s; }
   .btn-backfill:disabled { opacity: 0.5; cursor: default; }
+  .btn-backfill-secondary { padding: 0.4rem 0.9rem; background: none; color: var(--text2); border: 1px solid var(--border); border-radius: 7px; font-size: 0.82rem; cursor: pointer; white-space: nowrap; transition: background 0.15s; }
+  .btn-backfill-secondary:hover { background: var(--bg2); }
+  .btn-backfill-secondary:disabled { opacity: 0.5; cursor: default; }
   #backfill-result { font-size: 0.8rem; color: var(--text2); margin-top: 0.5rem; text-align: center; }
 
   /* ── Review queue (Gmail / iMessage / WhatsApp — future stages) ───── */
@@ -819,8 +822,9 @@ function updateReviewCount(n) {
 const BACKFILL_BAR_HTML = `
 <div class="backfill-bar">
   <span class="material-icons">inbox</span>
-  <span class="backfill-bar-text">Scan the last 7 days of Gmail for calendar events</span>
-  <button class="btn-backfill" id="backfill-btn" onclick="runBackfill()">Scan recent emails</button>
+  <span class="backfill-bar-text">Scan recent Gmail for calendar events</span>
+  <button class="btn-backfill-secondary" id="backfill-btn-7" onclick="runBackfill(7)" style="margin-right:4px">Last 7 days</button>
+  <button class="btn-backfill" id="backfill-btn-2" onclick="runBackfill(2)">Last 48 hours</button>
 </div>
 <div id="backfill-result"></div>`;
 
@@ -835,32 +839,50 @@ function renderReview() {
   container.innerHTML = BACKFILL_BAR_HTML + pendingEvents.map(ev => renderReviewCard(ev)).join('');
 }
 
-async function runBackfill() {
-  const btn = document.getElementById('backfill-btn');
+async function runBackfill(days) {
+  const btn2 = document.getElementById('backfill-btn-2');
+  const btn7 = document.getElementById('backfill-btn-7');
   const result = document.getElementById('backfill-result');
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = 'Scanning…';
+  if (!btn2) return;
+  // Disable both buttons during scan
+  if (btn2) { btn2.disabled = true; btn2.textContent = days === 2 ? 'Scanning…' : 'Last 48 hours'; }
+  if (btn7) { btn7.disabled = true; btn7.textContent = days === 7 ? 'Scanning…' : 'Last 7 days'; }
   if (result) result.textContent = '';
+
+  // Client-side timeout: 55 seconds — shorter than Vercel's 60s limit.
+  // If the backend doesn't respond in time, show an actionable error instead of hanging.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 55000);
+
   try {
-    const res = await fetch('/api/gmail/backfill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    const res = await fetch('/api/gmail/backfill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
     const data = await res.json();
     if (res.ok) {
-      const msg = `Scanned ${data.scanned} emails · ${data.passedPreFilter} matched · ${data.eventsStored} new event${data.eventsStored !== 1 ? 's' : ''} added`;
+      let msg = `Scanned ${data.scanned} emails · ${data.claudeCalls} sent to AI · ${data.eventsStored} new event${data.eventsStored !== 1 ? 's' : ''} added`;
+      if (data.truncated) msg += ' · scan limit reached — run again for more';
       if (result) result.textContent = msg;
-      btn.textContent = '✓ Done';
-      if (data.eventsStored > 0) {
-        await loadPendingEvents(); // refresh the review queue
-      }
+      if (btn2) { btn2.textContent = '✓ Done'; btn2.disabled = false; }
+      if (btn7) { btn7.disabled = false; }
+      if (data.eventsStored > 0) await loadPendingEvents();
     } else {
-      if (result) result.textContent = data.error || 'Scan failed';
-      btn.textContent = 'Scan recent emails';
-      btn.disabled = false;
+      if (result) result.textContent = data.error || 'Scan failed — try again';
+      if (btn2) { btn2.textContent = 'Last 48 hours'; btn2.disabled = false; }
+      if (btn7) { btn7.textContent = 'Last 7 days'; btn7.disabled = false; }
     }
-  } catch {
-    if (result) result.textContent = 'Network error — try again';
-    btn.textContent = 'Scan recent emails';
-    btn.disabled = false;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const timedOut = err.name === 'AbortError';
+    if (result) result.textContent = timedOut
+      ? 'Scan timed out — try "Last 48 hours" for a smaller batch'
+      : 'Network error — try again';
+    if (btn2) { btn2.textContent = 'Last 48 hours'; btn2.disabled = false; }
+    if (btn7) { btn7.textContent = 'Last 7 days'; btn7.disabled = false; }
   }
 }
 

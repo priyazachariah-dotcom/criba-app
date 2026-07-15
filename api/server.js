@@ -1001,6 +1001,24 @@ function passesPreFilter(text) {
   return words.some(w => PREFILTER_WORDS.has(w));
 }
 
+// Wrapper used inside processNewGmailEmails — logs the pre-filter decision.
+function checkPreFilter(text, subject, messageId, email) {
+  const lower = text.toLowerCase();
+  const matchedPattern = PREFILTER_PATTERNS.find(p => lower.includes(p));
+  if (matchedPattern) {
+    console.log(`[prefilter] PASS msg=${messageId} user=${email} subject="${subject}" matched pattern "${matchedPattern}"`);
+    return true;
+  }
+  const words = lower.split(/\W+/);
+  const matchedWord = words.find(w => PREFILTER_WORDS.has(w));
+  if (matchedWord) {
+    console.log(`[prefilter] PASS msg=${messageId} user=${email} subject="${subject}" matched word "${matchedWord}"`);
+    return true;
+  }
+  console.log(`[prefilter] SKIP msg=${messageId} user=${email} subject="${subject}" — no calendar keywords found`);
+  return false;
+}
+
 // Parse "Name <email>" or "email" from a From header
 function parseFrom(fromHeader) {
   const match = fromHeader.match(/^(.*?)\s*<([^>]+)>$/);
@@ -1126,10 +1144,15 @@ async function registerGmailWatch(email, refreshToken) {
 
 // Fetch new messages since the last known historyId and run extraction.
 async function processNewGmailEmails(email, refreshToken, newHistoryId) {
+  console.log(`[gmail-process] START email=${email} newHistoryId=${newHistoryId}`);
   const watchDataStr = await redis.get(`gmailWatch:${email}`);
-  if (!watchDataStr) return;
+  if (!watchDataStr) {
+    console.error(`[gmail-process] ABORT email=${email} — no gmailWatch record in Redis`);
+    return;
+  }
   const watchData = JSON.parse(watchDataStr);
   const startHistoryId = watchData.historyId;
+  console.log(`[gmail-process] historyId range: ${startHistoryId} → ${newHistoryId}`);
 
   const auth = getOAuthClientFromRefreshToken(refreshToken);
   const gmail = google.gmail({ version: 'v1', auth });
@@ -1158,15 +1181,20 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       messageIds.add(added.message.id);
     }
   }
+  console.log(`[gmail-process] email=${email} found ${messageIds.size} new message(s) in history`);
   if (!messageIds.size) return;
 
   const eventsStore = getUserEvents(email);
 
   for (const messageId of messageIds) {
+    console.log(`[gmail-process] email=${email} processing messageId=${messageId}`);
     // Per-message lock — prevents double-processing if Pub/Sub retries
     const lockKey = `gmailMsgLock:${email}:${messageId}`;
     const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
-    if (!locked) continue; // already processed
+    if (!locked) {
+      console.log(`[gmail-process] SKIP messageId=${messageId} — already locked (Pub/Sub retry)`);
+      continue;
+    }
 
     try {
       const msgRes = await gmail.users.messages.get({
@@ -1181,8 +1209,9 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       const dateSent = headers.find(h => h.name.toLowerCase() === 'date')?.value || '';
       const { senderName, senderEmail } = parseFrom(from);
       const body = extractEmailBody(msg.payload);
+      console.log(`[gmail-process] msg=${messageId} from="${senderEmail}" subject="${subject}" bodyLen=${body.length}`);
 
-      if (!passesPreFilter(`${subject} ${body}`)) continue;
+      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email)) continue;
 
       // Cross-user duplicate guard: same email sent to multiple family members
       // (e.g. school newsletter to both Priya and Bharat) should only be extracted once.
@@ -1192,17 +1221,25 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       const fpKey = `processedEmail:${fingerprint}`;
       const alreadyProcessed = await redis.exists(fpKey);
       if (alreadyProcessed) {
-        console.log(`Gmail dedup: skipping already-processed email (fingerprint ${fingerprint.slice(0, 12)}…) for ${email}`);
+        console.log(`[gmail-process] DEDUP SKIP msg=${messageId} fingerprint=${fingerprint.slice(0, 12)}… already extracted for another user`);
         continue;
       }
       // Mark as processed for 30 days before extraction so concurrent webhooks don't race
       await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
+      console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude for subject="${subject}"`);
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject);
+      console.log(`[gmail-process] EXTRACT msg=${messageId} Claude returned ${extracted.length} event(s)`);
 
       for (const ev of extracted) {
-        if (!ev.title || !ev.date) continue;
-        if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) continue;
+        if (!ev.title || !ev.date) {
+          console.log(`[gmail-process] msg=${messageId} skipping event missing title/date: ${JSON.stringify(ev).slice(0,100)}`);
+          continue;
+        }
+        if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) {
+          console.log(`[gmail-process] msg=${messageId} DEDUP SKIP event "${ev.title}" on ${ev.date} already exists`);
+          continue;
+        }
 
         const startTime = ev.start_time || '';
         const endTime = ev.end_time || '';
@@ -1233,11 +1270,13 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           type: ev.is_all_day ? 'other' : 'timed',
           created_at: new Date().toISOString(),
         });
+        console.log(`[gmail-process] STORED event "${ev.title}" on ${ev.date} for ${email} (id=${evId})`);
       }
     } catch (err) {
-      console.error(`Gmail processing error for message ${messageId}:`, err.message);
+      console.error(`[gmail-process] ERROR messageId=${messageId} email=${email}:`, err.message, err.stack?.split('\n')[1]);
     }
   }
+  console.log(`[gmail-process] DONE email=${email}`);
 }
 
 // Send a Resend email notification about pending items in the review queue.
@@ -1300,12 +1339,33 @@ app.post('/api/gmail/reconnect', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/gmail/watch/status — diagnostic: check Redis watch state for the logged-in user
+app.get('/api/gmail/watch/status', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const watchDataStr = await redis.get(`gmailWatch:${email}`);
+  const refreshToken = await redis.get(`refreshToken:${email}`);
+  const disconnectedAt = await redis.get(`gmailDisconnected:${email}`);
+  const inWatchedSet = await redis.sismember('gmailWatchedUsers', email);
+  if (!watchDataStr) {
+    return res.json({ ok: false, email, registered: false, hasRefreshToken: !!refreshToken, inWatchedSet: !!inWatchedSet, disconnectedAt });
+  }
+  const watchData = JSON.parse(watchDataStr);
+  const expMs = watchData.expiration ? parseInt(watchData.expiration) : null;
+  const expiresAt = expMs ? new Date(expMs).toISOString() : null;
+  const expiredAlready = expMs ? expMs < Date.now() : null;
+  res.json({ ok: true, email, registered: true, historyId: watchData.historyId, expiresAt, expiredAlready, hasRefreshToken: !!refreshToken, inWatchedSet: !!inWatchedSet, disconnectedAt });
+});
+
 // POST /api/gmail/webhook — receives Google Pub/Sub push notifications.
 // Must be public (no requireAuth). Verified via Google-signed JWT in Authorization header.
 app.post('/api/gmail/webhook', async (req, res) => {
+  const webhookTs = new Date().toISOString();
+  console.log(`[webhook] RECEIVED at ${webhookTs} — body keys: ${Object.keys(req.body || {}).join(',')}`);
+
   // Verify the request carries a valid Google-signed Bearer JWT
   const authHeader = req.headers.authorization || '';
   if (!authHeader.startsWith('Bearer ')) {
+    console.error('[webhook] REJECTED — missing Bearer token');
     return res.status(401).json({ error: 'Missing auth header' });
   }
   const token = authHeader.slice(7);
@@ -1316,15 +1376,20 @@ app.post('/api/gmail/webhook', async (req, res) => {
     // Gmail push notifications are signed by this Google service account
     const validEmails = ['gmail-api-push@system.gserviceaccount.com'];
     if (!validEmails.includes(payload.email) && !payload.email_verified) {
+      console.error(`[webhook] REJECTED — token issuer "${payload.email}" not in allowlist`);
       return res.status(401).json({ error: 'Invalid token issuer' });
     }
+    console.log(`[webhook] JWT verified — issuer=${payload.email}`);
   } catch (err) {
-    console.error('Pub/Sub JWT verification failed:', err.message);
+    console.error('[webhook] JWT verification failed:', err.message);
     return res.status(401).json({ error: 'JWT verification failed' });
   }
 
   const { message } = req.body || {};
-  if (!message?.data) return res.status(200).json({ ok: true }); // ack empty messages
+  if (!message?.data) {
+    console.log('[webhook] ACK — no message.data (keepalive ping)');
+    return res.status(200).json({ ok: true });
+  }
 
   let emailAddress, historyId;
   try {
@@ -1332,14 +1397,20 @@ app.post('/api/gmail/webhook', async (req, res) => {
     emailAddress = decoded.emailAddress;
     historyId = decoded.historyId;
   } catch {
+    console.error('[webhook] Failed to decode message.data');
     return res.status(200).json({ ok: true }); // ack malformed messages
   }
 
-  if (!emailAddress) return res.status(200).json({ ok: true });
+  console.log(`[webhook] Pub/Sub message for emailAddress=${emailAddress} historyId=${historyId} messageId=${message.messageId}`);
+
+  if (!emailAddress) {
+    console.error('[webhook] No emailAddress in decoded payload');
+    return res.status(200).json({ ok: true });
+  }
 
   const refreshToken = await redis.get(`refreshToken:${emailAddress}`);
   if (!refreshToken) {
-    console.log(`Gmail webhook: no refresh token for ${emailAddress}`);
+    console.error(`[webhook] No refresh token in Redis for ${emailAddress} — cannot process`);
     return res.status(200).json({ ok: true });
   }
 
@@ -1348,9 +1419,10 @@ app.post('/api/gmail/webhook', async (req, res) => {
   try {
     await processNewGmailEmails(emailAddress, refreshToken, historyId);
   } catch (err) {
-    console.error('Gmail processing error:', err.message);
+    console.error('[webhook] processNewGmailEmails threw:', err.message);
   }
 
+  console.log(`[webhook] DONE for ${emailAddress}`);
   res.status(200).json({ ok: true });
 });
 

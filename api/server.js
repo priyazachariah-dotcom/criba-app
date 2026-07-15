@@ -1206,6 +1206,28 @@ app.post('/api/gmail/watch', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/user/status — returns per-user flags the frontend checks on load
+// (currently: gmailDisconnected flag set by cron when watch renewal fails)
+app.get('/api/user/status', requireAuth, async (req, res) => {
+  const disconnectedAt = await redis.get(`gmailDisconnected:${req.user.email}`);
+  res.json({ gmailDisconnected: !!disconnectedAt, gmailDisconnectedAt: disconnectedAt || null });
+});
+
+// POST /api/gmail/reconnect — re-registers Gmail watch and clears disconnect flag
+app.post('/api/gmail/reconnect', requireAuth, async (req, res) => {
+  const refreshToken = await redis.get(`refreshToken:${req.user.email}`);
+  if (!refreshToken) return res.status(400).json({ error: 'No refresh token — please sign out and sign back in' });
+  try {
+    const data = await registerGmailWatch(req.user.email, refreshToken);
+    await redis.del(`gmailDisconnected:${req.user.email}`);
+    console.log(`[Gmail reconnect] Watch re-registered for ${req.user.email}`);
+    res.json({ ok: true, expiration: data.expiration });
+  } catch (err) {
+    console.error('[Gmail reconnect] Failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/gmail/webhook — receives Google Pub/Sub push notifications.
 // Must be public (no requireAuth). Verified via Google-signed JWT in Authorization header.
 app.post('/api/gmail/webhook', async (req, res) => {
@@ -1283,8 +1305,21 @@ app.get('/api/cron/gmail', async (req, res) => {
         if (!watchData.expiration || parseInt(watchData.expiration) - now < oneDayMs) {
           const refreshToken = await redis.get(`refreshToken:${email}`);
           if (refreshToken) {
-            await registerGmailWatch(email, refreshToken);
-            renewedCount++;
+            try {
+              await registerGmailWatch(email, refreshToken);
+              renewedCount++;
+              // Clear any existing disconnect flag on successful renewal
+              await redis.del(`gmailDisconnected:${email}`);
+            } catch (watchErr) {
+              // Watch renewal failed — flag the user's Gmail connection as broken
+              const disconnectTs = new Date().toISOString();
+              await redis.set(`gmailDisconnected:${email}`, disconnectTs);
+              console.error(`[Gmail disconnect] Watch renewal failed for ${email} at ${disconnectTs}:`, watchErr.message);
+            }
+          } else {
+            // No refresh token — flag as disconnected
+            await redis.set(`gmailDisconnected:${email}`, new Date().toISOString());
+            console.error(`[Gmail disconnect] No refresh token found for ${email} — marking disconnected`);
           }
         }
       }

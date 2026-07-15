@@ -233,6 +233,15 @@
   .review-card-tags { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
   .review-badge-gmail { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e8f0fe; color: #1a73e8; border: 1px solid #c5d8fa; white-space: nowrap; font-weight: 500; }
   .review-badge { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--border); color: var(--text2); white-space: nowrap; }
+  /* ── Gmail disconnect banner ─────────────────────────────────────────── */
+  #gmail-disconnect-banner { display: none; background: #fce8e6; border: 1.5px solid #f5c6c4; border-radius: 10px; padding: 0.875rem 1.25rem; margin: 1rem 0 0; display: flex; align-items: center; gap: 0.75rem; }
+  #gmail-disconnect-banner.hidden { display: none !important; }
+  .disconnect-banner-icon { color: #c5221f; font-size: 1.25rem; flex-shrink: 0; }
+  .disconnect-banner-text { flex: 1; font-size: 0.9rem; color: #5f2120; line-height: 1.4; }
+  .disconnect-banner-text strong { display: block; margin-bottom: 0.2rem; }
+  .reconnect-btn { padding: 0.45rem 1rem; background: #c5221f; color: white; border: none; border-radius: 7px; font-size: 0.85rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background 0.15s; }
+  .reconnect-btn:hover { background: #a01a18; }
+  .reconnect-btn:disabled { opacity: 0.6; cursor: default; }
   .review-badge-deadline { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fce8e6; color: #c5221f; border: 1px solid #f5c6c4; white-space: nowrap; font-weight: 500; }
   .review-badge-action { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fef7e0; color: #b06000; border: 1px solid #f6d98a; white-space: nowrap; font-weight: 500; }
   .review-badge-financial { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e6f4ea; color: #137333; border: 1px solid #a8d5b5; white-space: nowrap; font-weight: 500; }
@@ -322,6 +331,16 @@
       <button class="logout-btn" onclick="logout()">Sign out</button>
     </div>
   </header>
+
+  <!-- Gmail disconnect banner — shown when cron detects watch renewal failure -->
+  <div id="gmail-disconnect-banner" class="hidden">
+    <span class="material-icons disconnect-banner-icon">warning</span>
+    <div class="disconnect-banner-text">
+      <strong>Gmail connection needs to be reconnected</strong>
+      Criba is no longer receiving new events from your Gmail. Click to reconnect.
+    </div>
+    <button class="reconnect-btn" id="reconnect-btn" onclick="reconnectGmail()">Reconnect Gmail</button>
+  </div>
 
   <!-- Review queue (Gmail events) -->
   <div class="page active" id="page-review">
@@ -703,6 +722,40 @@ function showApp() {
   document.getElementById('user-name').textContent = user.name || user.email;
   loadPlacesScript();
   loadData();
+  checkGmailStatus();
+}
+
+async function checkGmailStatus() {
+  try {
+    const res = await fetch('/api/user/status');
+    if (!res.ok) return;
+    const data = await res.json();
+    const banner = document.getElementById('gmail-disconnect-banner');
+    if (data.gmailDisconnected) {
+      banner.classList.remove('hidden');
+    } else {
+      banner.classList.add('hidden');
+    }
+  } catch {}
+}
+
+async function reconnectGmail() {
+  const btn = document.getElementById('reconnect-btn');
+  btn.disabled = true;
+  btn.textContent = 'Reconnecting…';
+  try {
+    const res = await fetch('/api/gmail/reconnect', { method: 'POST' });
+    if (res.ok) {
+      document.getElementById('gmail-disconnect-banner').classList.add('hidden');
+    } else {
+      const err = await res.json();
+      btn.textContent = err.error || 'Failed — try signing out and back in';
+      btn.disabled = false;
+    }
+  } catch {
+    btn.textContent = 'Network error — try again';
+    btn.disabled = false;
+  }
 }
 
 async function loadData() {

@@ -901,13 +901,16 @@ async function runBackfill(days, dryRun = false) {
         const matchStr = m.prefilterMatch
           ? `${m.prefilterMatch.type}: <em>${escHtml(m.prefilterMatch.value)}</em>`
           : (isWould && m.reason === 'image-heavy-bypass') ? 'image-heavy bypass' : '—';
-        const subject = m.subject ? escHtml(m.subject.slice(0, 60)) + (m.subject.length > 60 ? '…' : '') : '<em>(no subject)</em>';
+        // Show subject or fall back to message ID so repeated runs can be compared
+        const subjectText = m.subject
+          ? escHtml(m.subject.slice(0, 60)) + (m.subject.length > 60 ? '…' : '')
+          : `<em style="color:#999">(no subject · ${m.messageId})</em>`;
         const tokens = m.estTokens ? `~${m.estTokens.toLocaleString()}` : '—';
         const images = m.imageCount != null ? m.imageCount : '—';
         const skipReason = !isWould ? (SKIP_LABELS[m.reason] || m.reason) : '';
         return `<tr class="${isWould ? 'would-send' : 'skipped'}">
           <td><span class="verdict-pill ${pillClass}">${pillLabel}</span></td>
-          <td>${subject}</td>
+          <td>${subjectText}</td>
           <td>${matchStr}</td>
           <td style="text-align:center">${images}</td>
           <td style="text-align:right">${tokens}</td>
@@ -916,13 +919,16 @@ async function runBackfill(days, dryRun = false) {
       }).join('');
 
       const totalEst = data.totalEstTokens ? `~${data.totalEstTokens.toLocaleString()} est. tokens` : '';
+      const estNote = data.resultSizeEstimate && data.resultSizeEstimate !== data.totalFound
+        ? ` (Gmail estimates ~${data.resultSizeEstimate} total)` : '';
       result.innerHTML = `
         <div class="dry-run-summary">
-          <span>Found <strong>${data.totalFound}</strong> in Gmail · scanned <strong>${data.scanned}</strong></span>
+          <span>Found <strong>${data.totalFound}</strong> in Gmail${estNote} · scanned <strong>${data.scanned}</strong></span>
           <span><strong>${data.wouldExtract}</strong> would go to AI</span>
           <span>Skipped: ${data.skippedLock} already&nbsp;processed · ${data.skippedCategory} noise · ${data.skippedPreFilter} no&nbsp;keyword · ${data.skippedDedup} dedup</span>
           ${totalEst ? `<span>${totalEst}</span>` : ''}
         </div>
+        ${data.query ? `<div style="font-size:0.72rem;color:#94a3b8;margin-top:0.3rem;font-family:monospace">${escHtml(data.query)}</div>` : ''}
         <div class="dry-run-table-wrap">
           <table class="dry-run-table">
             <thead><tr>

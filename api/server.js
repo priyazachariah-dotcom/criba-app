@@ -1644,24 +1644,31 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const gmail = google.gmail({ version: 'v1', auth });
   const eventsStore = getUserEvents(email);
 
-  // Exclude noise categories at query level so we never even fetch their metadata.
-  // Gmail's after: operator requires YYYY/MM/DD — Unix timestamps are silently ignored,
-  // which would cause the query to return only 1 or 0 results.
+  // Build the date-bounded inbox query.
+  // Note: Gmail's after: operator requires YYYY/MM/DD — Unix timestamps are silently ignored.
+  // We intentionally do NOT include -category: operators here: those filters are applied
+  // per-message via labelIds in the loop (GMAIL_NOISE_LABELS check). Putting them in the
+  // query is an overly-aggressive optimisation that silently drops legitimate calendar emails
+  // that Gmail routes to "Updates", "Social", etc. — which is common for school and activity
+  // notifications.
   const afterDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const afterYMD = `${afterDate.getUTCFullYear()}/${String(afterDate.getUTCMonth() + 1).padStart(2, '0')}/${String(afterDate.getUTCDate()).padStart(2, '0')}`;
-  const q = `in:inbox after:${afterYMD} -category:promotions -category:social -category:updates -category:forums`;
+  const q = `in:inbox after:${afterYMD}`;
 
-  console.log(`[backfill] START email=${email} days=${days} after=${afterYMD} maxExtract=${MAX_EXTRACT} query="${q}"`);
+  console.log(`[backfill] START email=${email} days=${days} after=${afterYMD} dryRun=${dryRun} maxExtract=${MAX_EXTRACT}`);
+  console.log(`[backfill] QUERY: "${q}"`);
 
   // Collect message IDs from list (cheap — no body)
   let allMessageIds = [];
   let pageToken;
+  let resultSizeEstimate = 0;
   try {
     do {
       const listRes = await gmail.users.messages.list({
         userId: 'me', q, maxResults: 100,
         ...(pageToken ? { pageToken } : {}),
       });
+      resultSizeEstimate = listRes.data.resultSizeEstimate || resultSizeEstimate;
       const msgs = listRes.data.messages || [];
       allMessageIds.push(...msgs.map(m => m.id));
       pageToken = listRes.data.nextPageToken;
@@ -1671,7 +1678,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     return res.status(500).json({ error: 'Failed to list Gmail messages: ' + err.message });
   }
 
-  console.log(`[backfill] email=${email} found ${allMessageIds.length} message IDs`);
+  console.log(`[backfill] list complete: messageIds=${allMessageIds.length} resultSizeEstimate=${resultSizeEstimate}`);
 
   let scanned = 0;
   let skippedLock = 0;
@@ -1885,7 +1892,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     const totalEstTokens = dryRunMessages.filter(m => m.verdict === 'WOULD_SEND').reduce((s, m) => s + (m.estTokens || 0), 0);
     console.log(`[backfill] DRY-RUN DONE email=${email} scanned=${scanned} wouldSend=${wouldSend} skippedLock=${skippedLock} skippedCategory=${skippedCategory} skippedPreFilter=${skippedPreFilter} skippedDedup=${skippedDedup}`);
     return res.json({
-      dryRun: true, days, totalFound: allMessageIds.length, scanned,
+      dryRun: true, days, query: q, totalFound: allMessageIds.length, resultSizeEstimate, scanned,
       wouldExtract: wouldSend, skippedLock, skippedCategory, skippedPreFilter, skippedDedup,
       totalEstTokens,
       messages: dryRunMessages,

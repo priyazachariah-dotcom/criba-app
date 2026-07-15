@@ -1043,16 +1043,78 @@ function extractEmailBody(payload) {
   return '';
 }
 
-// Call Claude to extract calendar events from a single email
-async function extractGmailEvents(body, senderName, senderEmail, subject) {
-  const content = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, 8000);
+// Image MIME types Claude's vision API accepts
+const VISION_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']);
+
+// Recursively collect image parts from the MIME tree (inline + attached).
+// Returns raw descriptor objects — no data fetching here.
+function collectImageParts(payload, parts = []) {
+  const mime = (payload.mimeType || '').toLowerCase().split(';')[0].trim();
+  if (VISION_IMAGE_TYPES.has(mime) && (payload.body?.data || payload.body?.attachmentId)) {
+    parts.push({
+      mimeType: mime === 'image/jpg' ? 'image/jpeg' : mime,
+      inlineData: payload.body.data || null,
+      attachmentId: payload.body.attachmentId || null,
+      size: payload.body.size || 0,
+    });
+  }
+  for (const part of (payload.parts || [])) collectImageParts(part, parts);
+  return parts;
+}
+
+// Fetch image data for a message's image parts, returning base64 strings ready
+// for the Claude vision API. Caps at 3 images × 1 MB each to bound API call size.
+async function fetchEmailImages(payload, gmail, messageId) {
+  const MAX_IMAGES = 3;
+  const MAX_SIZE_BYTES = 1024 * 1024; // 1 MB
+  const rawParts = collectImageParts(payload);
+  // Prefer smaller images; skip oversized ones (large marketing graphics rarely help)
+  const eligible = rawParts
+    .filter(p => p.size === 0 || p.size <= MAX_SIZE_BYTES)
+    .slice(0, MAX_IMAGES);
+  if (!eligible.length) return [];
+
+  const images = [];
+  for (const part of eligible) {
+    try {
+      let base64data;
+      if (part.inlineData) {
+        // base64url → standard base64
+        base64data = part.inlineData.replace(/-/g, '+').replace(/_/g, '/');
+      } else if (part.attachmentId) {
+        const res = await gmail.users.messages.attachments.get({
+          userId: 'me', messageId, id: part.attachmentId,
+        });
+        base64data = res.data.data.replace(/-/g, '+').replace(/_/g, '/');
+      }
+      if (base64data) images.push({ mimeType: part.mimeType, base64data });
+    } catch (err) {
+      console.error(`[vision] Failed to fetch image for msg=${messageId}:`, err.message);
+    }
+  }
+  console.log(`[vision] msg=${messageId} fetched ${images.length} image(s) for vision extraction`);
+  return images;
+}
+
+// Call Claude to extract calendar events from a single email.
+// When images are supplied (image-heavy emails / flyers), uses multimodal API.
+async function extractGmailEvents(body, senderName, senderEmail, subject, images = []) {
+  const textContent = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, 8000);
+  const promptText = images.length > 0
+    ? `${FULL_EXTRACTION_PROMPT}\n\nEmail text (may be minimal — event details may be in the attached image(s)):\n${textContent}`
+    : `${FULL_EXTRACTION_PROMPT}\n\nEmail:\n${textContent}`;
+
+  const messageContent = images.length > 0
+    ? [
+        { type: 'text', text: promptText },
+        ...images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.base64data } })),
+      ]
+    : promptText;
+
   const response = await anthropic.messages.create({
     model: 'claude-fable-5',
     max_tokens: 2048,
-    messages: [{
-      role: 'user',
-      content: `${FULL_EXTRACTION_PROMPT}\n\nEmail:\n${content}`
-    }]
+    messages: [{ role: 'user', content: messageContent }]
   });
   const text = response.content[0].text.trim();
   try {
@@ -1215,9 +1277,20 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       const dateSent = headers.find(h => h.name.toLowerCase() === 'date')?.value || '';
       const { senderName, senderEmail } = parseFrom(from);
       const body = extractEmailBody(msg.payload);
-      console.log(`[gmail-process] msg=${messageId} from="${senderEmail}" subject="${subject}" bodyLen=${body.length}`);
 
-      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email)) continue;
+      // Detect image attachments/inline images in the email.
+      // An "image-heavy" email has images but minimal text — the calendar info is
+      // likely in a visual flyer (e.g. sports schedules, school newsletters as images).
+      const imageParts = collectImageParts(msg.payload);
+      const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
+      console.log(`[gmail-process] msg=${messageId} from="${senderEmail}" subject="${subject}" bodyLen=${body.length} images=${imageParts.length} imageHeavy=${isImageHeavy}`);
+
+      // Pre-filter: skip if no calendar keywords in text AND email is not image-heavy.
+      // Image-heavy emails bypass the keyword check because event details are in the image.
+      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email) && !isImageHeavy) continue;
+      if (isImageHeavy && !checkPreFilter(`${subject} ${body}`, subject, messageId, email)) {
+        console.log(`[gmail-process] IMAGE-HEAVY BYPASS msg=${messageId} — skipping pre-filter for vision extraction`);
+      }
 
       // Cross-user duplicate guard: same email sent to multiple family members
       // (e.g. school newsletter to both Priya and Bharat) should only be extracted once.
@@ -1233,8 +1306,13 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       // Mark as processed for 30 days before extraction so concurrent webhooks don't race
       await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
-      console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude for subject="${subject}"`);
-      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject);
+      // Fetch image data for vision extraction (only when images present)
+      const images = imageParts.length > 0
+        ? await fetchEmailImages(msg.payload, gmail, messageId)
+        : [];
+
+      console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude subject="${subject}" images=${images.length}`);
+      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
       console.log(`[gmail-process] EXTRACT msg=${messageId} Claude returned ${extracted.length} event(s)`);
 
       for (const ev of extracted) {
@@ -1591,17 +1669,25 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const subject = metaHeaders.find(h => h.name.toLowerCase() === 'subject')?.value || '';
       const from = metaHeaders.find(h => h.name.toLowerCase() === 'from')?.value || '';
       const dateSent = metaHeaders.find(h => h.name.toLowerCase() === 'date')?.value || '';
+      const sizeEstimate = meta.sizeEstimate || 0;
 
-      // Pre-filter on subject alone — if subject has no keywords, skip the full fetch
-      if (!checkPreFilter(subject, subject, messageId, email)) {
+      const subjectPassesFilter = checkPreFilter(subject, subject, messageId, email);
+      // Route to Stage 2 if: subject matches keywords, OR email is large enough to
+      // plausibly contain image attachments (>30 KB threshold). Small emails with no
+      // subject keywords are text-only and safe to skip.
+      const LARGE_EMAIL_BYTES = 30000;
+      const mightHaveImages = sizeEstimate >= LARGE_EMAIL_BYTES;
+      if (!subjectPassesFilter && !mightHaveImages) {
         skippedPreFilter++;
-        // Release lock: subject alone didn't pass, body might have — allow webhook to try
-        await redis.del(lockKey);
+        await redis.del(lockKey); // release — webhook will handle live arrivals
         continue;
+      }
+      if (!subjectPassesFilter && mightHaveImages) {
+        console.log(`[backfill] msg=${messageId} subject failed pre-filter but size=${sizeEstimate}B — routing to Stage 2 for image check`);
       }
 
       // Cross-user fingerprint dedup (subject-level, before full fetch)
-      const { senderEmail } = parseFrom(from);
+      const { senderName, senderEmail } = parseFrom(from);
       const fpRaw = `${senderEmail.toLowerCase()}:${subject.trim()}:${dateSent.trim()}`;
       const fingerprint = crypto.createHash('sha256').update(fpRaw).digest('hex');
       const fpKey = `processedEmail:${fingerprint}`;
@@ -1612,26 +1698,36 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         continue;
       }
 
-      // Stage 2: full fetch — only for messages that passed subject pre-filter + dedup
+      // Stage 2: full fetch — only for messages that passed routing gate + dedup
       const fullRes = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
-      const fullHeaders = fullRes.data.payload?.headers || [];
-      const senderName = parseFrom(from).senderName;
       const body = extractEmailBody(fullRes.data.payload);
 
-      // Full pre-filter (subject + body)
-      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email)) {
+      // Detect images
+      const imageParts = collectImageParts(fullRes.data.payload);
+      const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
+
+      // Full pre-filter on subject+body; image-heavy emails bypass it
+      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email) && !isImageHeavy) {
         skippedPreFilter++;
         await redis.del(lockKey);
         continue;
+      }
+      if (isImageHeavy && !checkPreFilter(`${subject} ${body}`, subject, messageId, email)) {
+        console.log(`[backfill] IMAGE-HEAVY BYPASS msg=${messageId} — ${imageParts.length} image(s), bodyLen=${body.length}`);
       }
 
       // Mark fingerprint before Claude call to prevent concurrent race
       await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
+      // Fetch image data for vision extraction
+      const images = imageParts.length > 0
+        ? await fetchEmailImages(fullRes.data.payload, gmail, messageId)
+        : [];
+
       claudeCalls++;
-      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject);
+      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
       eventsExtracted += extracted.length;
-      console.log(`[backfill] msg=${messageId} Claude returned ${extracted.length} event(s) (call ${claudeCalls}/${MAX_EXTRACT})`);
+      console.log(`[backfill] msg=${messageId} Claude returned ${extracted.length} event(s) images=${images.length} (call ${claudeCalls}/${MAX_EXTRACT})`);
 
       for (const ev of extracted) {
         if (!ev.title || !ev.date) continue;

@@ -245,6 +245,11 @@
   .review-badge-deadline { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fce8e6; color: #c5221f; border: 1px solid #f5c6c4; white-space: nowrap; font-weight: 500; }
   .review-badge-action { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fef7e0; color: #b06000; border: 1px solid #f6d98a; white-space: nowrap; font-weight: 500; }
   .review-badge-financial { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e6f4ea; color: #137333; border: 1px solid #a8d5b5; white-space: nowrap; font-weight: 500; }
+  .review-badge-recurring { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e8f0fe; color: #1557b0; border: 1px solid #c5d8fa; white-space: nowrap; font-weight: 500; }
+  .gcal-recurrence-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--text2); background: var(--bg); border-radius: 6px; padding: 0.5rem 0.75rem; }
+  .gcal-recurrence-row .material-icons { font-size: 16px !important; color: var(--gcal-icon); flex-shrink: 0; margin-top: 2px; }
+  .gcal-recurrence-text { flex: 1; }
+  .gcal-recurrence-remove { font-size: 0.8rem; color: var(--red); background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline; margin-top: 2px; }
   .review-conflict { font-size: 0.75rem; color: #c5221f; margin-top: 2px; }
   .review-from { font-size: 0.75rem; color: var(--text2); white-space: nowrap; }
   .review-chevron { color: var(--text2); font-size: 20px !important; transition: transform 0.18s; }
@@ -836,6 +841,7 @@ function renderReviewCard(ev) {
           : ev.source_type === 'action_item' ? `<span class="review-badge-action">Action</span>`
           : ev.source_type === 'financial_reminder' ? `<span class="review-badge-financial">Financial</span>`
           : ''}
+        ${ev.recurrence_rule ? `<span class="review-badge-recurring">↻ Recurring</span>` : ''}
         ${ev.sender_name ? `<span class="review-from">from ${escHtml(ev.sender_name)}</span>` : ''}
         <span class="material-icons review-chevron" id="rchev-${id}">expand_more</span>
       </div>
@@ -844,6 +850,35 @@ function renderReviewCard(ev) {
       ${renderReviewEditor(ev)}
     </div>
   </div>`;
+}
+
+// Convert a Google Calendar RRULE string to a human-readable English description.
+// Handles the common patterns Claude will produce. Unrecognised rules fall back to the raw string.
+function rruleToEnglish(rule) {
+  if (!rule) return '';
+  const r = rule.replace(/^RRULE:/i, '');
+  const parts = Object.fromEntries(r.split(';').map(p => p.split('=')));
+  const freq = (parts.FREQ || '').toUpperCase();
+  const byday = parts.BYDAY || '';
+  const dayNames = { MO: 'Monday', TU: 'Tuesday', WE: 'Wednesday', TH: 'Thursday', FR: 'Friday', SA: 'Saturday', SU: 'Sunday' };
+  const days = byday ? byday.split(',').map(d => dayNames[d] || d).join(' and ') : '';
+  if (freq === 'DAILY') return 'Repeats every day';
+  if (freq === 'WEEKLY') return days ? `Repeats every ${days}` : 'Repeats weekly';
+  if (freq === 'MONTHLY') {
+    if (byday) return `Repeats monthly on the ${days}`;
+    return 'Repeats monthly';
+  }
+  if (freq === 'YEARLY') return 'Repeats annually';
+  return `Repeats (${rule})`;
+}
+
+// Per-event recurrence override: null = keep rule, false = user removed it
+const rvRecurrenceRemoved = {};
+
+function removeRecurrence(id) {
+  rvRecurrenceRemoved[id] = true;
+  const row = document.getElementById(`rv-recurrence-row-${id}`);
+  if (row) row.innerHTML = `<span class="material-icons">repeat</span><span class="gcal-recurrence-text" style="color:var(--text2);font-style:italic">Recurrence removed — will add as single event</span>`;
 }
 
 function renderReviewEditor(ev) {
@@ -899,6 +934,14 @@ function renderReviewEditor(ev) {
         <div class="selected-people" id="rv-speople-${id}"></div>
       </div>
     </div>
+    ${ev.recurrence_rule ? `
+    <div class="gcal-recurrence-row" id="rv-recurrence-row-${id}">
+      <span class="material-icons">repeat</span>
+      <div class="gcal-recurrence-text">
+        ${escHtml(rruleToEnglish(ev.recurrence_rule))}
+        <br><button class="gcal-recurrence-remove" onclick="removeRecurrence('${id}')">Remove recurrence</button>
+      </div>
+    </div>` : ''}
     ${memberSelect}
     <div class="gcal-actions">
       <button class="btn-gcal-add" id="rv-addbtn-${id}" onclick="approveReviewEvent('${id}')">Add to Calendar</button>
@@ -1003,6 +1046,8 @@ async function approveReviewEvent(id) {
     location: document.getElementById(`rv-loc-${id}`)?.value || ev.location || '',
     attendees: rvPeople[id] || [],
     targetMemberId: document.getElementById(`rv-member-${id}`)?.value || '',
+    // Send recurrenceRule explicitly: null if user removed it, undefined to use stored value
+    ...(ev.recurrence_rule !== undefined ? { recurrenceRule: rvRecurrenceRemoved[id] ? null : ev.recurrence_rule } : {}),
   };
   try {
     const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });

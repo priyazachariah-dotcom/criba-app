@@ -144,6 +144,12 @@ Rules for extraction:
 
 7. Never miss an event because it seems minor. "Return library books" is on the calendar. "Submit grad photo" is on the calendar. "Verify card is current" is on the calendar. Busy people miss these exactly because they seem small.
 
+8. Recurring events. If something repeats on a schedule ("every Tuesday at 4pm", "weekly practice", "meets every Monday and Wednesday"), output ONE event with:
+- date = the first occurrence (YYYY-MM-DD)
+- recurrence = the Google Calendar RRULE string (e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU" for every Tuesday, "RRULE:FREQ=WEEKLY;BYDAY=MO,WE" for Monday+Wednesday, "RRULE:FREQ=DAILY" for daily)
+- Do NOT expand recurring events into individual occurrences.
+- For non-recurring events, recurrence = null.
+
 For each extracted item return a JSON object with:
 - title (clear, specific — not generic)
 - date (YYYY-MM-DD)
@@ -155,6 +161,7 @@ For each extracted item return a JSON object with:
 - attendees (array of family member name strings tagged to this event, empty array if none specified)
 - notes (all relevant details — attire, what to bring, action required, financial amounts, RSVP info; null if nothing extra)
 - source_type ("event", "deadline", "action_item", or "financial_reminder")
+- recurrence (Google Calendar RRULE string if recurring, null if one-time)
 
 Return a JSON array only. No other text. If nothing calendar-worthy is found, return [].`;
 
@@ -181,6 +188,7 @@ function normalizeExtractedEvent(ev) {
     recurring_note: type === 'recurring' ? (ev.recurring_note || '') : '',
     notes: ev.notes || null,
     source_type: ev.source_type || null,
+    recurrence_rule: ev.recurrence || null,
   };
 }
 
@@ -488,10 +496,20 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const description = event.type === 'recurring' && event.recurring_note
       ? `Added via Criba — recurring: ${event.recurring_note}`
       : 'Added via Criba';
+
+    // Use the RRULE from body if the user kept it, or fall back to the stored rule.
+    // The frontend sends recurrenceRule: null to remove recurrence before adding.
+    const recurrenceRule = Object.prototype.hasOwnProperty.call(req.body, 'recurrenceRule')
+      ? req.body.recurrenceRule
+      : event.recurrence_rule;
+
+    const calEventResource = { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description };
+    if (recurrenceRule) calEventResource.recurrence = [recurrenceRule];
+
     const calEvent = await calendar.events.insert({
       calendarId: targetCalId,
       sendUpdates: 'all',
-      resource: { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description }
+      resource: calEventResource,
     });
     event.status = 'approved';
     event.calEventId = calEvent.data.id;
@@ -1205,6 +1223,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           notes: combinedNotes,
           conflict_note: conflictNote || null,
           source_type: ev.source_type || null,
+          recurrence_rule: ev.recurrence || null,
           source: 'gmail',
           gmail_message_id: messageId,
           sender_name: senderName,

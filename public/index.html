@@ -888,7 +888,7 @@ async function runBackfill(days, dryRun = false) {
 
       const SKIP_LABELS = {
         'already-locked': 'Already processed',
-        'noise-category': 'Noise category',
+        'noise-category': 'Noise category', // detail field has the specific label(s)
         'prefilter-subject': 'No keyword (subject)',
         'prefilter-body': 'No keyword (body)',
         'already-processed-fingerprint': 'Dedup (seen before)',
@@ -907,7 +907,10 @@ async function runBackfill(days, dryRun = false) {
           : `<em style="color:#999">(no subject · ${m.messageId})</em>`;
         const tokens = m.estTokens ? `~${m.estTokens.toLocaleString()}` : '—';
         const images = m.imageCount != null ? m.imageCount : '—';
-        const skipReason = !isWould ? (SKIP_LABELS[m.reason] || m.reason) : '';
+        const baseSkipReason = SKIP_LABELS[m.reason] || m.reason;
+        const skipReason = !isWould
+          ? (m.detail ? `${baseSkipReason} <span style="font-size:0.68rem;color:#94a3b8">(${escHtml(m.detail)})</span>` : baseSkipReason)
+          : '';
         return `<tr class="${isWould ? 'would-send' : 'skipped'}">
           <td><span class="verdict-pill ${pillClass}">${pillLabel}</span></td>
           <td>${subjectText}</td>

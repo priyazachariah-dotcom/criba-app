@@ -1295,7 +1295,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         format: 'full',
       });
       const msg = msgRes.data;
-      // Skip Promotions / Social / noise category tabs — calendar events don't live there
+      // Skip Promotions / Social tabs — see GMAIL_NOISE_LABELS comment for why Updates/Forums are excluded
       const labelIds = msg.labelIds || [];
       if (labelIds.some(l => GMAIL_NOISE_LABELS.has(l))) {
         console.log(`[gmail-process] SKIP msg=${messageId} — noise category label: ${labelIds.filter(l => GMAIL_NOISE_LABELS.has(l)).join(',')}`);
@@ -1604,9 +1604,15 @@ app.get('/api/config', (req, res) => {
   res.json({ placesApiKey: process.env.GOOGLE_PLACES_API_KEY || '' });
 });
 
-// Gmail category labels that indicate noise (Promotions / Social / Updates / Forums tabs).
-// Excluded at query level for backfill and by label check in the live webhook.
-const GMAIL_NOISE_LABELS = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS']);
+// Gmail category labels that indicate noise — only Promotions and Social are reliably
+// never calendar-relevant. Updates and Forums are intentionally excluded from this set:
+//   CATEGORY_UPDATES: invoices, receipts, school announcements, billing notices, shipping
+//                     confirmations — exactly the financial/scheduling emails Criba needs.
+//   CATEGORY_FORUMS:  mailing lists, team communications, school forums — may contain
+//                     event announcements.
+// These are pre-filtered away at query level anyway; keeping them out of the loop check
+// ensures we don't double-exclude legitimate content.
+const GMAIL_NOISE_LABELS = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL']);
 
 // Approximate token cost of FULL_EXTRACTION_PROMPT alone (chars / 4).
 // Used by dry-run to estimate how many input tokens a real extraction would spend.
@@ -1726,24 +1732,26 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       });
       const meta = metaRes.data;
 
-      // Skip noise categories even if they slipped through the query filter
-      const labelIds = meta.labelIds || [];
-      if (labelIds.some(l => GMAIL_NOISE_LABELS.has(l))) {
-        skippedCategory++;
-        const noiseLabel = labelIds.find(l => GMAIL_NOISE_LABELS.has(l));
-        if (dryRun) {
-          dryRunMessages.push({ messageId, verdict: 'SKIP', reason: 'noise-category', detail: noiseLabel });
-        } else {
-          await redis.del(lockKey);
-        }
-        continue;
-      }
-
+      // Extract headers first so they're available in all subsequent diagnostics
       const metaHeaders = meta.payload?.headers || [];
       const subject = metaHeaders.find(h => h.name.toLowerCase() === 'subject')?.value || '';
       const from = metaHeaders.find(h => h.name.toLowerCase() === 'from')?.value || '';
       const dateSent = metaHeaders.find(h => h.name.toLowerCase() === 'date')?.value || '';
       const sizeEstimate = meta.sizeEstimate || 0;
+
+      // Skip noise categories (Promotions, Social only — see GMAIL_NOISE_LABELS comment)
+      const labelIds = meta.labelIds || [];
+      const noiseLabels = labelIds.filter(l => GMAIL_NOISE_LABELS.has(l));
+      if (noiseLabels.length > 0) {
+        skippedCategory++;
+        if (dryRun) {
+          // Include subject and all matching label IDs so the table is self-explanatory
+          dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'noise-category', detail: noiseLabels.join(', ') });
+        } else {
+          await redis.del(lockKey);
+        }
+        continue;
+      }
 
       const subjectDiag = diagnosePreFilter(subject);
       const subjectPassesFilter = subjectDiag.pass;

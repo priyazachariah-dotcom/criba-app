@@ -835,6 +835,7 @@ const BACKFILL_BAR_HTML = `
 <div class="backfill-bar">
   <span class="material-icons">inbox</span>
   <span class="backfill-bar-text">Scan recent Gmail for calendar events</span>
+  <button class="btn-backfill-secondary" id="backfill-btn-clear" onclick="clearFingerprints()" style="margin-right:4px" title="Remove seen-email cache so all messages in the window are re-evaluated">Reset dedup</button>
   <button class="btn-backfill-secondary" id="backfill-btn-dry" onclick="runBackfill(2, true)" style="margin-right:4px" title="Preview which emails would be sent to AI — no API calls">Dry run</button>
   <button class="btn-backfill-secondary" id="backfill-btn-7" onclick="runBackfill(7)" style="margin-right:4px">Last 7 days</button>
   <button class="btn-backfill" id="backfill-btn-2" onclick="runBackfill(2)">Last 48 hours</button>
@@ -920,6 +921,29 @@ function renderDryRunTable(result, accumulated, queryStr) {
         <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1rem">No Primary-tab emails in this window</td></tr>'}</tbody>
       </table>
     </div>`;
+}
+
+async function clearFingerprints() {
+  const btn = document.getElementById('backfill-btn-clear');
+  const result = document.getElementById('backfill-result');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = 'Resetting…';
+  if (result) result.innerHTML = '';
+  try {
+    const res = await fetch('/api/gmail/fingerprints', { method: 'DELETE' });
+    const data = await res.json();
+    if (res.ok) {
+      result.textContent = `Reset complete — ${data.deleted} fingerprint${data.deleted !== 1 ? 's' : ''} cleared (${data.scanned} keys scanned). Next scan will re-evaluate all messages in the window.`;
+    } else {
+      result.textContent = data.error || 'Reset failed — try again';
+    }
+  } catch (err) {
+    result.textContent = 'Network error — try again';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Reset dedup';
+  }
 }
 
 async function runBackfill(days, dryRun = false) {

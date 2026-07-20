@@ -1662,6 +1662,36 @@ const IMAGE_TOKENS_ESTIMATE = 1600;
 // Batching: each invocation does ≤ MAX_FULL_FETCHES Stage 2 fetches, then returns
 //   { truncated: true, nextOffset } for the frontend to chain the next batch.
 //
+// DELETE /api/gmail/fingerprints — remove all processedEmail fingerprints that belong
+// to the current user. Uses SCAN so it's safe on large Redis keyspaces.
+// Intended for debugging / re-scanning after pipeline fixes.
+app.delete('/api/gmail/fingerprints', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  let cursor = '0';
+  let deleted = 0;
+  let scanned = 0;
+  try {
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', 'processedEmail:*', 'COUNT', 200);
+      cursor = nextCursor;
+      if (keys.length === 0) continue;
+      scanned += keys.length;
+      // Fetch values in one round-trip to find which keys belong to this user
+      const values = await redis.mget(...keys);
+      const mine = keys.filter((_, idx) => values[idx] === email);
+      if (mine.length > 0) {
+        await redis.del(...mine);
+        deleted += mine.length;
+      }
+    } while (cursor !== '0');
+    console.log(`[fingerprints] cleared email=${email} deleted=${deleted} scanned=${scanned}`);
+    res.json({ ok: true, deleted, scanned });
+  } catch (err) {
+    console.error('[fingerprints] clear failed:', err.message);
+    res.status(500).json({ error: 'Failed to clear fingerprints: ' + err.message });
+  }
+});
+
 // Dry-run (?dryRun=true): full pipeline, no Claude calls, no Redis writes.
 //   Returns per-message verdict table. Non-Primary messages are summarized,
 //   not listed individually (Part 1 display rule).

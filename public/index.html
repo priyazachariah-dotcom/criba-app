@@ -11,19 +11,10 @@
     --bg: #f5f0e8; --bg2: #ede8df; --text: #1a1714; --text2: #6b6560;
     --border: #d4cfc7; --accent: #1a1714; --green: #2d6a4f; --red: #c1392b;
     --blue: #1a73e8; --blue-dark: #1557b0; --gcal-icon: #5f6368; --radius: 10px;
-    /* Event card colour palette */
-    --section-bg: #DBCEDA;
-    --card-bg: #025953;
-    --card-text: #000000;
-    --card-text2: rgba(0,0,0,0.62);
-    --card-border: rgba(0,0,0,0.18);
-    --card-hover: rgba(255,255,255,0.09);
-    --card-open: rgba(255,255,255,0.15);
+    --teal: #025953;
   }
-  /* Full-bleed section background — applied to #app-screen so it fills the
-     full viewport width below the sticky header on event-section pages.
-     JS sets data-section="events" via showPage() for review/recent/category. */
-  #app-screen[data-section="events"] { background: var(--section-bg); }
+  /* Pink background fills the entire app shell (all pages) */
+  #app-screen { background: #DBCEDA; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
 
   /* ── Auth ─────────────────────────────────────────────────────────── */
@@ -40,22 +31,37 @@
 
   /* ── Shell ─────────────────────────────────────────────────────────── */
   #app-screen { display: none; min-height: 100vh; }
-  header { background: white; border-bottom: 1px solid var(--border); padding: 0 2rem; height: 60px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+  header { background: var(--teal); border-bottom: none; padding: 0 2rem; height: 60px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
   .header-left { display: flex; align-items: center; gap: 2rem; }
-  .logo { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.3px; }
+  .logo { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.3px; color: white; }
   nav { display: flex; gap: 0.25rem; }
-  .nav-btn { padding: 0.4rem 1rem; border-radius: 6px; border: none; background: transparent; font-size: 0.9rem; cursor: pointer; color: var(--text2); transition: all 0.15s; }
-  .nav-btn.active { background: var(--bg); color: var(--text); font-weight: 500; }
-  .nav-btn:hover:not(.active) { background: var(--bg); }
+  .nav-btn { padding: 0.4rem 1rem; border-radius: 6px; border: none; background: transparent; font-size: 0.9rem; cursor: pointer; color: rgba(255,255,255,0.72); transition: all 0.15s; }
+  .nav-btn.active { background: white; color: var(--teal); font-weight: 600; }
+  .nav-btn:hover:not(.active) { background: rgba(255,255,255,0.12); color: white; }
   .header-right { display: flex; align-items: center; gap: 1rem; }
-  .user-name { font-size: 0.875rem; color: var(--text2); }
-  .logout-btn { font-size: 0.875rem; color: var(--text2); background: none; border: none; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 6px; }
-  .logout-btn:hover { background: var(--bg); color: var(--text); }
+  .user-name { font-size: 0.875rem; color: rgba(255,255,255,0.72); }
+  .logout-btn { font-size: 0.875rem; color: rgba(255,255,255,0.72); background: none; border: none; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 6px; }
+  .logout-btn:hover { background: rgba(255,255,255,0.12); color: white; }
 
   .page { display: none; padding: 2rem; max-width: 800px; margin: 0 auto; }
   .page.active { display: block; }
+  /* Teal hero block at the top of each page — bleeds to the edges of the
+     800px column by negating the .page padding with negative margins */
+  .page-hero {
+    background: var(--teal); color: white;
+    margin: -2rem -2rem 2rem; padding: 1.75rem 2rem 1.5rem;
+  }
   .page-title { font-size: 1.75rem; font-weight: 600; margin-bottom: 0.375rem; letter-spacing: -0.5px; }
-  .page-sub { color: var(--text2); font-size: 0.9rem; margin-bottom: 2rem; }
+  .page-sub { font-size: 0.9rem; margin-bottom: 0; }
+  /* Default page-title/sub colors (outside hero) stay dark */
+  .page > .page-title { color: var(--text); }
+  .page > .page-sub { color: var(--text2); margin-bottom: 2rem; }
+  /* Inside hero: white text */
+  .page-hero .page-title { color: white; margin-bottom: 0.3rem; }
+  .page-hero .page-sub { color: rgba(255,255,255,0.82); }
+  /* Back button inside hero (category page) */
+  .page-hero .cat-back-btn { color: rgba(255,255,255,0.78); margin-bottom: 0.625rem; }
+  .page-hero .cat-back-btn:hover { color: white; }
 
   .empty-state { text-align: center; padding: 4rem 2rem; color: var(--text2); }
   .empty-icon { font-size: 2.5rem; margin-bottom: 1rem; opacity: 0.4; }
@@ -121,14 +127,12 @@
   .error-msg { font-size: 0.8rem; color: var(--red); }
 
   /* ── My Calendar (recent approved events) ─────────────────────────── */
-  .recent-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 0.75rem; }
+  .recent-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem 1.25rem; margin-bottom: 0.75rem; }
   .recent-card-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; }
-  .recent-card-title { font-weight: 500; font-size: 0.95rem; color: var(--card-text); }
-  .recent-card-meta { font-size: 0.8rem; color: var(--card-text2); margin-top: 2px; }
-  .btn-edit { font-size: 0.8rem; color: var(--card-text); background: none; border: 1px solid rgba(0,0,0,0.3); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
-  .btn-edit:hover { background: var(--card-hover); }
-  /* Edit form inside recent-card sits on white so inputs stay legible */
-  .recent-card > div + div { background: white; border-top: 1px solid rgba(0,0,0,0.1); margin: 0.5rem -1.25rem -1rem; padding: 0.875rem 1.25rem 1rem; border-radius: 0 0 var(--radius) var(--radius); }
+  .recent-card-title { font-weight: 500; font-size: 0.95rem; }
+  .recent-card-meta { font-size: 0.8rem; color: var(--text2); margin-top: 2px; }
+  .btn-edit { font-size: 0.8rem; color: var(--text2); background: none; border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+  .btn-edit:hover { background: var(--bg); }
   .view-more-btn { width: 100%; padding: 0.75rem; background: transparent; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem; color: var(--text2); cursor: pointer; margin-top: 0.5rem; }
   .view-more-btn:hover { background: var(--bg); }
 
@@ -165,13 +169,13 @@
   .cat-back-btn:hover { color: var(--text); }
   .cat-back-btn .material-icons { font-size: 18px; }
 
-  .cat-card { border: 1px solid var(--card-border); border-radius: 10px; margin-bottom: 0.75rem; overflow: hidden; background: var(--card-bg); box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+  .cat-card { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 0.75rem; overflow: hidden; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
   .cat-card-header { display: flex; align-items: center; padding: 0.875rem 1rem; gap: 0.75rem; }
-  .cat-card-header:hover { background: var(--card-hover); }
+  .cat-card-header:hover { background: var(--bg); }
   .cat-header-left { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; cursor: pointer; user-select: none; }
-  .cat-chevron { color: var(--card-text2); transition: transform 0.18s; font-size: 20px !important; flex-shrink: 0; }
+  .cat-chevron { color: var(--text2); transition: transform 0.18s; font-size: 20px !important; flex-shrink: 0; }
   .cat-chevron.open { transform: rotate(180deg); }
-  .cat-name { font-size: 0.925rem; font-weight: 500; color: var(--card-text); }
+  .cat-name { font-size: 0.925rem; font-weight: 500; }
   .cat-header-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
   .cat-header-status { font-size: 0.8rem; white-space: nowrap; }
 
@@ -182,27 +186,26 @@
   .btn-cat-dismiss:hover { background: var(--bg2); }
   .btn-cat-dismiss:disabled { opacity: 0.45; cursor: not-allowed; }
 
-  .cat-card-body { border-top: 1px solid var(--card-border); }
+  .cat-card-body { border-top: 1px solid var(--border); }
 
   /* Event rows inside a category */
-  .cat-event-item { border-bottom: 1px solid var(--card-border); }
+  .cat-event-item { border-bottom: 1px solid var(--border); }
   .cat-event-item:last-child { border-bottom: none; }
   .cat-event-row { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1rem; cursor: pointer; gap: 0.75rem; transition: background 0.1s; }
-  .cat-event-row:hover { background: var(--card-hover); }
-  .cat-event-row.open { background: var(--card-open); }
+  .cat-event-row:hover { background: var(--bg); }
+  .cat-event-row.open { background: #f0f4ff; }
   .cer-info { display: flex; align-items: baseline; gap: 0.625rem; min-width: 0; flex: 1; }
-  .cer-title { font-size: 0.875rem; font-weight: 500; flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--card-text); }
-  .cer-date { font-size: 0.775rem; color: var(--card-text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cer-dismiss { flex-shrink: 0; background: none; border: none; cursor: pointer; color: var(--card-text2); display: flex; align-items: center; padding: 4px; border-radius: 4px; line-height: 1; }
-  .cer-dismiss:hover { background: var(--card-hover); color: var(--card-text); }
+  .cer-title { font-size: 0.875rem; font-weight: 500; flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cer-date { font-size: 0.775rem; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cer-dismiss { flex-shrink: 0; background: none; border: none; cursor: pointer; color: var(--text2); display: flex; align-items: center; padding: 4px; border-radius: 4px; line-height: 1; }
+  .cer-dismiss:hover { background: var(--border); color: var(--text); }
   .cer-dismiss .material-icons { font-size: 17px !important; }
 
   /* Category bottom action bar */
-  .cat-body-footer { display: flex; gap: 0.75rem; align-items: center; padding: 0.875rem 1rem; background: rgba(0,0,0,0.12); border-top: 1px solid var(--card-border); }
+  .cat-body-footer { display: flex; gap: 0.75rem; align-items: center; padding: 0.875rem 1rem; background: var(--bg); border-top: 1px solid var(--border); }
 
   /* ── Google Calendar–style inline event editor ─────────────────────── */
-  /* Editors sit on white so GCal-style inputs remain legible on the dark card */
-  .cat-event-editor { border-top: 1px solid rgba(0,0,0,0.1); background: white; }
+  .cat-event-editor { border-top: 1px solid var(--border); background: white; }
   .gcal-editor { padding: 1.5rem 1.25rem 1.25rem; }
 
   /* Large title field — GCal places it above all rows with a coloured underline */
@@ -259,16 +262,14 @@
   .btn-gcal-dismiss:hover { background: var(--bg); border-color: var(--border); }
 
   /* ── Review queue collapsed cards ─────────────────────────────────── */
-  .review-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius); margin-bottom: 0.625rem; overflow: hidden; }
+  .review-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 0.625rem; overflow: hidden; }
   .review-card-row { display: flex; align-items: center; padding: 0.875rem 1rem; gap: 0.75rem; cursor: pointer; user-select: none; transition: background 0.1s; }
-  .review-card-row:hover { background: var(--card-hover); }
-  .review-card-row.open { background: var(--card-open); }
+  .review-card-row:hover { background: var(--bg); }
+  .review-card-row.open { background: #f0f4ff; }
   .review-card-content { flex: 1; min-width: 0; }
-  .review-card-title { font-size: 0.9rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--card-text); }
-  .review-card-meta { font-size: 0.775rem; color: var(--card-text2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .review-card-title { font-size: 0.9rem; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .review-card-meta { font-size: 0.775rem; color: var(--text2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .review-card-tags { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
-  /* Expanded editor panel sits on white so GCal-style inputs remain legible */
-  .review-card-editor { background: white; }
   .review-badge-gmail { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e8f0fe; color: #1a73e8; border: 1px solid #c5d8fa; white-space: nowrap; font-weight: 500; }
   .review-badge { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--border); color: var(--text2); white-space: nowrap; }
   .review-badge-cancel { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fce8e6; color: #c5221f; border: 1px solid #f5c6c4; white-space: nowrap; font-weight: 600; }
@@ -312,8 +313,8 @@
   .gcal-recurrence-row .material-icons { font-size: 16px !important; color: var(--gcal-icon); flex-shrink: 0; margin-top: 2px; }
   .gcal-recurrence-text { flex: 1; }
   .gcal-recurrence-remove { font-size: 0.8rem; color: var(--red); background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline; margin-top: 2px; }
-  .review-conflict { font-size: 0.75rem; color: #ff7b72; margin-top: 2px; } /* lightened for dark card bg */
-  .review-from { font-size: 0.75rem; color: var(--card-text2); white-space: nowrap; }
+  .review-conflict { font-size: 0.75rem; color: #c5221f; margin-top: 2px; }
+  .review-from { font-size: 0.75rem; color: var(--text2); white-space: nowrap; }
   .review-chevron { color: var(--text2); font-size: 20px !important; transition: transform 0.18s; }
   .review-card-editor { border-top: 1px solid var(--border); }
 
@@ -411,22 +412,28 @@
 
   <!-- Review queue (Gmail events) -->
   <div class="page active" id="page-review">
-    <div class="page-title" id="review-page-title">Review</div>
-    <div class="page-sub" id="review-page-sub">Events extracted from Gmail appear here for your approval before reaching Google Calendar.</div>
+    <div class="page-hero">
+      <div class="page-title" id="review-page-title">Review</div>
+      <div class="page-sub" id="review-page-sub">Events extracted from Gmail appear here for your approval before reaching Google Calendar.</div>
+    </div>
     <div id="review-list"></div>
   </div>
 
   <!-- My Calendar (recently approved events) -->
   <div class="page" id="page-recent">
-    <div class="page-title">My Calendar</div>
-    <div class="page-sub">Recently added events — edit or update any time.</div>
+    <div class="page-hero">
+      <div class="page-title">My Calendar</div>
+      <div class="page-sub">Recently added events — edit or update any time.</div>
+    </div>
     <div id="recent-list"></div>
   </div>
 
   <!-- Calendars management (add form + list) -->
   <div class="page" id="page-calendars">
-    <div class="page-title">Calendars</div>
-    <div class="page-sub">Upload calendars in URL or PDF/File format. Choose Add All if you want every event added automatically, or review each group before it goes on your calendar.</div>
+    <div class="page-hero">
+      <div class="page-title">Calendars</div>
+      <div class="page-sub">Upload calendars in URL or PDF/File format. Choose Add All if you want every event added automatically, or review each group before it goes on your calendar.</div>
+    </div>
     <div id="cal-form-container" style="display:none">
       <div class="cal-form">
         <h3>Add calendar</h3>
@@ -461,8 +468,10 @@
 
   <!-- Settings / Family members page -->
   <div class="page" id="page-settings">
-    <div class="page-title">Family</div>
-    <div class="page-sub">Add family members to give each person their own color-coded Google Calendar.</div>
+    <div class="page-hero">
+      <div class="page-title">Family</div>
+      <div class="page-sub">Add family members to give each person their own color-coded Google Calendar.</div>
+    </div>
     <div class="settings-section">
       <div class="settings-section-title">Members</div>
       <div id="settings-members-list"></div>
@@ -499,15 +508,17 @@
 
   <!-- Category review page (shown after PDF/iCal import) -->
   <div class="page" id="page-category">
-    <button class="cat-back-btn" onclick="leaveCategoryPage()">
-      <span class="material-icons">arrow_back</span>
-      Back to Calendars
-    </button>
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:0.375rem">
-      <div class="page-title" id="cat-page-title" style="margin-bottom:0">Review Events</div>
-      <button class="btn-gcal-add" id="cat-add-all-btn" onclick="catAddAllGroups()" style="flex-shrink:0;margin-top:4px">Add All to Calendar</button>
+    <div class="page-hero">
+      <button class="cat-back-btn" onclick="leaveCategoryPage()">
+        <span class="material-icons">arrow_back</span>
+        Back to Calendars
+      </button>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:0.375rem">
+        <div class="page-title" id="cat-page-title" style="margin-bottom:0">Review Events</div>
+        <button class="btn-gcal-add" id="cat-add-all-btn" onclick="catAddAllGroups()" style="flex-shrink:0;margin-top:4px">Add All to Calendar</button>
+      </div>
+      <div class="page-sub" id="cat-page-sub">Review events by group and add them to your calendar.</div>
     </div>
-    <div class="page-sub" id="cat-page-sub">Review events by group and add them to your calendar.</div>
     <div id="category-groups-container"></div>
   </div>
 </div><!-- /#app-screen -->
@@ -788,10 +799,7 @@ function showAuth() {
 
 function showApp() {
   document.getElementById('auth-screen').style.display = 'none';
-  const appScreen = document.getElementById('app-screen');
-  appScreen.style.display = 'block';
-  // Review is the default active page — set section background immediately
-  appScreen.setAttribute('data-section', 'events');
+  document.getElementById('app-screen').style.display = 'block';
   document.getElementById('user-name').textContent = user.name || user.email;
   loadPlacesScript();
   loadData();
@@ -861,20 +869,12 @@ async function loadCalendars() {
 }
 
 // ── Nav ───────────────────────────────────────────────────────────────────
-const EVENT_SECTION_PAGES = new Set(['review', 'recent', 'category']);
-
 function showPage(page, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(`page-${page}`).classList.add('active');
   if (btn) btn.classList.add('active');
   if (page === 'settings') renderSettingsPage();
-  // Toggle section background: lilac-pink for event pages, default otherwise
-  const appScreen = document.getElementById('app-screen');
-  if (appScreen) {
-    if (EVENT_SECTION_PAGES.has(page)) appScreen.setAttribute('data-section', 'events');
-    else appScreen.removeAttribute('data-section');
-  }
 }
 
 let lastScanDays = null; // set after a successful backfill so the header reflects the window
@@ -1873,9 +1873,6 @@ async function loadCategoryGroups(calendarId, calName, totalEvents, memberId) {
   document.getElementById('nav-calendars-btn').classList.add('active');
   document.getElementById('page-category').classList.add('active');
   document.querySelectorAll('.page').forEach(p => { if (p.id !== 'page-category') p.classList.remove('active'); });
-  // Category page uses event card colours
-  const appScreen = document.getElementById('app-screen');
-  if (appScreen) appScreen.setAttribute('data-section', 'events');
   renderCategoryPage();
 }
 

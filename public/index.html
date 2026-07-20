@@ -368,7 +368,6 @@
         <button class="nav-btn active" id="nav-review-btn" onclick="showPage('review', this)">Review<span id="review-count-label"></span></button>
         <button class="nav-btn" onclick="showPage('recent', this)">My Calendar</button>
         <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendars</button>
-        <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">Family</button>
       </nav>
     </div>
     <div class="header-right">
@@ -389,8 +388,8 @@
 
   <!-- Review queue (Gmail events) -->
   <div class="page active" id="page-review">
-    <div class="page-title">Review</div>
-    <div class="page-sub">Events extracted from Gmail appear here for your approval before reaching Google Calendar.</div>
+    <div class="page-title" id="review-page-title">Review</div>
+    <div class="page-sub" id="review-page-sub">Events extracted from Gmail appear here for your approval before reaching Google Calendar.</div>
     <div id="review-list"></div>
   </div>
 
@@ -404,7 +403,7 @@
   <!-- Calendars management (add form + list) -->
   <div class="page" id="page-calendars">
     <div class="page-title">Calendars</div>
-    <div class="page-sub">Add school or sports calendars via URL or PDF upload.</div>
+    <div class="page-sub">Upload calendars in URL or PDF/File format. Choose Add All if you want every event added automatically, or review each group before it goes on your calendar.</div>
     <div id="cal-form-container" style="display:none">
       <div class="cal-form">
         <h3>Add calendar</h3>
@@ -481,7 +480,10 @@
       <span class="material-icons">arrow_back</span>
       Back to Calendars
     </button>
-    <div class="page-title" id="cat-page-title">Review Events</div>
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:0.375rem">
+      <div class="page-title" id="cat-page-title" style="margin-bottom:0">Review Events</div>
+      <button class="btn-gcal-add" id="cat-add-all-btn" onclick="catAddAllGroups()" style="flex-shrink:0;margin-top:4px">Add All to Calendar</button>
+    </div>
     <div class="page-sub" id="cat-page-sub">Review events by group and add them to your calendar.</div>
     <div id="category-groups-container"></div>
   </div>
@@ -841,9 +843,21 @@ function showPage(page, btn) {
   if (page === 'settings') renderSettingsPage();
 }
 
+let lastScanDays = null; // set after a successful backfill so the header reflects the window
+
 function updateReviewCount(n) {
   const label = document.getElementById('review-count-label');
   if (label) label.textContent = n > 0 ? ` (${n} pending)` : '';
+}
+
+function updateReviewHeader(days) {
+  const title = document.getElementById('review-page-title');
+  const sub = document.getElementById('review-page-sub');
+  if (!title || !sub) return;
+  if (!days) return; // keep default until first scan
+  const label = days <= 2 ? '48-hour' : `${days}-day`;
+  title.textContent = `Review your ${label} event queue`;
+  sub.textContent = 'Events extracted from Gmail in this window are waiting for your approval before reaching Google Calendar.';
 }
 
 // ── Review queue render ───────────────────────────────────────────────────
@@ -1063,6 +1077,8 @@ async function runBackfill(days, dryRun = false) {
         const msg = `Scanned ${totalScanned}${totalFound ? `/${totalFound}` : ''} emails · ${claudeCalls} sent to AI · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
         if (result) result.textContent = msg;
         if (btn2) btn2.textContent = '✓ Done';
+        lastScanDays = days;
+        updateReviewHeader(days);
         break;
       }
     }
@@ -2001,6 +2017,30 @@ function catReviewAll(ci) {
     const editor = document.getElementById(`cat-editor-${ci}-${ei}`);
     if (editor && editor.style.display === 'none') toggleEventEditor(ci, ei);
   });
+}
+
+// "Add All to Calendar" — page-level shortcut: fires catAddAll for every group sequentially.
+async function catAddAllGroups() {
+  const btn = document.getElementById('cat-add-all-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+  const indices = groupsState.categories.map((_, i) => i);
+  let totalAdded = 0;
+  for (const ci of indices) {
+    const cat = groupsState.categories[ci];
+    if (!cat || !cat.events.length) continue;
+    try {
+      const res = await fetch('/api/calendars/group-approve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }),
+      });
+      const data = await res.json();
+      if (res.ok) totalAdded += data.addedCount || 0;
+    } catch {}
+  }
+  await loadCalendars();
+  groupsState.categories = [];
+  renderCategoryPage();
+  if (btn) { btn.disabled = false; btn.textContent = `✓ Added ${totalAdded}`; }
 }
 
 // "Add all" — bulk-approves every remaining draft event in the category.

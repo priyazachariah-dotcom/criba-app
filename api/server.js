@@ -1617,24 +1617,35 @@ const GMAIL_NOISE_LABELS = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL']);
 const SNIPPET_DATE_PATTERNS = [
   { name: 'time',       re: /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i },
   { name: 'date-slash', re: /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/ },
-  { name: 'month-day',  re: /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}\b/i },
+  // \d{1,2}(?:st|nd|rd|th)? covers plain numbers AND ordinal suffixes:
+  // "July 15", "July 15th", "the 3rd", "August 22nd", "due on the 1st"
+  { name: 'month-day',  re: /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?/i },
+  // Also catch bare ordinals near common date prepositions: "due on the 15th", "by the 3rd"
+  { name: 'ordinal',    re: /\b(?:on|by|the|due)\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b/i },
   { name: 'weekday',    re: /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b/i },
   { name: 'relative',   re: /\b(today|tomorrow|this week|next week|this weekend)\b/i },
 ];
 // Snippets shorter than this are considered potentially truncated and escalated
-// to Stage 2 rather than skipped.
+// to Stage 2 rather than skipped. Measured against the snippet ALONE, not the
+// combined subject+snippet string — a long subject would otherwise inflate the
+// length past the threshold and prevent escalation of short snippets.
 const SNIPPET_AMBIGUOUS_THRESHOLD = 120;
 
 // Returns { pass, matchName, matchValue } if a calendar signal was found, or
-// { pass: false, escalate: true } if text is too short to be conclusive, or
-// { pass: false, escalate: false } if text is long but has no signal.
-function scanForDateContent(text) {
+// { pass: false, escalate: true } if the snippet is too short to be conclusive, or
+// { pass: false, escalate: false } if the text is long and has no signal.
+// snippetLen must be the raw snippet length (before prepending subject) so the
+// ambiguity check is accurate.
+function scanForDateContent(text, snippetLen) {
   if (!text || text.trim().length === 0) return { pass: false, escalate: true };
   for (const { name, re } of SNIPPET_DATE_PATTERNS) {
     const m = text.match(re);
     if (m) return { pass: true, matchName: name, matchValue: m[0] };
   }
-  return { pass: false, escalate: text.trim().length < SNIPPET_AMBIGUOUS_THRESHOLD };
+  // Use the raw snippet length for the escalation check, not the combined string.
+  // If snippetLen wasn't provided fall back to the combined text length.
+  const len = (snippetLen != null ? snippetLen : text.trim().length);
+  return { pass: false, escalate: len < SNIPPET_AMBIGUOUS_THRESHOLD };
 }
 
 // How long between live backfill scans per user (Part 6 rate-limit).
@@ -1832,7 +1843,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       // Run date/time/day regexes against subject + snippet.
       // If snippet is short (< SNIPPET_AMBIGUOUS_THRESHOLD), escalate to Stage 2
       // rather than skip — "no signal in 80 chars" ≠ "no event in the email."
-      const snippetScan = scanForDateContent(`${subject} ${snippet}`.trim());
+      const snippetScan = scanForDateContent(`${subject} ${snippet}`.trim(), snippet.length);
 
       if (!snippetScan.pass && !snippetScan.escalate) {
         // Snippet is long enough and clearly has no calendar signal — confident skip

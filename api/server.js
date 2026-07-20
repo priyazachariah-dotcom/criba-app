@@ -1325,7 +1325,8 @@ async function findMatchingApprovedEvent(eventsStore, oldTitle, oldDate) {
   }
 
   // Require at least 50% confidence
-  return bestScore >= 0.5 ? best : null;
+  if (bestScore < 0.5) return null;
+  return { event: best, score: Math.min(1, bestScore) };
 }
 
 // Convert "HH:MM" to minutes since midnight for overlap comparison
@@ -1506,7 +1507,9 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
 
         // Handle cancellations and reschedules
         if (intent === 'cancellation' || intent === 'reschedule') {
-          const matched = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
+          const matchResult = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
+          const matchedEvent = matchResult?.event || null;
+          const matchedScore = matchResult?.score ?? null;
           const evId = randomUUID();
           const status = intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule';
           await eventsStore.set(evId, {
@@ -1517,13 +1520,14 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
             attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
             notes: ev.notes || null, source_type: ev.source_type || null,
             old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
-            matched_event_id: matched?.id || null, matched_event_title: matched?.title || null,
+            matched_event_id: matchedEvent?.id || null, matched_event_title: matchedEvent?.title || null,
+            matched_event_confidence: matchedScore,
             source: 'gmail', gmail_message_id: messageId,
             sender_name: senderName, sender_email: senderEmail, subject,
             status, type: ev.is_all_day ? 'other' : 'timed',
             created_at: new Date().toISOString(),
           });
-          console.log(`[gmail-process] ${intent.toUpperCase()} "${ev.title}" matched="${matched?.title || 'none'}" stored (id=${evId})`);
+          console.log(`[gmail-process] ${intent.toUpperCase()} "${ev.title}" matched="${matchedEvent?.title || 'none'}" confidence=${matchedScore?.toFixed(2) ?? 'n/a'} stored (id=${evId})`);
           continue;
         }
 
@@ -2128,7 +2132,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
         // Handle cancellations and reschedules
         if (intent === 'cancellation' || intent === 'reschedule') {
-          const matched = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
+          const matchResult = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
+          const matchedEvent = matchResult?.event || null;
+          const matchedScore = matchResult?.score ?? null;
           const evId = randomUUID();
           const status = intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule';
           await eventsStore.set(evId, {
@@ -2139,13 +2145,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
             notes: ev.notes || null, source_type: ev.source_type || null,
             old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
-            matched_event_id: matched?.id || null, matched_event_title: matched?.title || null,
+            matched_event_id: matchedEvent?.id || null, matched_event_title: matchedEvent?.title || null,
+            matched_event_confidence: matchedScore,
             source: 'gmail', gmail_message_id: messageId,
             sender_name: senderName, sender_email: senderEmail, subject,
             status, type: ev.is_all_day ? 'other' : 'timed',
             created_at: new Date().toISOString(),
           });
-          console.log(`[backfill] ${intent.toUpperCase()} "${ev.title}" matched="${matched?.title || 'none'}" stored`);
+          console.log(`[backfill] ${intent.toUpperCase()} "${ev.title}" matched="${matchedEvent?.title || 'none'}" confidence=${matchedScore?.toFixed(2) ?? 'n/a'} stored`);
           eventsStored++;
           continue;
         }

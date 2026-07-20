@@ -272,6 +272,12 @@
   .btn-update { padding: 0.5rem 1.25rem; background: #b45309; color: white; border: none; border-radius: 4px; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
   .btn-update:hover { background: #92400e; }
   .btn-update:disabled { opacity: 0.5; cursor: not-allowed; }
+  /* Confidence pill — color shifts green→amber→red as confidence falls */
+  .confidence-pill { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 2px 8px; border-radius: 20px; margin-left: 6px; vertical-align: middle; }
+  .confidence-high   { background: #e6f4ea; color: #1e6e3c; border: 1px solid #b6dfca; }
+  .confidence-medium { background: #fef7e0; color: #7c5c00; border: 1px solid #f5dfa0; }
+  .confidence-low    { background: #fce8e6; color: #9b1c1c; border: 1px solid #f5c6c4; }
+  .match-line { font-size: 0.8rem; color: var(--text2); margin-bottom: 0.75rem; }
   /* ── Gmail disconnect banner ─────────────────────────────────────────── */
   #gmail-disconnect-banner { display: none; background: #fce8e6; border: 1.5px solid #f5c6c4; border-radius: 10px; padding: 0.875rem 1.25rem; margin: 1rem 0 0; display: flex; align-items: center; gap: 0.75rem; }
   #gmail-disconnect-banner.hidden { display: none !important; }
@@ -1123,12 +1129,21 @@ function renderReviewCard(ev) {
   </div>`;
 }
 
+// Returns a coloured confidence pill: green ≥80%, amber 65–79%, red 50–64%.
+function confidencePill(score) {
+  if (score == null) return '';
+  const pct = Math.round(score * 100);
+  const cls = pct >= 80 ? 'confidence-high' : pct >= 65 ? 'confidence-medium' : 'confidence-low';
+  return `<span class="confidence-pill ${cls}">${pct}% match</span>`;
+}
+
 function renderCancellationCard(ev) {
   const id = ev.id;
   const dateStr = ev.old_date ? shortDate(ev.old_date) : (ev.date ? shortDate(ev.date) : '');
   const timeStr = ev.old_time ? formatTime(ev.old_time) : (ev.time ? formatTime(ev.time) : '');
   const meta = [dateStr, timeStr].filter(Boolean).join(' · ');
   const hasMatch = !!ev.matched_event_id;
+  const pill = hasMatch ? confidencePill(ev.matched_event_confidence) : '';
   return `
   <div class="review-card cancel-card" id="rcard-${id}">
     <div class="review-card-row" id="rrow-${id}" onclick="toggleCancelCard('${id}')">
@@ -1145,7 +1160,7 @@ function renderCancellationCard(ev) {
     <div class="review-card-editor" id="reditor-${id}" style="display:none">
       <div class="cancel-panel">
         ${hasMatch
-          ? `<div class="cancel-panel-title">Remove "${escHtml(ev.matched_event_title || ev.old_title || ev.title)}" from your calendar?</div>
+          ? `<div class="cancel-panel-title">Remove "${escHtml(ev.matched_event_title || ev.old_title || ev.title)}" from your calendar?${pill}</div>
              <div class="cancel-panel-sub">This email signals the event has been cancelled. Approving will delete it from Google Calendar.</div>`
           : `<div class="cancel-panel-title">Cancellation notice — no matching event found</div>
              <div class="cancel-panel-sub">No approved event matched "${escHtml(ev.old_title || ev.title)}" in your calendar. This notice is for your information only.</div>`}
@@ -1168,6 +1183,7 @@ function renderRescheduleCard(ev) {
   const newDateStr = ev.date ? shortDate(ev.date) : '';
   const newTimeStr = (ev.is_all_day || !ev.time) ? 'All day' : formatTime(ev.time);
   const hasMatch = !!ev.matched_event_id;
+  const pill = hasMatch ? confidencePill(ev.matched_event_confidence) : '';
   return `
   <div class="review-card reschedule-card" id="rcard-${id}">
     <div class="review-card-row" id="rrow-${id}" onclick="toggleCancelCard('${id}')">
@@ -1184,7 +1200,7 @@ function renderRescheduleCard(ev) {
     <div class="review-card-editor" id="reditor-${id}" style="display:none">
       <div class="reschedule-panel">
         ${hasMatch
-          ? `<div class="cancel-panel-title">Update "${escHtml(ev.matched_event_title || ev.title)}" in your calendar?</div>
+          ? `<div class="cancel-panel-title">Update "${escHtml(ev.matched_event_title || ev.title)}" in your calendar?${pill}</div>
              <div class="reschedule-arrow">
                <span class="reschedule-old">${[oldDateStr, oldTimeStr].filter(Boolean).join(' · ') || 'previous date'}</span>
                <span class="material-icons" style="font-size:1rem;color:var(--text2)">arrow_forward</span>

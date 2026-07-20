@@ -1604,15 +1604,42 @@ app.get('/api/config', (req, res) => {
   res.json({ placesApiKey: process.env.GOOGLE_PLACES_API_KEY || '' });
 });
 
-// Gmail category labels that indicate noise — only Promotions and Social are reliably
-// never calendar-relevant. Updates and Forums are intentionally excluded from this set:
-//   CATEGORY_UPDATES: invoices, receipts, school announcements, billing notices, shipping
-//                     confirmations — exactly the financial/scheduling emails Criba needs.
-//   CATEGORY_FORUMS:  mailing lists, team communications, school forums — may contain
-//                     event announcements.
-// These are pre-filtered away at query level anyway; keeping them out of the loop check
-// ensures we don't double-exclude legitimate content.
+// Noise labels used by the live webhook path only. The backfill uses a positive
+// CATEGORY_PERSONAL (Primary tab) check instead — see backfill endpoint below.
 const GMAIL_NOISE_LABELS = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL']);
+
+// ── Snippet-based calendar-signal scanner (backfill pre-filter, Parts 2-3) ──
+// Runs against subject + Gmail snippet (~200 chars) at Stage 1.
+// If the snippet is too short to be conclusive, the message is escalated to a
+// full Stage 2 body fetch rather than skipped — recall beats efficiency.
+// Patterns are intentionally generous: a false positive costs one Claude call;
+// a false negative silently loses a real event.
+const SNIPPET_DATE_PATTERNS = [
+  { name: 'time',       re: /\b\d{1,2}(:\d{2})?\s*(am|pm)\b/i },
+  { name: 'date-slash', re: /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/ },
+  { name: 'month-day',  re: /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}\b/i },
+  { name: 'weekday',    re: /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b/i },
+  { name: 'relative',   re: /\b(today|tomorrow|this week|next week|this weekend)\b/i },
+];
+// Snippets shorter than this are considered potentially truncated and escalated
+// to Stage 2 rather than skipped.
+const SNIPPET_AMBIGUOUS_THRESHOLD = 120;
+
+// Returns { pass, matchName, matchValue } if a calendar signal was found, or
+// { pass: false, escalate: true } if text is too short to be conclusive, or
+// { pass: false, escalate: false } if text is long but has no signal.
+function scanForDateContent(text) {
+  if (!text || text.trim().length === 0) return { pass: false, escalate: true };
+  for (const { name, re } of SNIPPET_DATE_PATTERNS) {
+    const m = text.match(re);
+    if (m) return { pass: true, matchName: name, matchValue: m[0] };
+  }
+  return { pass: false, escalate: text.trim().length < SNIPPET_AMBIGUOUS_THRESHOLD };
+}
+
+// How long between live backfill scans per user (Part 6 rate-limit).
+// Controls cost from repeated re-scans, not from scan thoroughness.
+const BACKFILL_COOLDOWN_SEC = 24 * 60 * 60;
 
 // Approximate token cost of FULL_EXTRACTION_PROMPT alone (chars / 4).
 // Used by dry-run to estimate how many input tokens a real extraction would spend.
@@ -1623,25 +1650,51 @@ const IMAGE_TOKENS_ESTIMATE = 1600;
 
 // POST /api/gmail/backfill — scan recent Gmail inbox for calendar events.
 // Default window: 2 days (48h). Max Claude extractions per run: 10.
-// Uses two-stage fetch: metadata only first, full body only if subject passes pre-filter.
-// Safe to call multiple times — fingerprint + per-message lock prevent re-extraction.
+// Recall-first Gmail backfill. Priority: missing a real event is worse than an unnecessary
+// Claude call. Cost is controlled via batching (Part 4) and scan-frequency rate-limiting
+// (Part 6), not by aggressively filtering out messages.
 //
-// Dry-run mode (?dryRun=true or body.dryRun=true):
-//   Runs the full pipeline — metadata fetch, category exclusion, pre-filter, dedup check,
-//   image detection — but stops before every Claude API call.
-//   Returns a per-message verdict table: what passed, what was filtered and why,
-//   which keyword matched, how many images were found, and estimated token cost.
-//   Does NOT write the per-message lock or fingerprint, so real scans can still run afterward.
+// Pipeline per message:
+//   Stage 1 (cheap, metadata + snippet): Primary-tab filter → dedup → snippet pattern scan
+//   Escalation: short/ambiguous snippets → Stage 2 regardless (Gmail fetches are free)
+//   Stage 2 (full body): pattern scan on body → image-heavy bypass → Claude (Part 5)
+//
+// Batching: each invocation does ≤ MAX_FULL_FETCHES Stage 2 fetches, then returns
+//   { truncated: true, nextOffset } for the frontend to chain the next batch.
+//
+// Dry-run (?dryRun=true): full pipeline, no Claude calls, no Redis writes.
+//   Returns per-message verdict table. Non-Primary messages are summarized,
+//   not listed individually (Part 1 display rule).
 app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const email = req.user.email;
-  // Default 2 days for quick first-run; caller can request up to 30 for deeper scan
   const days = Math.min(parseInt(req.body?.days || '2'), 30);
-  // Dry-run: full filtering pipeline, no Claude calls, no Redis writes
   const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
-  // Cap Claude calls per run so we always finish within the 60s Vercel limit.
-  // Each Claude call takes ~3-5s; 10 calls = ~30-50s, leaving headroom.
-  // Dry-run has no cap — it scans all messages (no Claude calls to time-budget).
-  const MAX_EXTRACT = dryRun ? Infinity : 10;
+  // Batch continuation offset (index into allMessageIds from a prior truncated call)
+  const offset = Math.max(0, parseInt(req.body?.offset || '0'));
+  // Stage 2 (full-body) fetch budget per invocation. Each Stage 2 + Claude call takes ~4s;
+  // 35 fetches leaves comfortable headroom inside Vercel's 60s limit.
+  // Dry-run scans more aggressively (no Claude calls), capped at 200 to avoid timeout.
+  const MAX_FULL_FETCHES = dryRun ? 200 : 35;
+
+  // Rate-limit live scans to once per 24h (Part 6). Only applied at offset=0 (first batch);
+  // batch continuations (offset > 0) are exempt. Controls cost from repeated re-scans,
+  // not from scan thoroughness.
+  if (!dryRun && offset === 0) {
+    const lastRunTs = await redis.get(`backfillLastRun:${email}`);
+    if (lastRunTs) {
+      const elapsedSec = Math.floor((Date.now() - parseInt(lastRunTs)) / 1000);
+      const remainingSec = BACKFILL_COOLDOWN_SEC - elapsedSec;
+      if (remainingSec > 0) {
+        const h = Math.ceil(remainingSec / 3600);
+        return res.status(429).json({
+          rateLimited: true,
+          error: `Backfill already ran recently — next scan available in ~${h}h`,
+          nextAvailableAt: parseInt(lastRunTs) + BACKFILL_COOLDOWN_SEC * 1000,
+        });
+      }
+    }
+    await redis.set(`backfillLastRun:${email}`, Date.now().toString(), 'EX', BACKFILL_COOLDOWN_SEC);
+  }
 
   const refreshToken = await redis.get(`refreshToken:${email}`);
   if (!refreshToken) return res.status(400).json({ error: 'No refresh token — please sign out and sign back in' });
@@ -1650,21 +1703,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const gmail = google.gmail({ version: 'v1', auth });
   const eventsStore = getUserEvents(email);
 
-  // Build the date-bounded inbox query.
-  // Note: Gmail's after: operator requires YYYY/MM/DD — Unix timestamps are silently ignored.
-  // We intentionally do NOT include -category: operators here: those filters are applied
-  // per-message via labelIds in the loop (GMAIL_NOISE_LABELS check). Putting them in the
-  // query is an overly-aggressive optimisation that silently drops legitimate calendar emails
-  // that Gmail routes to "Updates", "Social", etc. — which is common for school and activity
-  // notifications.
+  // after: requires YYYY/MM/DD — Unix timestamps are silently ignored by Gmail
   const afterDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const afterYMD = `${afterDate.getUTCFullYear()}/${String(afterDate.getUTCMonth() + 1).padStart(2, '0')}/${String(afterDate.getUTCDate()).padStart(2, '0')}`;
   const q = `in:inbox after:${afterYMD}`;
 
-  console.log(`[backfill] START email=${email} days=${days} after=${afterYMD} dryRun=${dryRun} maxExtract=${MAX_EXTRACT}`);
+  console.log(`[backfill] START email=${email} days=${days} after=${afterYMD} offset=${offset} dryRun=${dryRun}`);
   console.log(`[backfill] QUERY: "${q}"`);
 
-  // Collect message IDs from list (cheap — no body)
   let allMessageIds = [];
   let pageToken;
   let resultSizeEstimate = 0;
@@ -1678,162 +1724,166 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const msgs = listRes.data.messages || [];
       allMessageIds.push(...msgs.map(m => m.id));
       pageToken = listRes.data.nextPageToken;
-    } while (pageToken && allMessageIds.length < 300); // safety cap
+    } while (pageToken && allMessageIds.length < 500);
   } catch (err) {
     console.error('[backfill] messages.list failed:', err.message);
     return res.status(500).json({ error: 'Failed to list Gmail messages: ' + err.message });
   }
 
-  console.log(`[backfill] list complete: messageIds=${allMessageIds.length} resultSizeEstimate=${resultSizeEstimate}`);
+  console.log(`[backfill] list: total=${allMessageIds.length} estimate=${resultSizeEstimate} processingFrom=${offset}`);
 
   let scanned = 0;
   let skippedLock = 0;
-  let skippedCategory = 0;
-  let skippedPreFilter = 0;
+  let skippedCategory = 0; // non-Primary (CATEGORY_PERSONAL absent)
   let skippedDedup = 0;
+  let skippedPreFilter = 0; // no date/time/day signal in snippet + body
+  let fullFetches = 0;
   let claudeCalls = 0;
   let eventsExtracted = 0;
   let eventsStored = 0;
   let truncated = false;
-  // Dry-run: collect per-message diagnostic rows instead of calling Claude
-  const dryRunMessages = [];
+  let nextOffset = null;
+  const dryRunMessages = []; // only entries shown in table (Primary, non-locked, non-dedup)
 
-  for (const messageId of allMessageIds) {
-    // Stop calling Claude if we've hit the per-run cap — still finish the loop
-    // for accounting, but don't fetch full bodies we can't process this run.
-    if (!dryRun && claudeCalls >= MAX_EXTRACT) {
-      truncated = true;
-      break; // remaining messages will be re-eligible on the next backfill run
-    }
+  const toProcess = allMessageIds.slice(offset);
 
+  for (let i = 0; i < toProcess.length; i++) {
+    const messageId = toProcess[i];
     scanned++;
 
-    // Per-message lock
-    // Dry-run: read-only check (exists) so we don't consume the lock
-    // Live:    SET NX to claim the message for this run
+    // ── Lock check ──────────────────────────────────────────────────────────
     const lockKey = `gmailMsgLock:${email}:${messageId}`;
     if (dryRun) {
-      const lockExists = await redis.exists(lockKey);
-      if (lockExists) {
-        skippedLock++;
-        dryRunMessages.push({ messageId, verdict: 'SKIP', reason: 'already-locked' });
-        continue;
-      }
+      if (await redis.exists(lockKey)) { skippedLock++; continue; }
     } else {
       const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
       if (!locked) { skippedLock++; continue; }
     }
 
     try {
-      // Stage 1: metadata-only fetch (headers only — much cheaper than format:full)
+      // ── Stage 1: metadata + snippet (cheap — no body) ───────────────────
       const metaRes = await gmail.users.messages.get({
         userId: 'me', id: messageId, format: 'metadata',
         metadataHeaders: ['Subject', 'From', 'Date'],
       });
       const meta = metaRes.data;
-
-      // Extract headers first so they're available in all subsequent diagnostics
       const metaHeaders = meta.payload?.headers || [];
-      const subject = metaHeaders.find(h => h.name.toLowerCase() === 'subject')?.value || '';
-      const from = metaHeaders.find(h => h.name.toLowerCase() === 'from')?.value || '';
+      const subject  = metaHeaders.find(h => h.name.toLowerCase() === 'subject')?.value || '';
+      const from     = metaHeaders.find(h => h.name.toLowerCase() === 'from')?.value || '';
       const dateSent = metaHeaders.find(h => h.name.toLowerCase() === 'date')?.value || '';
       const sizeEstimate = meta.sizeEstimate || 0;
-
-      // Skip noise categories (Promotions, Social only — see GMAIL_NOISE_LABELS comment)
+      const snippet  = meta.snippet || '';
       const labelIds = meta.labelIds || [];
-      const noiseLabels = labelIds.filter(l => GMAIL_NOISE_LABELS.has(l));
-      if (noiseLabels.length > 0) {
+
+      // ── Primary-tab filter (Part 1) ─────────────────────────────────────
+      // Only process CATEGORY_PERSONAL (Gmail Primary tab). Promotional / Social
+      // emails are excluded here; Updates / Forums pass through (they contain
+      // legitimate calendar content like invoices and school announcements).
+      if (!labelIds.includes('CATEGORY_PERSONAL')) {
         skippedCategory++;
-        if (dryRun) {
-          // Include subject and all matching label IDs so the table is self-explanatory
-          dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'noise-category', detail: noiseLabels.join(', ') });
-        } else {
-          await redis.del(lockKey);
-        }
+        if (!dryRun) await redis.del(lockKey);
+        // Not shown as individual rows in dry-run — summarised in header count only
         continue;
       }
 
-      const subjectDiag = diagnosePreFilter(subject);
-      const subjectPassesFilter = subjectDiag.pass;
-      // Route to Stage 2 if: subject matches keywords, OR email is large enough to
-      // plausibly contain image attachments (>30 KB threshold). Small emails with no
-      // subject keywords are text-only and safe to skip.
-      const LARGE_EMAIL_BYTES = 30000;
-      const mightHaveImages = sizeEstimate >= LARGE_EMAIL_BYTES;
-      if (!subjectPassesFilter && !mightHaveImages) {
-        skippedPreFilter++;
-        if (dryRun) {
-          dryRunMessages.push({
-            messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'prefilter-subject',
-            prefilterMatch: null,
-          });
-        } else {
-          await redis.del(lockKey);
-        }
-        continue;
-      }
-      if (!subjectPassesFilter && mightHaveImages) {
-        console.log(`[backfill] msg=${messageId} subject failed pre-filter but size=${sizeEstimate}B — routing to Stage 2 for image check`);
-      }
-
-      // Cross-user fingerprint dedup (subject-level, before full fetch)
+      // ── Fingerprint dedup (before Stage 2 — saves a full fetch) ─────────
       const { senderName, senderEmail } = parseFrom(from);
       const fpRaw = `${senderEmail.toLowerCase()}:${subject.trim()}:${dateSent.trim()}`;
       const fingerprint = crypto.createHash('sha256').update(fpRaw).digest('hex');
       const fpKey = `processedEmail:${fingerprint}`;
-      const alreadyProcessed = await redis.exists(fpKey);
-      if (alreadyProcessed) {
+      if (await redis.exists(fpKey)) {
         skippedDedup++;
-        if (dryRun) {
-          dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'already-processed-fingerprint' });
-        } else {
-          await redis.del(lockKey);
-        }
+        if (dryRun) dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'already-processed-fingerprint' });
+        else await redis.del(lockKey);
         continue;
       }
 
-      // Stage 2: full fetch — only for messages that passed routing gate + dedup
-      const fullRes = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
-      const body = extractEmailBody(fullRes.data.payload);
+      // ── Snippet pattern scan (Part 2) ────────────────────────────────────
+      // Run date/time/day regexes against subject + snippet.
+      // If snippet is short (< SNIPPET_AMBIGUOUS_THRESHOLD), escalate to Stage 2
+      // rather than skip — "no signal in 80 chars" ≠ "no event in the email."
+      const snippetScan = scanForDateContent(`${subject} ${snippet}`.trim());
 
-      // Detect images
-      const imageParts = collectImageParts(fullRes.data.payload);
-      const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
-
-      // Full pre-filter on subject+body; image-heavy emails bypass it
-      const fullDiag = diagnosePreFilter(`${subject} ${body}`);
-      if (!fullDiag.pass && !isImageHeavy) {
+      if (!snippetScan.pass && !snippetScan.escalate) {
+        // Snippet is long enough and clearly has no calendar signal — confident skip
         skippedPreFilter++;
         if (dryRun) {
           dryRunMessages.push({
-            messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'prefilter-body',
-            prefilterMatch: null, imageCount: imageParts.length,
+            messageId, subject, sizeEstimate,
+            snippetPreview: snippet.slice(0, 100),
+            verdict: 'SKIP', reason: 'no-date-signal-snippet',
           });
         } else {
           await redis.del(lockKey);
         }
         continue;
       }
-      if (isImageHeavy && !fullDiag.pass) {
-        console.log(`[backfill] IMAGE-HEAVY BYPASS msg=${messageId} — ${imageParts.length} image(s), bodyLen=${body.length}`);
+
+      // ── Stage 2 budget check (Part 4) ───────────────────────────────────
+      // About to do a full-body fetch — check per-invocation budget.
+      // Release lock so the next batch can reclaim this message.
+      if (fullFetches >= MAX_FULL_FETCHES) {
+        truncated = true;
+        nextOffset = offset + i; // resume from this message ID on next call
+        if (!dryRun) await redis.del(lockKey);
+        break;
+      }
+      fullFetches++;
+
+      // ── Stage 2: full body fetch ─────────────────────────────────────────
+      const fullRes = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
+      const body = extractEmailBody(fullRes.data.payload);
+      const imageParts = collectImageParts(fullRes.data.payload);
+      const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
+
+      // If snippet didn't clearly match (escalation path), run pattern on full body (Part 3)
+      let bodyScan = null;
+      if (!snippetScan.pass && !isImageHeavy) {
+        bodyScan = scanForDateContent(`${subject} ${body.slice(0, 2000)}`);
+        if (!bodyScan.pass) {
+          // Escalated to full fetch, still no calendar signal, not image-heavy — skip
+          skippedPreFilter++;
+          if (dryRun) {
+            dryRunMessages.push({
+              messageId, subject, sizeEstimate,
+              snippetPreview: snippet.slice(0, 100),
+              verdict: 'SKIP', reason: 'no-date-signal-body',
+              imageCount: imageParts.length,
+              escalated: true,
+            });
+          } else {
+            await redis.del(lockKey);
+          }
+          continue;
+        }
       }
 
-      // Estimate token cost for this message
-      const textTokens = PROMPT_TOKENS_ESTIMATE + Math.ceil((subject.length + body.length) / 4);
-      const imageTokens = imageParts.length * IMAGE_TOKENS_ESTIMATE;
-      const estTokens = textTokens + imageTokens;
+      if (isImageHeavy && !snippetScan.pass) {
+        console.log(`[backfill] IMAGE-HEAVY ESCALATION msg=${messageId} — ${imageParts.length} image(s) bodyLen=${body.length}`);
+      }
 
-      // --- DRY-RUN BRANCH: record diagnosis and stop here (no Claude, no Redis writes) ---
+      // Determine pass reason + matched pattern (for dry-run table)
+      const passReason = snippetScan.pass    ? 'snippet-match'
+                       : isImageHeavy        ? 'image-heavy-escalation'
+                       :                       'body-match';
+      const passPattern = snippetScan.pass   ? { name: snippetScan.matchName, value: snippetScan.matchValue }
+                        : bodyScan?.pass     ? { name: bodyScan.matchName, value: bodyScan.matchValue }
+                        :                      null;
+
+      // Token estimate
+      const estTokens = PROMPT_TOKENS_ESTIMATE
+        + Math.ceil((subject.length + body.length) / 4)
+        + imageParts.length * IMAGE_TOKENS_ESTIMATE;
+
+      // ── Dry-run exit point (Part 5) — no Claude, no Redis writes ────────
       if (dryRun) {
         dryRunMessages.push({
-          messageId,
-          subject,
-          sizeEstimate,
+          messageId, subject, sizeEstimate,
+          snippetPreview: snippet.slice(0, 100),
           verdict: 'WOULD_SEND',
-          reason: isImageHeavy && !fullDiag.pass ? 'image-heavy-bypass' : 'prefilter-pass',
-          prefilterMatch: fullDiag.pass
-            ? { type: fullDiag.matchType, value: fullDiag.matchValue }
-            : (subjectDiag.pass ? { type: subjectDiag.matchType, value: subjectDiag.matchValue } : null),
+          reason: passReason,
+          escalated: !snippetScan.pass,
+          patternMatch: passPattern,
           imageCount: imageParts.length,
           bodyLength: body.length,
           estTokens,
@@ -1841,10 +1891,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         continue;
       }
 
-      // Mark fingerprint before Claude call to prevent concurrent race
+      // ── Live path: fingerprint write → images → Claude → store ──────────
       await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
-      // Fetch image data for vision extraction
       const images = imageParts.length > 0
         ? await fetchEmailImages(fullRes.data.payload, gmail, messageId)
         : [];
@@ -1852,63 +1901,58 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       claudeCalls++;
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
       eventsExtracted += extracted.length;
-      console.log(`[backfill] msg=${messageId} Claude returned ${extracted.length} event(s) images=${images.length} (call ${claudeCalls}/${MAX_EXTRACT})`);
+      console.log(`[backfill] msg=${messageId} Claude=${extracted.length} event(s) images=${images.length} call=${claudeCalls}`);
 
       for (const ev of extracted) {
         if (!ev.title || !ev.date) continue;
         if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) continue;
-
         const startTime = ev.start_time || '';
         const endTime = ev.end_time || '';
         const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
         const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
-
         const evId = randomUUID();
         await eventsStore.set(evId, {
-          id: evId,
-          title: ev.title,
-          date: ev.date,
-          end_date: ev.end_date || '',
-          time: startTime,
-          end_time: endTime,
-          location: ev.location || '',
+          id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
+          time: startTime, end_time: endTime, location: ev.location || '',
           is_all_day: !!ev.is_all_day,
           attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
-          notes: combinedNotes,
-          conflict_note: conflictNote || null,
-          source_type: ev.source_type || null,
-          recurrence_rule: ev.recurrence || null,
-          source: 'gmail',
-          gmail_message_id: messageId,
-          sender_name: senderName,
-          sender_email: senderEmail,
-          subject,
-          status: 'pending',
-          type: ev.is_all_day ? 'other' : 'timed',
+          notes: combinedNotes, conflict_note: conflictNote || null,
+          source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null,
+          source: 'gmail', gmail_message_id: messageId,
+          sender_name: senderName, sender_email: senderEmail, subject,
+          status: 'pending', type: ev.is_all_day ? 'other' : 'timed',
           created_at: new Date().toISOString(),
         });
         eventsStored++;
       }
     } catch (err) {
-      console.error(`[backfill] ERROR messageId=${messageId}:`, err.message);
-      if (!dryRun) await redis.del(lockKey); // release so next run can retry
+      console.error(`[backfill] ERROR msg=${messageId}:`, err.message);
+      if (!dryRun) await redis.del(lockKey);
     }
   }
 
   if (dryRun) {
     const wouldSend = dryRunMessages.filter(m => m.verdict === 'WOULD_SEND').length;
-    const totalEstTokens = dryRunMessages.filter(m => m.verdict === 'WOULD_SEND').reduce((s, m) => s + (m.estTokens || 0), 0);
-    console.log(`[backfill] DRY-RUN DONE email=${email} scanned=${scanned} wouldSend=${wouldSend} skippedLock=${skippedLock} skippedCategory=${skippedCategory} skippedPreFilter=${skippedPreFilter} skippedDedup=${skippedDedup}`);
+    const totalEstTokens = dryRunMessages
+      .filter(m => m.verdict === 'WOULD_SEND')
+      .reduce((s, m) => s + (m.estTokens || 0), 0);
+    console.log(`[backfill] DRY-RUN DONE scanned=${scanned} primary=${scanned - skippedLock - skippedCategory} wouldSend=${wouldSend} skippedLock=${skippedLock} skippedNonPrimary=${skippedCategory} skippedDedup=${skippedDedup} skippedNoSignal=${skippedPreFilter}`);
     return res.json({
-      dryRun: true, days, query: q, totalFound: allMessageIds.length, resultSizeEstimate, scanned,
-      wouldExtract: wouldSend, skippedLock, skippedCategory, skippedPreFilter, skippedDedup,
-      totalEstTokens,
+      dryRun: true, days, query: q, offset,
+      totalFound: allMessageIds.length, resultSizeEstimate, scanned,
+      wouldExtract: wouldSend,
+      skippedLock, skippedCategory, skippedPreFilter, skippedDedup,
+      totalEstTokens, truncated, nextOffset,
       messages: dryRunMessages,
     });
   }
 
-  console.log(`[backfill] DONE email=${email} scanned=${scanned} skippedLock=${skippedLock} skippedCategory=${skippedCategory} skippedPreFilter=${skippedPreFilter} skippedDedup=${skippedDedup} claudeCalls=${claudeCalls} eventsExtracted=${eventsExtracted} eventsStored=${eventsStored} truncated=${truncated}`);
-  res.json({ ok: true, scanned, skippedLock, skippedCategory, skippedPreFilter, skippedDedup, claudeCalls, eventsExtracted, eventsStored, days, truncated });
+  console.log(`[backfill] DONE scanned=${scanned} skippedLock=${skippedLock} skippedNonPrimary=${skippedCategory} skippedDedup=${skippedDedup} skippedNoSignal=${skippedPreFilter} fullFetches=${fullFetches} claudeCalls=${claudeCalls} eventsStored=${eventsStored} truncated=${truncated} nextOffset=${nextOffset}`);
+  res.json({
+    ok: true, days, scanned, skippedLock, skippedCategory, skippedPreFilter, skippedDedup,
+    fullFetches, claudeCalls, eventsExtracted, eventsStored,
+    truncated, nextOffset, totalFound: allMessageIds.length, totalScanned: offset + scanned,
+  });
 });
 
 app.get('*', (req, res) => {

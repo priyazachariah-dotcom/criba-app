@@ -852,6 +852,76 @@ function renderReview() {
   container.innerHTML = BACKFILL_BAR_HTML + pendingEvents.map(ev => renderReviewCard(ev)).join('');
 }
 
+// Labels shown in the dry-run table skip-reason column
+const DRY_RUN_SKIP_LABELS = {
+  'already-locked':               'Already processed',
+  'already-processed-fingerprint':'Dedup (seen before)',
+  'no-date-signal-snippet':       'No date signal (snippet)',
+  'no-date-signal-body':          'No date signal (body)',
+};
+
+function renderDryRunTable(result, accumulated, queryStr) {
+  const { totalFound, scanned, resultSizeEstimate, skippedLock, skippedCategory,
+          skippedPreFilter, skippedDedup, wouldExtract, totalEstTokens, messages } = accumulated;
+
+  const rows = messages.map(m => {
+    const isWould = m.verdict === 'WOULD_SEND';
+    const pillClass = isWould ? 'send' : 'skip';
+    const pillLabel = isWould ? 'WOULD SEND' : 'SKIP';
+
+    const matchStr = m.patternMatch
+      ? `${m.patternMatch.name}: <em>${escHtml(m.patternMatch.value)}</em>`
+      : isWould && m.reason === 'image-heavy-escalation' ? '<em>image (vision)</em>'
+      : m.escalated ? '<em>escalated → body match</em>'
+      : '—';
+
+    const subjectText = m.subject
+      ? escHtml(m.subject.slice(0, 60)) + (m.subject.length > 60 ? '…' : '')
+      : `<em style="color:#999">(no subject · ${m.messageId})</em>`;
+    const snippetLine = m.snippetPreview
+      ? `<br><span style="font-size:0.68rem;color:#94a3b8">${escHtml(m.snippetPreview)}…</span>`
+      : '';
+
+    const tokens = m.estTokens ? `~${m.estTokens.toLocaleString()}` : '—';
+    const images = m.imageCount != null ? m.imageCount : '—';
+    const skipLabel = DRY_RUN_SKIP_LABELS[m.reason] || m.reason || '';
+    const skipDetail = m.detail ? ` <span style="font-size:0.68rem;color:#94a3b8">(${escHtml(m.detail)})</span>` : '';
+    const skipReason = !isWould ? `${skipLabel}${skipDetail}` : '';
+
+    return `<tr class="${isWould ? 'would-send' : 'skipped'}">
+      <td><span class="verdict-pill ${pillClass}">${pillLabel}</span></td>
+      <td>${subjectText}${snippetLine}</td>
+      <td>${matchStr}</td>
+      <td style="text-align:center">${images}</td>
+      <td style="text-align:right">${tokens}</td>
+      <td>${skipReason}</td>
+    </tr>`;
+  }).join('');
+
+  const totalEst = totalEstTokens ? `~${totalEstTokens.toLocaleString()} est. tokens` : '';
+  const estNote = resultSizeEstimate && resultSizeEstimate !== totalFound
+    ? ` (Gmail estimates ~${resultSizeEstimate} total)` : '';
+
+  result.innerHTML = `
+    <div class="dry-run-summary">
+      <span>Found <strong>${totalFound}</strong> in Gmail${estNote} · scanned <strong>${scanned}</strong></span>
+      ${skippedCategory ? `<span><strong>${skippedCategory}</strong> non-Primary excluded</span>` : ''}
+      <span><strong>${wouldExtract}</strong> would go to AI</span>
+      <span>Skipped: ${skippedLock} already&nbsp;processed · ${skippedPreFilter} no&nbsp;date&nbsp;signal · ${skippedDedup} dedup</span>
+      ${totalEst ? `<span>${totalEst}</span>` : ''}
+    </div>
+    ${queryStr ? `<div style="font-size:0.72rem;color:#94a3b8;margin-top:0.3rem;font-family:monospace">${escHtml(queryStr)}</div>` : ''}
+    <div class="dry-run-table-wrap">
+      <table class="dry-run-table">
+        <thead><tr>
+          <th>Verdict</th><th>Subject / snippet</th><th>Pattern matched</th>
+          <th style="text-align:center">Images</th><th style="text-align:right">Est. tokens</th><th>Skip reason</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1rem">No Primary-tab emails in this window</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
 async function runBackfill(days, dryRun = false) {
   const btn2 = document.getElementById('backfill-btn-2');
   const btn7 = document.getElementById('backfill-btn-7');
@@ -859,105 +929,102 @@ async function runBackfill(days, dryRun = false) {
   const result = document.getElementById('backfill-result');
   if (!btn2) return;
 
-  // Disable all buttons during scan
+  // Disable all buttons; set scanning label on the clicked one
   if (btn2) { btn2.disabled = true; if (!dryRun && days === 2) btn2.textContent = 'Scanning…'; }
   if (btn7) { btn7.disabled = true; if (!dryRun && days === 7) btn7.textContent = 'Scanning…'; }
   if (btnDry) { btnDry.disabled = true; if (dryRun) btnDry.textContent = 'Running…'; }
   if (result) result.innerHTML = '';
 
-  // Client-side timeout: 55 seconds — shorter than Vercel's 60s limit.
-  // If the backend doesn't respond in time, show an actionable error instead of hanging.
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 55000);
+  // Accumulator for multi-batch scan
+  let offset = 0;
+  let totalFound = null;
+  let resultSizeEstimate = null;
+  let queryStr = null;
+  let skippedLock = 0, skippedCategory = 0, skippedPreFilter = 0, skippedDedup = 0;
+  let claudeCalls = 0, eventsStored = 0;
+  let totalScanned = 0;
+  const allDryRunMessages = [];
 
   try {
-    const url = dryRun ? '/api/gmail/backfill?dryRun=true' : '/api/gmail/backfill';
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ days }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    const data = await res.json();
+    while (true) {
+      // Per-batch 55s timeout (shorter than Vercel's 60s)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 55000);
 
-    if (res.ok && data.dryRun) {
-      // --- Dry-run result: render verdict table ---
-      const wouldSend = data.messages.filter(m => m.verdict === 'WOULD_SEND');
-      const skipped = data.messages.filter(m => m.verdict === 'SKIP');
+      let res, data;
+      try {
+        const url = dryRun ? '/api/gmail/backfill?dryRun=true' : '/api/gmail/backfill';
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ days, offset }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        data = await res.json();
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        const timedOut = fetchErr.name === 'AbortError';
+        result.innerHTML = timedOut
+          ? `<span style="color:#ef4444">Scan timed out${offset > 0 ? ` at batch offset ${offset}` : ''} — try "Last 48 hours" for fewer messages</span>`
+          : '<span style="color:#ef4444">Network error — try again</span>';
+        return;
+      }
 
-      const SKIP_LABELS = {
-        'already-locked': 'Already processed',
-        'noise-category': 'Noise category', // detail field has the specific label(s)
-        'prefilter-subject': 'No keyword (subject)',
-        'prefilter-body': 'No keyword (body)',
-        'already-processed-fingerprint': 'Dedup (seen before)',
-      };
+      if (res.status === 429) {
+        result.textContent = data.error || 'Scan rate limited — please wait before scanning again';
+        return;
+      }
+      if (!res.ok) {
+        result.textContent = data.error || 'Scan failed — try again';
+        return;
+      }
 
-      const rows = data.messages.map(m => {
-        const isWould = m.verdict === 'WOULD_SEND';
-        const pillClass = isWould ? 'send' : 'skip';
-        const pillLabel = isWould ? 'WOULD SEND' : 'SKIP';
-        const matchStr = m.prefilterMatch
-          ? `${m.prefilterMatch.type}: <em>${escHtml(m.prefilterMatch.value)}</em>`
-          : (isWould && m.reason === 'image-heavy-bypass') ? 'image-heavy bypass' : '—';
-        // Show subject or fall back to message ID so repeated runs can be compared
-        const subjectText = m.subject
-          ? escHtml(m.subject.slice(0, 60)) + (m.subject.length > 60 ? '…' : '')
-          : `<em style="color:#999">(no subject · ${m.messageId})</em>`;
-        const tokens = m.estTokens ? `~${m.estTokens.toLocaleString()}` : '—';
-        const images = m.imageCount != null ? m.imageCount : '—';
-        const baseSkipReason = SKIP_LABELS[m.reason] || m.reason;
-        const skipReason = !isWould
-          ? (m.detail ? `${baseSkipReason} <span style="font-size:0.68rem;color:#94a3b8">(${escHtml(m.detail)})</span>` : baseSkipReason)
-          : '';
-        return `<tr class="${isWould ? 'would-send' : 'skipped'}">
-          <td><span class="verdict-pill ${pillClass}">${pillLabel}</span></td>
-          <td>${subjectText}</td>
-          <td>${matchStr}</td>
-          <td style="text-align:center">${images}</td>
-          <td style="text-align:right">${tokens}</td>
-          <td>${skipReason}</td>
-        </tr>`;
-      }).join('');
+      // Accumulate across batches
+      totalFound = data.totalFound ?? totalFound;
+      resultSizeEstimate = data.resultSizeEstimate ?? resultSizeEstimate;
+      queryStr = queryStr ?? data.query;
+      totalScanned += data.scanned || 0;
+      skippedLock += data.skippedLock || 0;
+      skippedCategory += data.skippedCategory || 0;
+      skippedPreFilter += data.skippedPreFilter || 0;
+      skippedDedup += data.skippedDedup || 0;
 
-      const totalEst = data.totalEstTokens ? `~${data.totalEstTokens.toLocaleString()} est. tokens` : '';
-      const estNote = data.resultSizeEstimate && data.resultSizeEstimate !== data.totalFound
-        ? ` (Gmail estimates ~${data.resultSizeEstimate} total)` : '';
-      result.innerHTML = `
-        <div class="dry-run-summary">
-          <span>Found <strong>${data.totalFound}</strong> in Gmail${estNote} · scanned <strong>${data.scanned}</strong></span>
-          <span><strong>${data.wouldExtract}</strong> would go to AI</span>
-          <span>Skipped: ${data.skippedLock} already&nbsp;processed · ${data.skippedCategory} noise · ${data.skippedPreFilter} no&nbsp;keyword · ${data.skippedDedup} dedup</span>
-          ${totalEst ? `<span>${totalEst}</span>` : ''}
-        </div>
-        ${data.query ? `<div style="font-size:0.72rem;color:#94a3b8;margin-top:0.3rem;font-family:monospace">${escHtml(data.query)}</div>` : ''}
-        <div class="dry-run-table-wrap">
-          <table class="dry-run-table">
-            <thead><tr>
-              <th>Verdict</th><th>Subject</th><th>Keyword matched</th>
-              <th style="text-align:center">Images</th><th style="text-align:right">Est. tokens</th><th>Skip reason</th>
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>`;
-    } else if (res.ok) {
-      let msg = `Scanned ${data.scanned} emails · ${data.claudeCalls} sent to AI · ${data.eventsStored} new event${data.eventsStored !== 1 ? 's' : ''} added`;
-      if (data.truncated) msg += ' · scan limit reached — run again for more';
-      if (result) result.textContent = msg;
-      if (btn2) btn2.textContent = '✓ Done';
-      if (data.eventsStored > 0) await loadPendingEvents();
-    } else {
-      if (result) result.textContent = data.error || 'Scan failed — try again';
+      if (data.dryRun) {
+        allDryRunMessages.push(...(data.messages || []));
+        if (data.truncated && data.nextOffset != null) {
+          offset = data.nextOffset;
+          if (result) result.textContent = `Dry run in progress… scanned ${totalScanned} of ${totalFound ?? '?'}`;
+          continue;
+        }
+        // Final batch — render table
+        renderDryRunTable(result, {
+          totalFound, scanned: totalScanned, resultSizeEstimate,
+          skippedLock, skippedCategory, skippedPreFilter, skippedDedup,
+          wouldExtract: allDryRunMessages.filter(m => m.verdict === 'WOULD_SEND').length,
+          totalEstTokens: allDryRunMessages.filter(m => m.verdict === 'WOULD_SEND').reduce((s, m) => s + (m.estTokens || 0), 0),
+          messages: allDryRunMessages,
+        }, queryStr);
+        break;
+      } else {
+        // Live scan batch
+        claudeCalls += data.claudeCalls || 0;
+        eventsStored += data.eventsStored || 0;
+        if (eventsStored > 0) await loadPendingEvents();
+
+        if (data.truncated && data.nextOffset != null) {
+          offset = data.nextOffset;
+          if (result) result.textContent = `Scanning… ${totalScanned}/${totalFound ?? '?'} — ${eventsStored} event${eventsStored !== 1 ? 's' : ''} found so far`;
+          continue;
+        }
+        // Final batch
+        const msg = `Scanned ${totalScanned}${totalFound ? `/${totalFound}` : ''} emails · ${claudeCalls} sent to AI · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
+        if (result) result.textContent = msg;
+        if (btn2) btn2.textContent = '✓ Done';
+        break;
+      }
     }
-  } catch (err) {
-    clearTimeout(timeoutId);
-    const timedOut = err.name === 'AbortError';
-    if (result) result.textContent = timedOut
-      ? 'Scan timed out — try "Last 48 hours" for a smaller batch'
-      : 'Network error — try again';
   } finally {
-    // Re-enable all buttons
     if (btn2) { btn2.disabled = false; if (btn2.textContent === 'Scanning…') btn2.textContent = 'Last 48 hours'; }
     if (btn7) { btn7.disabled = false; if (btn7.textContent === 'Scanning…') btn7.textContent = 'Last 7 days'; }
     if (btnDry) { btnDry.disabled = false; if (btnDry.textContent === 'Running…') btnDry.textContent = 'Dry run'; }

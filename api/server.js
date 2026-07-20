@@ -162,6 +162,15 @@ For each extracted item return a JSON object with:
 - notes (all relevant details — attire, what to bring, action required, financial amounts, RSVP info; null if nothing extra)
 - source_type ("event", "deadline", "action_item", or "financial_reminder")
 - recurrence (Google Calendar RRULE string if recurring, null if one-time)
+- intent ("new_event" | "cancellation" | "reschedule") — classify the email's intent:
+  * "new_event": the email announces or confirms a new event
+  * "cancellation": the email cancels or calls off a previously scheduled event
+  * "reschedule": the email changes the date/time of a previously scheduled event
+- old_title (string | null) — for cancellation/reschedule: the title of the event being cancelled or changed, as stated in the email; null for new_event
+- old_date (YYYY-MM-DD | null) — for cancellation/reschedule: the original date of the event being changed; null if not stated or new_event
+- old_time (HH:MM 24hr | null) — for cancellation/reschedule: the original time of the event being changed; null if not stated or new_event
+
+Rule 9: Cancellations and reschedules. If the email says "cancelled", "called off", "postponed", "rescheduled", "moved to", "new date", etc., set intent accordingly. For cancellations, title/date/time should reflect the event as it was (what is being cancelled). For reschedules, title/date/time should reflect the NEW event details, and old_title/old_date/old_time should reflect what it was before.
 
 Return a JSON array only. No other text. If nothing calendar-worthy is found, return [].`;
 
@@ -444,7 +453,8 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
 });
 app.get('/api/events/pending', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
-  const pending = (await events.values()).filter(e => e.status === 'pending').sort((a,b) => a.date > b.date ? 1 : -1);
+  const PENDING_STATUSES = new Set(['pending', 'pending_cancellation', 'pending_reschedule']);
+  const pending = (await events.values()).filter(e => PENDING_STATUSES.has(e.status)).sort((a,b) => a.date > b.date ? 1 : -1);
   res.json(pending);
 });
 
@@ -582,6 +592,100 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
   const event = await events.get(req.body.id);
   if (event) { event.status = 'dismissed'; await events.set(req.body.id, event); }
+  res.json({ ok: true });
+});
+
+// Approve a cancellation: delete the matched approved event from Google Calendar,
+// then mark both the pending_cancellation record and the matched event as dismissed.
+app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
+  const { id } = req.body;
+  const eventsStore = getUserEvents(req.user.email);
+  const pendingEv = await eventsStore.get(id);
+  if (!pendingEv) return res.status(404).json({ error: 'Event not found' });
+
+  const matchedId = pendingEv.matched_event_id;
+  let deletedFromGcal = false;
+  if (matchedId) {
+    const matchedEv = await eventsStore.get(matchedId);
+    if (matchedEv?.calEventId) {
+      try {
+        const auth = getOAuthClient(req.user);
+        const calendar = google.calendar({ version: 'v3', auth });
+        await calendar.events.delete({ calendarId: matchedEv.gcalId || 'primary', eventId: matchedEv.calEventId });
+        deletedFromGcal = true;
+      } catch (err) {
+        console.error('[approve-cancellation] GCal delete error:', err.message);
+        // If event is already gone from GCal (410), proceed anyway
+        if (!err.message?.includes('410') && !err.message?.includes('Resource has been deleted')) {
+          return res.status(500).json({ error: 'Failed to delete from Google Calendar: ' + err.message });
+        }
+        deletedFromGcal = true;
+      }
+      matchedEv.status = 'cancelled';
+      await eventsStore.set(matchedId, matchedEv);
+    }
+  }
+
+  pendingEv.status = 'dismissed';
+  await eventsStore.set(id, pendingEv);
+  res.json({ ok: true, deletedFromGcal });
+});
+
+// Dismiss a cancellation notice without acting on it.
+app.post('/api/events/dismiss-cancellation', requireAuth, async (req, res) => {
+  const eventsStore = getUserEvents(req.user.email);
+  const ev = await eventsStore.get(req.body.id);
+  if (ev) { ev.status = 'dismissed'; await eventsStore.set(req.body.id, ev); }
+  res.json({ ok: true });
+});
+
+// Approve a reschedule: update the matched GCal event with new date/time/title.
+app.post('/api/events/approve-reschedule', requireAuth, async (req, res) => {
+  const { id } = req.body;
+  const eventsStore = getUserEvents(req.user.email);
+  const pendingEv = await eventsStore.get(id);
+  if (!pendingEv) return res.status(404).json({ error: 'Event not found' });
+
+  const matchedId = pendingEv.matched_event_id;
+  if (!matchedId) return res.status(400).json({ error: 'No matched event to reschedule' });
+
+  const matchedEv = await eventsStore.get(matchedId);
+  if (!matchedEv?.calEventId) return res.status(400).json({ error: 'Matched event has no GCal ID' });
+
+  try {
+    const auth = getOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const { start, end } = buildCalendarTimes(pendingEv.date, pendingEv.time, pendingEv.end_date || '', pendingEv.end_time || '');
+    await calendar.events.patch({
+      calendarId: matchedEv.gcalId || 'primary',
+      eventId: matchedEv.calEventId,
+      sendUpdates: 'all',
+      resource: { summary: pendingEv.title || matchedEv.title, start, end, location: pendingEv.location || matchedEv.location || '' },
+    });
+    // Update the approved event record with new details
+    matchedEv.title = pendingEv.title || matchedEv.title;
+    matchedEv.date = pendingEv.date;
+    matchedEv.time = pendingEv.time || '';
+    matchedEv.end_date = pendingEv.end_date || '';
+    matchedEv.end_time = pendingEv.end_time || '';
+    matchedEv.location = pendingEv.location || matchedEv.location || '';
+    matchedEv.approved_at = new Date().toISOString();
+    await eventsStore.set(matchedId, matchedEv);
+
+    pendingEv.status = 'dismissed';
+    await eventsStore.set(id, pendingEv);
+    res.json({ ok: true, calEventId: matchedEv.calEventId });
+  } catch (err) {
+    console.error('[approve-reschedule] GCal patch error:', err.message);
+    res.status(500).json({ error: 'Failed to update Google Calendar: ' + err.message });
+  }
+});
+
+// Dismiss a reschedule notice without acting on it.
+app.post('/api/events/dismiss-reschedule', requireAuth, async (req, res) => {
+  const eventsStore = getUserEvents(req.user.email);
+  const ev = await eventsStore.get(req.body.id);
+  if (ev) { ev.status = 'dismissed'; await eventsStore.set(req.body.id, ev); }
   res.json({ ok: true });
 });
 app.get('/api/calendars', requireAuth, async (req, res) => {
@@ -1177,6 +1281,53 @@ async function isDuplicateEvent(eventsStore, title, date) {
   );
 }
 
+// Find an approved GCal-backed event that semantically matches a cancellation/reschedule signal.
+// Strategy:
+//   1. Fuzzy title match (one is a substring of the other, case-insensitive, or ≥60% word overlap)
+//   2. Optional date proximity (within 7 days of oldDate if provided)
+// Returns the best-matching event object, or null if nothing confident enough is found.
+async function findMatchingApprovedEvent(eventsStore, oldTitle, oldDate) {
+  if (!oldTitle) return null;
+  const all = await eventsStore.values();
+  const approved = all.filter(e => e.status === 'approved' && e.calEventId);
+  if (!approved.length) return null;
+
+  const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const needle = normalize(oldTitle);
+  const needleWords = new Set(needle.split(' ').filter(w => w.length > 2));
+
+  let best = null;
+  let bestScore = 0;
+
+  for (const ev of approved) {
+    const haystack = normalize(ev.title);
+    const haystackWords = new Set(haystack.split(' ').filter(w => w.length > 2));
+
+    // Substring match
+    let score = 0;
+    if (haystack.includes(needle) || needle.includes(haystack)) {
+      score = 0.9;
+    } else {
+      // Word overlap
+      const intersection = [...needleWords].filter(w => haystackWords.has(w)).length;
+      const union = new Set([...needleWords, ...haystackWords]).size;
+      score = union > 0 ? intersection / union : 0;
+    }
+
+    // Date proximity bonus
+    if (oldDate && ev.date) {
+      const diff = Math.abs((new Date(oldDate) - new Date(ev.date)) / 86400000);
+      if (diff <= 7) score += 0.15;
+      else if (diff > 30) score -= 0.3;
+    }
+
+    if (score > bestScore) { bestScore = score; best = ev; }
+  }
+
+  // Require at least 50% confidence
+  return bestScore >= 0.5 ? best : null;
+}
+
 // Convert "HH:MM" to minutes since midnight for overlap comparison
 function timeToMinutes(t) {
   if (!t) return null;
@@ -1350,6 +1501,32 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           console.log(`[gmail-process] msg=${messageId} skipping event missing title/date: ${JSON.stringify(ev).slice(0,100)}`);
           continue;
         }
+
+        const intent = ev.intent || 'new_event';
+
+        // Handle cancellations and reschedules
+        if (intent === 'cancellation' || intent === 'reschedule') {
+          const matched = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
+          const evId = randomUUID();
+          const status = intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule';
+          await eventsStore.set(evId, {
+            id: evId, intent,
+            title: ev.title, date: ev.date, end_date: ev.end_date || '',
+            time: ev.start_time || '', end_time: ev.end_time || '',
+            location: ev.location || '', is_all_day: !!ev.is_all_day,
+            attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+            notes: ev.notes || null, source_type: ev.source_type || null,
+            old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
+            matched_event_id: matched?.id || null, matched_event_title: matched?.title || null,
+            source: 'gmail', gmail_message_id: messageId,
+            sender_name: senderName, sender_email: senderEmail, subject,
+            status, type: ev.is_all_day ? 'other' : 'timed',
+            created_at: new Date().toISOString(),
+          });
+          console.log(`[gmail-process] ${intent.toUpperCase()} "${ev.title}" matched="${matched?.title || 'none'}" stored (id=${evId})`);
+          continue;
+        }
+
         if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) {
           console.log(`[gmail-process] msg=${messageId} DEDUP SKIP event "${ev.title}" on ${ev.date} already exists`);
           continue;
@@ -1946,6 +2123,33 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
       for (const ev of extracted) {
         if (!ev.title || !ev.date) continue;
+
+        const intent = ev.intent || 'new_event';
+
+        // Handle cancellations and reschedules
+        if (intent === 'cancellation' || intent === 'reschedule') {
+          const matched = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
+          const evId = randomUUID();
+          const status = intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule';
+          await eventsStore.set(evId, {
+            id: evId, intent,
+            title: ev.title, date: ev.date, end_date: ev.end_date || '',
+            time: ev.start_time || '', end_time: ev.end_time || '',
+            location: ev.location || '', is_all_day: !!ev.is_all_day,
+            attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+            notes: ev.notes || null, source_type: ev.source_type || null,
+            old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
+            matched_event_id: matched?.id || null, matched_event_title: matched?.title || null,
+            source: 'gmail', gmail_message_id: messageId,
+            sender_name: senderName, sender_email: senderEmail, subject,
+            status, type: ev.is_all_day ? 'other' : 'timed',
+            created_at: new Date().toISOString(),
+          });
+          console.log(`[backfill] ${intent.toUpperCase()} "${ev.title}" matched="${matched?.title || 'none'}" stored`);
+          eventsStored++;
+          continue;
+        }
+
         if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) continue;
         const startTime = ev.start_time || '';
         const endTime = ev.end_time || '';

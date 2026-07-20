@@ -254,6 +254,24 @@
   .review-card-tags { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
   .review-badge-gmail { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #e8f0fe; color: #1a73e8; border: 1px solid #c5d8fa; white-space: nowrap; font-weight: 500; }
   .review-badge { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--border); color: var(--text2); white-space: nowrap; }
+  .review-badge-cancel { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fce8e6; color: #c5221f; border: 1px solid #f5c6c4; white-space: nowrap; font-weight: 600; }
+  .review-badge-reschedule { font-size: 0.7rem; padding: 2px 7px; border-radius: 20px; background: #fef7e0; color: #b45309; border: 1px solid #f5dfa0; white-space: nowrap; font-weight: 600; }
+  /* Cancellation card — red left border */
+  .review-card.cancel-card { border-left: 3px solid #c5221f; }
+  .review-card.reschedule-card { border-left: 3px solid #b45309; }
+  /* Cancellation action panel (not an editor, just confirmation buttons) */
+  .cancel-panel, .reschedule-panel { padding: 1rem 1.25rem 1.25rem; border-top: 1px solid var(--border); }
+  .cancel-panel-title { font-size: 0.825rem; font-weight: 600; color: var(--text); margin-bottom: 0.25rem; }
+  .cancel-panel-sub { font-size: 0.8rem; color: var(--text2); margin-bottom: 1rem; line-height: 1.5; }
+  .reschedule-arrow { display: flex; align-items: center; gap: 0.5rem; font-size: 0.825rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .reschedule-old { color: var(--text2); text-decoration: line-through; }
+  .reschedule-new { color: var(--text); font-weight: 500; }
+  .btn-delete { padding: 0.5rem 1.25rem; background: #c5221f; color: white; border: none; border-radius: 4px; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
+  .btn-delete:hover { background: #a01a18; }
+  .btn-delete:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-update { padding: 0.5rem 1.25rem; background: #b45309; color: white; border: none; border-radius: 4px; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
+  .btn-update:hover { background: #92400e; }
+  .btn-update:disabled { opacity: 0.5; cursor: not-allowed; }
   /* ── Gmail disconnect banner ─────────────────────────────────────────── */
   #gmail-disconnect-banner { display: none; background: #fce8e6; border: 1.5px solid #f5c6c4; border-radius: 10px; padding: 0.875rem 1.25rem; margin: 1rem 0 0; display: flex; align-items: center; gap: 0.75rem; }
   #gmail-disconnect-banner.hidden { display: none !important; }
@@ -1056,6 +1074,9 @@ async function runBackfill(days, dryRun = false) {
 }
 
 function renderReviewCard(ev) {
+  if (ev.intent === 'cancellation') return renderCancellationCard(ev);
+  if (ev.intent === 'reschedule') return renderRescheduleCard(ev);
+
   const id = ev.id;
   const isGmail = ev.source === 'gmail';
   const dateStr = ev.date ? shortDate(ev.date) : '';
@@ -1084,6 +1105,105 @@ function renderReviewCard(ev) {
       ${renderReviewEditor(ev)}
     </div>
   </div>`;
+}
+
+function renderCancellationCard(ev) {
+  const id = ev.id;
+  const dateStr = ev.old_date ? shortDate(ev.old_date) : (ev.date ? shortDate(ev.date) : '');
+  const timeStr = ev.old_time ? formatTime(ev.old_time) : (ev.time ? formatTime(ev.time) : '');
+  const meta = [dateStr, timeStr].filter(Boolean).join(' · ');
+  const hasMatch = !!ev.matched_event_id;
+  return `
+  <div class="review-card cancel-card" id="rcard-${id}">
+    <div class="review-card-row" id="rrow-${id}" onclick="toggleCancelCard('${id}')">
+      <div class="review-card-content">
+        <div class="review-card-title">${escHtml(ev.old_title || ev.title)}</div>
+        <div class="review-card-meta">${meta}</div>
+      </div>
+      <div class="review-card-tags">
+        <span class="review-badge-cancel">Cancelled</span>
+        ${ev.sender_name ? `<span class="review-from">from ${escHtml(ev.sender_name)}</span>` : ''}
+        <span class="material-icons review-chevron" id="rchev-${id}">expand_more</span>
+      </div>
+    </div>
+    <div class="review-card-editor" id="reditor-${id}" style="display:none">
+      <div class="cancel-panel">
+        ${hasMatch
+          ? `<div class="cancel-panel-title">Remove "${escHtml(ev.matched_event_title || ev.old_title || ev.title)}" from your calendar?</div>
+             <div class="cancel-panel-sub">This email signals the event has been cancelled. Approving will delete it from Google Calendar.</div>`
+          : `<div class="cancel-panel-title">Cancellation notice — no matching event found</div>
+             <div class="cancel-panel-sub">No approved event matched "${escHtml(ev.old_title || ev.title)}" in your calendar. This notice is for your information only.</div>`}
+        <div class="gcal-actions">
+          ${hasMatch
+            ? `<button class="btn-delete" id="rcancel-btn-${id}" onclick="approveCancellation('${id}')">Remove from Calendar</button>`
+            : ''}
+          <button class="btn-gcal-dismiss" onclick="dismissCancellation('${id}')">${hasMatch ? 'Keep event' : 'Dismiss'}</button>
+          <span id="rv-status-${id}"></span>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderRescheduleCard(ev) {
+  const id = ev.id;
+  const oldDateStr = ev.old_date ? shortDate(ev.old_date) : '';
+  const oldTimeStr = ev.old_time ? formatTime(ev.old_time) : '';
+  const newDateStr = ev.date ? shortDate(ev.date) : '';
+  const newTimeStr = (ev.is_all_day || !ev.time) ? 'All day' : formatTime(ev.time);
+  const hasMatch = !!ev.matched_event_id;
+  return `
+  <div class="review-card reschedule-card" id="rcard-${id}">
+    <div class="review-card-row" id="rrow-${id}" onclick="toggleCancelCard('${id}')">
+      <div class="review-card-content">
+        <div class="review-card-title">${escHtml(ev.title)}</div>
+        <div class="review-card-meta">${[oldDateStr, oldTimeStr].filter(Boolean).join(' · ')} → ${[newDateStr, newTimeStr].filter(Boolean).join(' · ')}</div>
+      </div>
+      <div class="review-card-tags">
+        <span class="review-badge-reschedule">Rescheduled</span>
+        ${ev.sender_name ? `<span class="review-from">from ${escHtml(ev.sender_name)}</span>` : ''}
+        <span class="material-icons review-chevron" id="rchev-${id}">expand_more</span>
+      </div>
+    </div>
+    <div class="review-card-editor" id="reditor-${id}" style="display:none">
+      <div class="reschedule-panel">
+        ${hasMatch
+          ? `<div class="cancel-panel-title">Update "${escHtml(ev.matched_event_title || ev.title)}" in your calendar?</div>
+             <div class="reschedule-arrow">
+               <span class="reschedule-old">${[oldDateStr, oldTimeStr].filter(Boolean).join(' · ') || 'previous date'}</span>
+               <span class="material-icons" style="font-size:1rem;color:var(--text2)">arrow_forward</span>
+               <span class="reschedule-new">${[newDateStr, newTimeStr].filter(Boolean).join(' · ')}</span>
+             </div>`
+          : `<div class="cancel-panel-title">Reschedule notice — no matching event found</div>
+             <div class="cancel-panel-sub">No approved event matched "${escHtml(ev.title)}" in your calendar. You can still add this as a new event.</div>
+             <div class="reschedule-arrow">
+               <span class="reschedule-new">${[newDateStr, newTimeStr].filter(Boolean).join(' · ')}</span>
+             </div>`}
+        <div class="gcal-actions">
+          ${hasMatch
+            ? `<button class="btn-update" id="rreschedule-btn-${id}" onclick="approveReschedule('${id}')">Update Calendar</button>`
+            : `<button class="btn-gcal-add" onclick="promoteRescheduleAsNew('${id}')">Add to Calendar</button>`}
+          <button class="btn-gcal-dismiss" onclick="dismissReschedule('${id}')">${hasMatch ? 'Ignore' : 'Dismiss'}</button>
+          <span id="rv-status-${id}"></span>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function toggleCancelCard(id) {
+  const editor = document.getElementById(`reditor-${id}`);
+  const row = document.getElementById(`rrow-${id}`);
+  const chevron = document.getElementById(`rchev-${id}`);
+  // Close all open cards first
+  document.querySelectorAll('.review-card-editor').forEach(e => { e.style.display = 'none'; });
+  document.querySelectorAll('.review-card-row').forEach(r => r.classList.remove('open'));
+  document.querySelectorAll('.review-chevron').forEach(c => { c.style.transform = ''; });
+  if (editor && editor.style.display === 'none') {
+    editor.style.display = 'block';
+    if (row) row.classList.add('open');
+    if (chevron) chevron.style.transform = 'rotate(180deg)';
+  }
 }
 
 // Convert a Google Calendar RRULE string to a human-readable English description.
@@ -1304,6 +1424,86 @@ async function dismissReviewEvent(id) {
   try { await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
   pendingEvents = pendingEvents.filter(e => e.id !== id);
   renderReview();
+}
+
+async function approveCancellation(id) {
+  const btn = document.getElementById(`rcancel-btn-${id}`);
+  const status = document.getElementById(`rv-status-${id}`);
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/events/approve-cancellation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+    if (res.ok) {
+      if (status) status.innerHTML = '<span class="success-msg">✓ Removed from Calendar</span>';
+      await loadRecentEvents();
+      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
+    } else {
+      const err = await res.json();
+      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+      if (btn) btn.disabled = false;
+    }
+  } catch {
+    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function dismissCancellation(id) {
+  try { await fetch('/api/events/dismiss-cancellation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
+  pendingEvents = pendingEvents.filter(e => e.id !== id);
+  renderReview();
+}
+
+async function approveReschedule(id) {
+  const btn = document.getElementById(`rreschedule-btn-${id}`);
+  const status = document.getElementById(`rv-status-${id}`);
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch('/api/events/approve-reschedule', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+    if (res.ok) {
+      if (status) status.innerHTML = '<span class="success-msg">✓ Calendar updated</span>';
+      await loadRecentEvents();
+      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
+    } else {
+      const err = await res.json();
+      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+      if (btn) btn.disabled = false;
+    }
+  } catch {
+    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function dismissReschedule(id) {
+  try { await fetch('/api/events/dismiss-reschedule', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
+  pendingEvents = pendingEvents.filter(e => e.id !== id);
+  renderReview();
+}
+
+// For no-match reschedules: add as a brand-new pending event and dismiss the reschedule notice
+async function promoteRescheduleAsNew(id) {
+  const ev = pendingEvents.find(e => e.id === id);
+  if (!ev) return;
+  // Reuse the standard approve flow with the new date/time
+  const status = document.getElementById(`rv-status-${id}`);
+  try {
+    const payload = {
+      id, title: ev.title, date: ev.date,
+      endDate: ev.end_date || '', time: ev.time || '', endTime: ev.end_time || '',
+      location: ev.location || '', attendees: [],
+    };
+    const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if (res.ok) {
+      if (status) status.innerHTML = '<span class="success-msg">✓ Added</span>';
+      await loadRecentEvents();
+      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
+    } else {
+      const err = await res.json();
+      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+    }
+  } catch {
+    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
+  }
 }
 
 // ── My Calendar render ────────────────────────────────────────────────────

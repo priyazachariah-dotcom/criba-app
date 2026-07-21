@@ -43,10 +43,31 @@
   .logout-btn { font-size: 0.875rem; color: rgba(255,255,255,0.72); background: none; border: none; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 6px; }
   .logout-btn:hover { background: rgba(255,255,255,0.12); color: white; }
 
+  /* Tab explainer bar — sits between the nav and the page content */
+  .tab-explainer {
+    background: var(--teal); border-top: 1px solid rgba(255,255,255,0.12);
+    padding: 0.6rem 2rem;
+  }
+  .tab-explainer-inner {
+    max-width: 800px; margin: 0 auto;
+    display: flex; gap: 2rem; flex-wrap: wrap;
+  }
+  .tab-explainer-item {
+    display: flex; align-items: baseline; gap: 0.375rem;
+    font-size: 0.775rem; color: rgba(255,255,255,0.7); line-height: 1.4;
+  }
+  .tab-explainer-label {
+    font-weight: 600; color: rgba(255,255,255,0.92); white-space: nowrap;
+  }
+
+  /* Pink gap between header (+ explainer) and page hero */
+  .page-gap { height: 20px; }
+
   .page { display: none; padding: 2rem; max-width: 800px; margin: 0 auto; }
   .page.active { display: block; }
   /* Teal hero block at the top of each page — bleeds to the edges of the
-     800px column by negating the .page padding with negative margins */
+     800px column by negating the .page padding with negative margins.
+     top margin is 0 since the .page-gap div provides the pink strip above */
   .page-hero {
     background: var(--teal); color: white;
     margin: -2rem -2rem 2rem; padding: 1.75rem 2rem 1.5rem;
@@ -390,8 +411,8 @@
              Count reflects all pending events; will be scoped to message
              sources once those extraction stages are built. -->
         <button class="nav-btn active" id="nav-review-btn" onclick="showPage('review', this)">Review<span id="review-count-label"></span></button>
-        <button class="nav-btn" onclick="showPage('recent', this)">My Calendar</button>
-        <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendars</button>
+        <button class="nav-btn" onclick="showPage('recent', this)">Approved Events</button>
+        <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
       </nav>
     </div>
     <div class="header-right">
@@ -399,6 +420,27 @@
       <button class="logout-btn" onclick="logout()">Sign out</button>
     </div>
   </header>
+
+  <!-- Tab explainer strip -->
+  <div class="tab-explainer">
+    <div class="tab-explainer-inner">
+      <div class="tab-explainer-item">
+        <span class="tab-explainer-label">Review</span>
+        <span>— events waiting for your approval before they reach Google Calendar</span>
+      </div>
+      <div class="tab-explainer-item">
+        <span class="tab-explainer-label">Calendar Upload</span>
+        <span>— connect calendar sources (PDF, iCal feed URL)</span>
+      </div>
+      <div class="tab-explainer-item">
+        <span class="tab-explainer-label">Approved Events</span>
+        <span>— events already added to your calendar, editable anytime</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pink gap between explainer and page hero -->
+  <div class="page-gap"></div>
 
   <!-- Gmail disconnect banner — shown when cron detects watch renewal failure -->
   <div id="gmail-disconnect-banner" class="hidden">
@@ -419,19 +461,19 @@
     <div id="review-list"></div>
   </div>
 
-  <!-- My Calendar (recently approved events) -->
+  <!-- Approved Events (recently approved events) -->
   <div class="page" id="page-recent">
     <div class="page-hero">
-      <div class="page-title">My Calendar</div>
-      <div class="page-sub">Recently added events — edit or update any time.</div>
+      <div class="page-title">Approved Events</div>
+      <div class="page-sub">Events already added to your Google Calendar — edit or update any time.</div>
     </div>
     <div id="recent-list"></div>
   </div>
 
-  <!-- Calendars management (add form + list) -->
+  <!-- Calendar Upload (add form + list) -->
   <div class="page" id="page-calendars">
     <div class="page-hero">
-      <div class="page-title">Calendars</div>
+      <div class="page-title">Calendar Upload</div>
       <div class="page-sub">Upload calendars in URL or PDF/File format. Choose Add All if you want every event added automatically, or review each group before it goes on your calendar.</div>
     </div>
     <div id="cal-form-container" style="display:none">

@@ -11,10 +11,11 @@
     --bg: #f5f0e8; --bg2: #ede8df; --text: #1a1714; --text2: #6b6560;
     --border: #d4cfc7; --accent: #1a1714; --green: #2d6a4f; --red: #c1392b;
     --blue: #1a73e8; --blue-dark: #1557b0; --gcal-icon: #5f6368; --radius: 10px;
-    --teal: #025953;
+    --primary: #588061;   /* Como green — nav + page heroes */
+    --app-bg: #FDE9EA;    /* Seashell Pink — full app background */
   }
-  /* Pink background fills the entire app shell (all pages) */
-  #app-screen { background: #DBCEDA; }
+  /* Seashell Pink background fills the entire app shell */
+  #app-screen { background: var(--app-bg); }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
 
   /* ── Auth ─────────────────────────────────────────────────────────── */
@@ -31,57 +32,64 @@
 
   /* ── Shell ─────────────────────────────────────────────────────────── */
   #app-screen { display: none; min-height: 100vh; }
-  header { background: var(--teal); border-bottom: none; padding: 0 2rem; height: 60px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
-  .header-left { display: flex; align-items: center; gap: 2rem; }
-  .logo { font-size: 1.1rem; font-weight: 600; letter-spacing: -0.3px; color: white; }
-  nav { display: flex; gap: 0.25rem; }
-  .nav-btn { padding: 0.4rem 1rem; border-radius: 6px; border: none; background: transparent; font-size: 0.9rem; cursor: pointer; color: rgba(255,255,255,0.72); transition: all 0.15s; }
-  .nav-btn.active { background: white; color: var(--teal); font-weight: 600; }
-  .nav-btn:hover:not(.active) { background: rgba(255,255,255,0.12); color: white; }
+
+  /* Two-row header: logo row on top, tabs row below */
+  header {
+    background: var(--primary); border-bottom: none;
+    padding: 0.875rem 2rem 0; position: sticky; top: 0; z-index: 100;
+  }
+  .header-top {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 0.625rem;
+  }
+  .logo {
+    font-size: 1.6rem; font-weight: 700; letter-spacing: -0.5px; color: white;
+    line-height: 1;
+  }
   .header-right { display: flex; align-items: center; gap: 1rem; }
   .user-name { font-size: 0.875rem; color: rgba(255,255,255,0.72); }
   .logout-btn { font-size: 0.875rem; color: rgba(255,255,255,0.72); background: none; border: none; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 6px; }
   .logout-btn:hover { background: rgba(255,255,255,0.12); color: white; }
 
-  /* Tab explainer bar — sits between the nav and the page content */
-  .tab-explainer {
-    background: var(--teal); border-top: 1px solid rgba(255,255,255,0.12);
-    padding: 0.6rem 2rem;
+  /* Tab row */
+  nav { display: flex; gap: 0.125rem; }
+  .nav-btn {
+    padding: 0.45rem 1rem 0.6rem; border-radius: 6px 6px 0 0; border: none;
+    background: transparent; font-size: 0.875rem; cursor: pointer;
+    color: rgba(255,255,255,0.72); transition: all 0.15s; font-weight: 500;
   }
-  .tab-explainer-inner {
-    max-width: 800px; margin: 0 auto;
-    display: flex; gap: 2rem; flex-wrap: wrap;
-  }
-  .tab-explainer-item {
-    display: flex; align-items: baseline; gap: 0.375rem;
-    font-size: 0.775rem; color: rgba(255,255,255,0.7); line-height: 1.4;
-  }
-  .tab-explainer-label {
-    font-weight: 600; color: rgba(255,255,255,0.92); white-space: nowrap;
-  }
+  .nav-btn.active { background: var(--app-bg); color: var(--primary); font-weight: 600; }
+  .nav-btn:hover:not(.active) { background: rgba(255,255,255,0.12); color: white; }
 
-  /* Pink gap between header (+ explainer) and page hero */
-  .page-gap { height: 20px; }
+  /* Seashell gap between header and page hero */
+  .page-gap { height: 24px; }
 
   .page { display: none; padding: 2rem; max-width: 800px; margin: 0 auto; }
   .page.active { display: block; }
-  /* Teal hero block at the top of each page — bleeds to the edges of the
-     800px column by negating the .page padding with negative margins.
-     top margin is 0 since the .page-gap div provides the pink strip above */
+
+  /* Green hero block at the top of each page — bleeds edge-to-edge within
+     the 800px column via negative margins that cancel .page's padding */
   .page-hero {
-    background: var(--teal); color: white;
-    margin: -2rem -2rem 2rem; padding: 1.75rem 2rem 1.5rem;
+    background: var(--primary); color: white;
+    margin: -2rem -2rem 0; padding: 1.5rem 2rem 1.25rem;
   }
-  .page-title { font-size: 1.75rem; font-weight: 600; margin-bottom: 0.375rem; letter-spacing: -0.5px; }
-  .page-sub { font-size: 0.9rem; margin-bottom: 0; }
+  /* Gap between hero bottom and page-sub text */
+  .page-hero-sub {
+    padding: 1rem 2rem 1.5rem; margin: 0 -2rem 2rem;
+    background: var(--primary);
+    /* subtle inner divider so title and sub feel spaced */
+    border-top: 1px solid rgba(255,255,255,0.15);
+  }
+  .page-title { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.4px; }
+  .page-sub { font-size: 0.9rem; line-height: 1.55; margin-bottom: 0; }
   /* Default page-title/sub colors (outside hero) stay dark */
   .page > .page-title { color: var(--text); }
   .page > .page-sub { color: var(--text2); margin-bottom: 2rem; }
   /* Inside hero: white text */
-  .page-hero .page-title { color: white; margin-bottom: 0.3rem; }
-  .page-hero .page-sub { color: rgba(255,255,255,0.82); }
+  .page-hero .page-title { color: white; }
+  .page-hero-sub .page-sub { color: rgba(255,255,255,0.85); }
   /* Back button inside hero (category page) */
-  .page-hero .cat-back-btn { color: rgba(255,255,255,0.78); margin-bottom: 0.625rem; }
+  .page-hero .cat-back-btn { color: rgba(255,255,255,0.78); margin-bottom: 0.5rem; }
   .page-hero .cat-back-btn:hover { color: white; }
 
   .empty-state { text-align: center; padding: 4rem 2rem; color: var(--text2); }
@@ -404,42 +412,21 @@
 <!-- ── App shell ────────────────────────────────────────────────────────── -->
 <div id="app-screen">
   <header>
-    <div class="header-left">
-      <div class="logo">Criba</div>
-      <nav>
-        <!-- Review tab: reserved for Gmail/iMessage/WhatsApp (Stage 2-4).
-             Count reflects all pending events; will be scoped to message
-             sources once those extraction stages are built. -->
-        <button class="nav-btn active" id="nav-review-btn" onclick="showPage('review', this)">Review<span id="review-count-label"></span></button>
-        <button class="nav-btn" onclick="showPage('recent', this)">Approved Events</button>
-        <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
-      </nav>
+    <div class="header-top">
+      <div class="logo">CRIBA</div>
+      <div class="header-right">
+        <span class="user-name" id="user-name"></span>
+        <button class="logout-btn" onclick="logout()">Sign out</button>
+      </div>
     </div>
-    <div class="header-right">
-      <span class="user-name" id="user-name"></span>
-      <button class="logout-btn" onclick="logout()">Sign out</button>
-    </div>
+    <nav>
+      <button class="nav-btn active" id="nav-review-btn" onclick="showPage('review', this)">Review<span id="review-count-label"></span></button>
+      <button class="nav-btn" onclick="showPage('recent', this)">Approved Events</button>
+      <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
+    </nav>
   </header>
 
-  <!-- Tab explainer strip -->
-  <div class="tab-explainer">
-    <div class="tab-explainer-inner">
-      <div class="tab-explainer-item">
-        <span class="tab-explainer-label">Review</span>
-        <span>— events waiting for your approval before they reach Google Calendar</span>
-      </div>
-      <div class="tab-explainer-item">
-        <span class="tab-explainer-label">Calendar Upload</span>
-        <span>— connect calendar sources (PDF, iCal feed URL)</span>
-      </div>
-      <div class="tab-explainer-item">
-        <span class="tab-explainer-label">Approved Events</span>
-        <span>— events already added to your calendar, editable anytime</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Pink gap between explainer and page hero -->
+  <!-- Seashell gap between header and page hero -->
   <div class="page-gap"></div>
 
   <!-- Gmail disconnect banner — shown when cron detects watch renewal failure -->
@@ -456,7 +443,9 @@
   <div class="page active" id="page-review">
     <div class="page-hero">
       <div class="page-title" id="review-page-title">Review</div>
-      <div class="page-sub" id="review-page-sub">Events extracted from Gmail appear here for your approval before reaching Google Calendar.</div>
+    </div>
+    <div class="page-hero-sub">
+      <div class="page-sub" id="review-page-sub">Events extracted from Gmail waiting for your approval before they reach Google Calendar.</div>
     </div>
     <div id="review-list"></div>
   </div>
@@ -465,6 +454,8 @@
   <div class="page" id="page-recent">
     <div class="page-hero">
       <div class="page-title">Approved Events</div>
+    </div>
+    <div class="page-hero-sub">
       <div class="page-sub">Events already added to your Google Calendar — edit or update any time.</div>
     </div>
     <div id="recent-list"></div>
@@ -474,7 +465,9 @@
   <div class="page" id="page-calendars">
     <div class="page-hero">
       <div class="page-title">Calendar Upload</div>
-      <div class="page-sub">Upload calendars in URL or PDF/File format. Choose Add All if you want every event added automatically, or review each group before it goes on your calendar.</div>
+    </div>
+    <div class="page-hero-sub">
+      <div class="page-sub">Connect calendar sources via URL or PDF. Add all events at once or review each group before it reaches your calendar.</div>
     </div>
     <div id="cal-form-container" style="display:none">
       <div class="cal-form">
@@ -512,6 +505,8 @@
   <div class="page" id="page-settings">
     <div class="page-hero">
       <div class="page-title">Family</div>
+    </div>
+    <div class="page-hero-sub">
       <div class="page-sub">Add family members to give each person their own color-coded Google Calendar.</div>
     </div>
     <div class="settings-section">
@@ -553,12 +548,14 @@
     <div class="page-hero">
       <button class="cat-back-btn" onclick="leaveCategoryPage()">
         <span class="material-icons">arrow_back</span>
-        Back to Calendars
+        Back to Calendar Upload
       </button>
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:0.375rem">
-        <div class="page-title" id="cat-page-title" style="margin-bottom:0">Review Events</div>
-        <button class="btn-gcal-add" id="cat-add-all-btn" onclick="catAddAllGroups()" style="flex-shrink:0;margin-top:4px">Add All to Calendar</button>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+        <div class="page-title" id="cat-page-title">Review Events</div>
+        <button class="btn-gcal-add" id="cat-add-all-btn" onclick="catAddAllGroups()" style="flex-shrink:0;margin-top:6px">Add All to Calendar</button>
       </div>
+    </div>
+    <div class="page-hero-sub">
       <div class="page-sub" id="cat-page-sub">Review events by group and add them to your calendar.</div>
     </div>
     <div id="category-groups-container"></div>

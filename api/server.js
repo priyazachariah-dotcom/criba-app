@@ -677,6 +677,45 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
   }
 });
 
+// ── Full cleanup (dev/testing reset) ─────────────────────────────────────
+// Deletes every Criba-tracked calendar event from Google Calendar and clears
+// the corresponding Redis records. One-shot dev tool — no confirmation step.
+app.post('/api/events/cleanup-all', requireAuth, async (req, res) => {
+  const eventsStore = getUserEvents(req.user.email);
+  const auth = getOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const CLEANUP_STATUSES = new Set(['added', 'approved', 'reviewed']);
+  const all = await eventsStore.entries();
+  const toDelete = all.filter(([, ev]) => CLEANUP_STATUSES.has(ev.status) && ev.calEventId);
+
+  let deleted = 0;
+  const results = [];
+  const redisDeleteIds = [];
+
+  for (const [id, ev] of toDelete) {
+    try {
+      await calendar.events.delete({ calendarId: ev.gcalId || 'primary', eventId: ev.calEventId });
+      results.push({ title: ev.title, date: ev.date, status: 'deleted' });
+      deleted++;
+    } catch (err) {
+      const gone = err.message?.includes('410') || err.message?.includes('404') || err.message?.includes('Resource has been deleted');
+      results.push({ title: ev.title, date: ev.date, status: gone ? 'already-gone' : 'error', error: gone ? undefined : err.message });
+      if (gone) deleted++; // count as cleaned up even if already removed
+    }
+    redisDeleteIds.push(id); // always clear from Redis
+  }
+
+  // Clear Redis records in one pipeline
+  if (redisDeleteIds.length) {
+    const pipeline = redis.pipeline();
+    for (const id of redisDeleteIds) pipeline.hdel(`events:${req.user.email}`, id);
+    await pipeline.exec();
+  }
+
+  console.log(`[cleanup-all] email=${req.user.email} deleted=${deleted} total=${toDelete.length}`);
+  res.json({ ok: true, deleted, total: toDelete.length, results });
+});
+
 // Approve a cancellation: delete the matched approved event from Google Calendar,
 // then mark both the pending_cancellation record and the matched event as dismissed.
 app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {

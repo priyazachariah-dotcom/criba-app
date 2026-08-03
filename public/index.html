@@ -691,6 +691,17 @@
       </div>
     </div>
 
+    <div class="test-mode-panel" style="margin-top:0;border-color:#c1392b">
+      <div class="test-mode-panel-header">
+        <span class="test-mode-panel-title" style="color:#c1392b">Delete All Criba Events</span>
+        <button class="btn-outlined btn-sm" id="cleanup-btn" style="border-color:#c1392b;color:#c1392b" onclick="runCleanupAll()">Delete all</button>
+      </div>
+      <div class="test-mode-body open">
+        <div class="test-mode-desc">Removes every event Criba has written to Google Calendar and clears all records. Use to reset test data from development. Irreversible.</div>
+        <div id="cleanup-status" style="font-size:12px;margin-top:8px;color:var(--text2);font-style:italic"></div>
+      </div>
+    </div>
+
     <div id="cal-form-container" style="display:none">
       <div class="cal-form">
         <h3>Add calendar</h3>
@@ -1203,6 +1214,26 @@ async function markReviewedAndDismiss(id) {
     pendingEvents = pendingEvents.filter(e => e.id !== id);
     renderReview();
   } catch {}
+}
+
+async function runCleanupAll() {
+  const btn = document.getElementById('cleanup-btn');
+  const status = document.getElementById('cleanup-status');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Deleting…';
+  try {
+    const res = await fetch('/api/events/cleanup-all', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      if (status) status.textContent = `Done — deleted ${data.deleted} of ${data.total} events from Google Calendar and Redis.`;
+      await Promise.all([loadPendingEvents(), loadRecentEvents()]);
+    } else {
+      if (status) status.textContent = 'Failed.';
+    }
+  } catch (e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+  }
+  if (btn) btn.disabled = false;
 }
 
 async function runMigration() {

@@ -1444,18 +1444,78 @@ function parseFrom(fromHeader) {
 }
 
 // Recursively find plain-text body in Gmail message payload
-function extractEmailBody(payload) {
+function stripHtmlTags(html) {
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/tr>/gi, '\n')
+    .replace(/<\/td>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\s{3,}/g, '\n\n')
+    .trim();
+}
+
+function _extractEmailBodyInner(payload, htmlParts) {
+  // Inline body on a single-part message
   if (payload.body?.data) {
-    return Buffer.from(payload.body.data, 'base64url').toString('utf-8');
+    const text = Buffer.from(payload.body.data, 'base64url').toString('utf-8');
+    if (payload.mimeType === 'text/html') {
+      htmlParts.push(text);
+      return '';
+    }
+    return text;
   }
+
+  // First pass: usable plain-text part at this level
   for (const part of (payload.parts || [])) {
     if (part.mimeType === 'text/plain' && part.body?.data) {
-      return Buffer.from(part.body.data, 'base64url').toString('utf-8');
+      const text = Buffer.from(part.body.data, 'base64url').toString('utf-8');
+      if (text.trim().length > 50) return text;
     }
   }
+
+  // Collect HTML parts at this level for later fallback
   for (const part of (payload.parts || [])) {
-    const text = extractEmailBody(part);
-    if (text) return text;
+    if (part.mimeType === 'text/html' && part.body?.data) {
+      htmlParts.push(Buffer.from(part.body.data, 'base64url').toString('utf-8'));
+    }
+  }
+
+  // Recurse into nested multipart containers
+  for (const part of (payload.parts || [])) {
+    if (part.mimeType && part.mimeType.startsWith('multipart/')) {
+      const text = _extractEmailBodyInner(part, htmlParts);
+      if (text) return text;
+    }
+  }
+
+  // Recurse into other non-HTML leaf parts
+  for (const part of (payload.parts || [])) {
+    if (!part.mimeType?.startsWith('multipart/') && part.mimeType !== 'text/html') {
+      const text = _extractEmailBodyInner(part, htmlParts);
+      if (text) return text;
+    }
+  }
+
+  return '';
+}
+
+function extractEmailBody(payload) {
+  const htmlParts = [];
+  const plainText = _extractEmailBodyInner(payload, htmlParts);
+  if (plainText) return plainText;
+  // HTML fallback: strip tags so Claude can read the content
+  if (htmlParts.length > 0) {
+    return stripHtmlTags(htmlParts.join('\n'));
   }
   return '';
 }

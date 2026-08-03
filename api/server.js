@@ -2105,27 +2105,25 @@ const SNIPPET_DATE_PATTERNS = [
   { name: 'weekday',    re: /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b/i },
   { name: 'relative',   re: /\b(today|tomorrow|this week|next week|this weekend)\b/i },
 ];
-// Snippets shorter than this are considered potentially truncated and escalated
-// to Stage 2 rather than skipped. Measured against the snippet ALONE, not the
-// combined subject+snippet string — a long subject would otherwise inflate the
-// length past the threshold and prevent escalation of short snippets.
-const SNIPPET_AMBIGUOUS_THRESHOLD = 120;
-
-// Returns { pass, matchName, matchValue } if a calendar signal was found, or
-// { pass: false, escalate: true } if the snippet is too short to be conclusive, or
-// { pass: false, escalate: false } if the text is long and has no signal.
-// snippetLen must be the raw snippet length (before prepending subject) so the
-// ambiguity check is accurate.
+// Returns { pass, matchName, matchValue } if a calendar signal was found in the
+// snippet, or { pass: false, escalate: true } in all no-match cases.
+//
+// Design: recall beats efficiency. A snippet no-match is never a confident skip —
+// the event details may be in the body (past the ~200-char snippet truncation),
+// in an image, or in a forwarded/quoted block the snippet doesn't reach.
+// All no-match snippets escalate to Stage 2 (full body fetch). Stage 2 then runs
+// the same pattern scan on the body and decides whether to call Claude.
+// Gmail API full-body fetches are free; the only cost gate is Claude calls,
+// which Stage 2 controls via the MAX_FULL_FETCHES budget.
+// snippetLen param is kept for API compatibility but no longer drives skip logic.
 function scanForDateContent(text, snippetLen) {
   if (!text || text.trim().length === 0) return { pass: false, escalate: true };
   for (const { name, re } of SNIPPET_DATE_PATTERNS) {
     const m = text.match(re);
     if (m) return { pass: true, matchName: name, matchValue: m[0] };
   }
-  // Use the raw snippet length for the escalation check, not the combined string.
-  // If snippetLen wasn't provided fall back to the combined text length.
-  const len = (snippetLen != null ? snippetLen : text.trim().length);
-  return { pass: false, escalate: len < SNIPPET_AMBIGUOUS_THRESHOLD };
+  // No match in snippet — always escalate to full-body check, never skip outright.
+  return { pass: false, escalate: true };
 }
 
 // How long between live backfill scans per user (Part 6 rate-limit).

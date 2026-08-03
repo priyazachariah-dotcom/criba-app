@@ -72,44 +72,54 @@ function getUserSettings(email) {
   return new RedisHashMap(`settings:${email}`);
 }
 
-// Returns the effective target calendarId for an approval, respecting test mode.
-// If testCalendarId is set in user settings, ALL writes go there regardless of
-// member assignment — keeping real family calendars clean during QA.
-async function resolveTargetCalendar(email, calendar, preferredMemberId, calSrc) {
+// Returns the target calendarId — always 'primary' (single-calendar model),
+// unless test mode is active, in which case the test calendar is returned.
+async function resolveTargetCalendar(email) {
   const settings = getUserSettings(email);
   const testCalId = (await settings.get('testCalendarId')) || null;
-  if (testCalId) return testCalId;
-
-  if (preferredMemberId) {
-    const member = await getUserFamily(email).get(preferredMemberId);
-    if (member) return await ensureMemberCalendar(calendar, member, email);
-  } else if (calSrc?.memberId) {
-    const member = await getUserFamily(email).get(calSrc.memberId);
-    if (member) return await ensureMemberCalendar(calendar, member, email);
-  }
-  return 'primary';
+  return testCalId || 'primary';
 }
 
-// Creates a dedicated Google Calendar for a family member on first approval,
-// sets the chosen color, persists the calendarId back to Redis, and returns it.
-// On subsequent calls the stored calendarId is returned immediately.
-async function ensureMemberCalendar(calendarApi, member, email) {
-  if (member.googleCalendarId) return member.googleCalendarId;
-  const cal = await calendarApi.calendars.insert({
-    resource: { summary: member.name, description: `Criba calendar for ${member.name}` }
-  });
-  const gcalId = cal.data.id;
-  try {
-    await calendarApi.calendarList.patch({
-      calendarId: gcalId,
-      resource: { colorId: member.color || '7' }
-    });
-  } catch (e) {
-    console.error('Could not set calendar color:', e.message);
+// Returns a Google Calendar event colorId ("1"–"11") for the relevant person,
+// or null to use the calendar default color.
+async function resolveEventColor(email, preferredMemberId, calSrc) {
+  const familyStore = getUserFamily(email);
+  let member = null;
+  if (preferredMemberId) member = await familyStore.get(preferredMemberId);
+  else if (calSrc?.memberId) member = await familyStore.get(calSrc.memberId);
+  return member?.eventColor || member?.color || null;
+}
+
+// Resolve event color by matching name strings (from Claude attendees) to family records
+async function resolveEventColorByNames(email, nameStrings) {
+  if (!nameStrings?.length) return null;
+  const familyStore = getUserFamily(email);
+  const members = await familyStore.values();
+  const norm = s => (s || '').toLowerCase().trim();
+  for (const name of nameStrings) {
+    const match = members.find(m => norm(m.name) === norm(name) || norm(name).includes(norm(m.name)));
+    if (match) return match.eventColor || match.color || null;
   }
-  member.googleCalendarId = gcalId;
-  await getUserFamily(email).set(member.id, member);
-  return gcalId;
+  return null;
+}
+
+// Shared helper: build GCal resource and insert event. Returns calEventId string.
+// Used by all auto-write paths (Gmail, backfill, group-approve, confirm-categories).
+async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId) {
+  const { start, end } = buildCalendarTimes(ev.date, ev.time || '', ev.end_date || '', ev.end_time || '');
+  const description = ev.recurrence_rule
+    ? `Added via Criba — recurring: ${ev.recurring_note || ''}`
+    : 'Added via Criba';
+  const resource = {
+    summary: ev.title,
+    location: ev.location || '',
+    start, end, description,
+    attendees: (ev.attendees || []).filter(a => a?.email).map(a => ({ email: a.email })),
+  };
+  if (ev.recurrence_rule) resource.recurrence = [ev.recurrence_rule];
+  if (colorId) resource.colorId = String(colorId);
+  const result = await calendarApi.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
+  return result.data.id;
 }
 
 // Shared event-classification rules used by the iCal extraction prompt.
@@ -475,18 +485,36 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
 });
 app.get('/api/events/pending', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
-  const PENDING_STATUSES = new Set(['pending', 'pending_cancellation', 'pending_reschedule']);
-  const pending = (await events.values()).filter(e => PENDING_STATUSES.has(e.status)).sort((a,b) => a.date > b.date ? 1 : -1);
+  const nowTs = Date.now();
+  const isPast = (ev) => {
+    if (!ev.date) return true;
+    const cutoff = ev.time
+      ? new Date(`${ev.date}T${ev.time}:00`).getTime()
+      : new Date(`${ev.date}T23:59:59`).getTime();
+    return cutoff < nowTs;
+  };
+  const all = await events.values();
+  const pending = all.filter(e => {
+    if (e.status === 'pending_cancellation' || e.status === 'pending_reschedule') return true;
+    // Post-write review: 'added' events not yet reviewed and not yet past
+    if ((e.status === 'added' || e.status === 'pending') && !e.reviewed && !isPast(e)) return true;
+    return false;
+  }).sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
   res.json(pending);
 });
 
 app.get('/api/events/recent', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
-  const approved = (await events.values())
-    .filter(e => e.status === 'approved')
-    .sort((a,b) => b.approved_at > a.approved_at ? 1 : -1)
-    .slice(0, 20);
-  res.json(approved);
+  const CALENDAR_STATUSES = new Set(['added', 'reviewed', 'approved', 'cancelled']);
+  const all = (await events.values())
+    .filter(e => CALENDAR_STATUSES.has(e.status))
+    .sort((a, b) => {
+      const ta = b.approved_at || b.created_at || '';
+      const tb = a.approved_at || a.created_at || '';
+      return ta > tb ? 1 : -1;
+    })
+    .slice(0, 100);
+  res.json(all);
 });
 
 app.post('/api/events/approve', requireAuth, async (req, res) => {
@@ -503,7 +531,8 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const { targetMemberId } = req.body;
     const cals = getUserCalendars(req.user.email);
     const calSrc = event.calendar_id ? await cals.get(event.calendar_id) : null;
-    const targetCalId = await resolveTargetCalendar(req.user.email, calendar, targetMemberId, calSrc);
+    const targetCalId = await resolveTargetCalendar(req.user.email);
+    const colorId = await resolveEventColor(req.user.email, targetMemberId, calSrc);
 
     const finalEndDate = endDate || event.end_date || '';
     const finalEndTime = endTime || event.end_time || '';
@@ -525,13 +554,15 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
 
     const calEventResource = { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description };
     if (recurrenceRule) calEventResource.recurrence = [recurrenceRule];
+    if (colorId) calEventResource.colorId = String(colorId);
 
     const calEvent = await calendar.events.insert({
       calendarId: targetCalId,
       sendUpdates: 'all',
       resource: calEventResource,
     });
-    event.status = 'approved';
+    event.status = 'added';
+    event.reviewed = true; // manually approved events are already reviewed
     event.calEventId = calEvent.data.id;
     event.gcalId = targetCalId;
     event.approved_at = new Date().toISOString();
@@ -603,6 +634,47 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
   const event = await events.get(req.body.id);
   if (event) { event.status = 'dismissed'; await events.set(req.body.id, event); }
   res.json({ ok: true });
+});
+
+// Mark event as reviewed — removes from Review queue but keeps on calendar
+app.post('/api/events/mark-reviewed', requireAuth, async (req, res) => {
+  const events = getUserEvents(req.user.email);
+  const ev = await events.get(req.body.id);
+  if (!ev) return res.status(404).json({ error: 'Not found' });
+  ev.reviewed = true;
+  ev.status = 'reviewed';
+  await events.set(req.body.id, ev);
+  res.json({ ok: true });
+});
+
+// Delete event from Google Calendar (Dismiss in post-write review).
+// The frontend shows an 8-second undo toast before calling this.
+app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
+  const { id } = req.body;
+  const events = getUserEvents(req.user.email);
+  const event = await events.get(id);
+  if (!event) return res.status(404).json({ error: 'Event not found' });
+  try {
+    if (event.calEventId) {
+      const auth = getOAuthClient(req.user);
+      const calendar = google.calendar({ version: 'v3', auth });
+      await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
+    }
+    event.status = 'dismissed';
+    event.calEventId = null;
+    await events.set(id, event);
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.message?.includes('410') || err.message?.includes('Resource has been deleted') || err.message?.includes('404')) {
+      // Already deleted from GCal — still mark as dismissed in Redis
+      event.status = 'dismissed';
+      event.calEventId = null;
+      await events.set(id, event);
+      return res.json({ ok: true });
+    }
+    console.error('delete-from-calendar error:', err.message);
+    res.status(500).json({ error: 'Failed to delete from Google Calendar: ' + err.message });
+  }
 });
 
 // Approve a cancellation: delete the matched approved event from Google Calendar,
@@ -906,17 +978,34 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
   const { calendarId, selectedCategories } = req.body;
   if (!calendarId || !selectedCategories) return res.status(400).json({ error: 'Missing data' });
   const events = getUserEvents(req.user.email);
+  const auth = getOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const targetCalId = await resolveTargetCalendar(req.user.email);
+  const cals = getUserCalendars(req.user.email);
+  const calSrc = await cals.get(calendarId);
+  const colorId = await resolveEventColor(req.user.email, null, calSrc);
   let addedCount = 0;
   const updates = [];
   for (const [id, ev] of await events.entries()) {
     if (ev.calendar_id === calendarId && ev.status === 'draft') {
-      if (selectedCategories.includes(ev.category)) { ev.status = 'pending'; addedCount++; }
-      else { ev.status = 'rejected'; }
+      if (selectedCategories.includes(ev.category)) {
+        try {
+          const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId);
+          ev.status = 'added'; ev.reviewed = false;
+          ev.calEventId = calEventId; ev.gcalId = targetCalId;
+          ev.approved_at = new Date().toISOString();
+          addedCount++;
+        } catch (err) {
+          console.error(`confirm-categories GCal write failed for "${ev.title}":`, err.message);
+          ev.status = 'pending'; // fallback if GCal write fails
+        }
+      } else {
+        ev.status = 'rejected';
+      }
       updates.push([id, ev]);
     }
   }
   await events.setMany(updates);
-  const cals = getUserCalendars(req.user.email);
   const cal = await cals.get(calendarId);
   if (cal) { cal.event_count = addedCount; await cals.set(calendarId, cal); }
   res.json({ ok: true, addedCount });
@@ -970,10 +1059,11 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   const auth = getOAuthClient(req.user);
   const calendar = google.calendar({ version: 'v3', auth });
 
-  // Resolve target Google Calendar once for the whole group (test mode overrides)
+  // Resolve target calendar + event color (single-calendar model, test mode overrides)
   const cals = getUserCalendars(req.user.email);
   const calSrc = await cals.get(calendarId);
-  const targetCalId = await resolveTargetCalendar(req.user.email, calendar, null, calSrc);
+  const targetCalId = await resolveTargetCalendar(req.user.email);
+  const colorId = await resolveEventColor(req.user.email, null, calSrc);
 
   let addedCount = 0;
   const failed = [];
@@ -986,12 +1076,12 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
       const description = ev.type === 'recurring' && ev.recurring_note
         ? `Added via Criba — recurring: ${ev.recurring_note}`
         : 'Added via Criba';
-      const calEvent = await calendar.events.insert({
-        calendarId: targetCalId,
-        sendUpdates: 'all',
-        resource: { summary: ev.title, location: ev.location || '', start, end, attendees: eventAttendees, description }
-      });
-      ev.status = 'approved';
+      const resource = { summary: ev.title, location: ev.location || '', start, end, attendees: eventAttendees, description };
+      if (ev.recurrence_rule) resource.recurrence = [ev.recurrence_rule];
+      if (colorId) resource.colorId = String(colorId);
+      const calEvent = await calendar.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
+      ev.status = 'added';
+      ev.reviewed = false;
       ev.calEventId = calEvent.data.id;
       ev.gcalId = targetCalId;
       ev.approved_at = new Date().toISOString();
@@ -1010,26 +1100,38 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   res.json({ ok: true, addedCount, failed });
 });
 
-// Sends every draft event in one category into the existing per-event
-// review queue (status 'pending'), leaving other categories untouched so
-// the user can act on groups independently instead of an all-or-nothing
-// confirm step.
+// group-review now writes to calendar immediately (same as group-approve) —
+// there is no pre-write review queue in the new flow.
 app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
   const { calendarId, category } = req.body;
   if (!calendarId || !category) return res.status(400).json({ error: 'Missing data' });
+  // Delegate to group-approve logic by forwarding as group-approve
   const events = getUserEvents(req.user.email);
+  const all = await events.entries();
+  const groupEvents = all.filter(([, ev]) => ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft');
+  if (!groupEvents.length) return res.status(404).json({ error: 'No draft events found for this category' });
+  const auth = getOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const cals = getUserCalendars(req.user.email);
+  const calSrc = await cals.get(calendarId);
+  const targetCalId = await resolveTargetCalendar(req.user.email);
+  const colorId = await resolveEventColor(req.user.email, null, calSrc);
   let count = 0;
   const updates = [];
-  for (const [id, ev] of await events.entries()) {
-    if (ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft') {
-      ev.status = 'pending';
-      updates.push([id, ev]);
-      count++;
+  for (const [id, ev] of groupEvents) {
+    try {
+      if (!ev.date) throw new Error('Missing date');
+      const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId);
+      ev.status = 'added'; ev.reviewed = false;
+      ev.calEventId = calEventId; ev.gcalId = targetCalId;
+      ev.approved_at = new Date().toISOString();
+      updates.push([id, ev]); count++;
+    } catch (err) {
+      console.error(`group-review write failed for "${ev.title}":`, err.message);
     }
   }
   await events.setMany(updates);
   if (count > 0) {
-    const cals = getUserCalendars(req.user.email);
     const cal = await cals.get(calendarId);
     if (cal) { cal.event_count = (cal.event_count || 0) + count; await cals.set(calendarId, cal); }
   }
@@ -1066,10 +1168,10 @@ app.get('/api/family', requireAuth, async (req, res) => {
 });
 
 app.post('/api/family', requireAuth, async (req, res) => {
-  const { name, color } = req.body;
+  const { name, color, eventColor } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
   const id = randomUUID();
-  const member = { id, name: name.trim(), color: color || '7', googleCalendarId: null };
+  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', googleCalendarId: null };
   await getUserFamily(req.user.email).set(id, member);
   res.json(member);
 });
@@ -1080,6 +1182,7 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
   if (!member) return res.status(404).json({ error: 'Not found' });
   if (req.body.name) member.name = req.body.name.trim();
   if (req.body.color) member.color = req.body.color;
+  if (req.body.eventColor) member.eventColor = req.body.eventColor;
   await fam.set(req.params.id, member);
   res.json(member);
 });
@@ -1106,6 +1209,122 @@ app.patch('/api/settings', requireAuth, async (req, res) => {
     await settings.set('testCalendarId', testCalendarId.trim());
   }
   res.json({ ok: true });
+});
+
+// ── Single-calendar migration ──────────────────────────────────────────────
+// Moves events from per-person GCal calendars onto the primary calendar with
+// event-level color coding, de-duplicates by title+date, then deletes the old
+// per-person calendars and clears googleCalendarId from family member records.
+app.post('/api/migrate/single-calendar', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const auth = getOAuthClient(req.user);
+  const calendarApi = google.calendar({ version: 'v3', auth });
+  const familyStore = getUserFamily(email);
+  const eventsStore = getUserEvents(email);
+
+  const members = await familyStore.values();
+  const toMigrate = members.filter(m => m.googleCalendarId);
+  if (!toMigrate.length) return res.json({ ok: true, message: 'No per-person calendars found — already using single calendar', moved: 0 });
+
+  // Build de-dup index from existing primary-calendar events in Redis
+  const existingEvents = await eventsStore.values();
+  const existingKeys = new Set(
+    existingEvents
+      .filter(e => ['added','approved','reviewed'].includes(e.status))
+      .map(e => `${(e.title||'').toLowerCase().trim()}:${e.date}`)
+  );
+
+  let moved = 0, skipped = 0;
+  const results = [];
+
+  for (const member of toMigrate) {
+    const calId = member.googleCalendarId;
+    const colorId = member.eventColor || member.color || null;
+    let memberMoved = 0, memberSkipped = 0;
+
+    try {
+      // Fetch all events from the per-person calendar
+      let pageToken;
+      const gcalEvents = [];
+      do {
+        const listRes = await calendarApi.events.list({
+          calendarId: calId,
+          timeMin: new Date('2024-01-01').toISOString(),
+          maxResults: 500,
+          singleEvents: true,
+          orderBy: 'startTime',
+          ...(pageToken ? { pageToken } : {}),
+        });
+        gcalEvents.push(...(listRes.data.items || []));
+        pageToken = listRes.data.nextPageToken;
+      } while (pageToken);
+
+      for (const gcalEv of gcalEvents) {
+        if (gcalEv.status === 'cancelled') continue;
+        const title = gcalEv.summary || 'Untitled';
+        const dateStr = gcalEv.start?.date || gcalEv.start?.dateTime?.split('T')[0];
+        if (!dateStr) continue;
+
+        const dedupKey = `${title.toLowerCase().trim()}:${dateStr}`;
+        if (existingKeys.has(dedupKey)) { memberSkipped++; skipped++; continue; }
+
+        // Copy to primary with person's color
+        const newEvResource = {
+          summary: title,
+          start: gcalEv.start,
+          end: gcalEv.end,
+          location: gcalEv.location || '',
+          description: gcalEv.description || 'Migrated via Criba',
+        };
+        if (colorId) newEvResource.colorId = String(colorId);
+
+        let newCalEventId = null;
+        try {
+          const inserted = await calendarApi.events.insert({ calendarId: 'primary', resource: newEvResource });
+          newCalEventId = inserted.data.id;
+        } catch (insertErr) {
+          console.error(`[migrate] Insert failed for "${title}" on ${dateStr}:`, insertErr.message);
+          continue;
+        }
+
+        // Record in Redis
+        const evId = randomUUID();
+        const timeStr = gcalEv.start?.dateTime
+          ? new Date(gcalEv.start.dateTime).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', timeZone: 'America/Los_Angeles' })
+          : '';
+        await eventsStore.set(evId, {
+          id: evId, title, date: dateStr, time: timeStr,
+          location: gcalEv.location || '',
+          status: 'added', reviewed: false,
+          calEventId: newCalEventId, gcalId: 'primary',
+          source: `migrated:${member.name}`,
+          approved_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+        });
+        existingKeys.add(dedupKey);
+        memberMoved++; moved++;
+      }
+
+      // Delete the old per-person calendar
+      try {
+        await calendarApi.calendars.delete({ calendarId: calId });
+        console.log(`[migrate] Deleted calendar ${calId} for ${member.name}`);
+      } catch (delErr) {
+        console.error(`[migrate] Could not delete calendar ${calId} for ${member.name}:`, delErr.message);
+      }
+
+      // Update member: set eventColor, clear googleCalendarId
+      member.eventColor = member.eventColor || member.color || '7';
+      member.googleCalendarId = null;
+      await familyStore.set(member.id, member);
+      results.push({ member: member.name, moved: memberMoved, skipped: memberSkipped });
+    } catch (err) {
+      console.error(`[migrate] Error processing ${member.name}:`, err.message);
+      results.push({ member: member.name, error: err.message });
+    }
+  }
+
+  res.json({ ok: true, moved, skipped, results });
 });
 
 // ── Gmail push notifications ───────────────────────────────────────────────
@@ -1314,7 +1533,7 @@ async function isDuplicateEvent(eventsStore, title, date) {
 async function findMatchingApprovedEvent(eventsStore, oldTitle, oldDate) {
   if (!oldTitle) return null;
   const all = await eventsStore.values();
-  const approved = all.filter(e => e.status === 'approved' && e.calEventId);
+  const approved = all.filter(e => (e.status === 'approved' || e.status === 'added' || e.status === 'reviewed') && e.calEventId);
   if (!approved.length) return null;
 
   const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -1425,6 +1644,8 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
 
   const auth = getOAuthClientFromRefreshToken(refreshToken);
   const gmail = google.gmail({ version: 'v1', auth });
+  const calendarApi = google.calendar({ version: 'v3', auth });
+  const targetCalId = await resolveTargetCalendar(email);
 
   // Always advance historyId first so we don't reprocess on retry
   watchData.historyId = newHistoryId || startHistoryId;
@@ -1566,6 +1787,16 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
         const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
 
+        // Auto-write to calendar immediately
+        const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : []);
+        const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: ev.recurring_note || null, attendees: [] };
+        let calEventId = null;
+        try {
+          calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId);
+          console.log(`[gmail-process] GCal WRITE "${ev.title}" on ${ev.date} calEventId=${calEventId}`);
+        } catch (calErr) {
+          console.error(`[gmail-process] GCal write failed for "${ev.title}":`, calErr.message);
+        }
         const evId = randomUUID();
         await eventsStore.set(evId, {
           id: evId,
@@ -1586,11 +1817,15 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           sender_name: senderName,
           sender_email: senderEmail,
           subject,
-          status: 'pending',
+          status: calEventId ? 'added' : 'pending',
+          reviewed: false,
+          calEventId: calEventId || null,
+          gcalId: calEventId ? targetCalId : null,
+          approved_at: calEventId ? new Date().toISOString() : null,
           type: ev.is_all_day ? 'other' : 'timed',
           created_at: new Date().toISOString(),
         });
-        console.log(`[gmail-process] STORED event "${ev.title}" on ${ev.date} for ${email} (id=${evId})`);
+        console.log(`[gmail-process] STORED event "${ev.title}" on ${ev.date} for ${email} status=${calEventId ? 'added' : 'pending'} (id=${evId})`);
       }
     } catch (err) {
       console.error(`[gmail-process] ERROR messageId=${messageId} email=${email}:`, err.message, err.stack?.split('\n')[1]);
@@ -1790,7 +2025,7 @@ app.get('/api/cron/gmail', async (req, res) => {
 
       // Send notification if user has pending Gmail events
       const eventsStore = getUserEvents(email);
-      const pendingGmail = (await eventsStore.values()).filter(e => e.status === 'pending' && e.source === 'gmail');
+      const pendingGmail = (await eventsStore.values()).filter(e => (e.status === 'pending' || (e.status === 'added' && !e.reviewed)) && e.source === 'gmail');
       if (pendingGmail.length > 0) {
         await sendNotificationEmail(email, pendingGmail.length, pendingGmail.map(e => e.title));
         notifiedCount++;
@@ -2187,6 +2422,18 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         const endTime = ev.end_time || '';
         const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
         const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
+        // Auto-write to calendar
+        const bfColorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : []);
+        const bfAuth = getOAuthClientFromRefreshToken(refreshToken);
+        const bfCalendarApi = google.calendar({ version: 'v3', auth: bfAuth });
+        const bfTargetCalId = await resolveTargetCalendar(email);
+        const bfEvObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: null, attendees: [] };
+        let bfCalEventId = null;
+        try {
+          bfCalEventId = await autoWriteToCalendar(bfCalendarApi, bfTargetCalId, bfEvObj, bfColorId);
+        } catch (bfCalErr) {
+          console.error(`[backfill] GCal write failed for "${ev.title}":`, bfCalErr.message);
+        }
         const evId = randomUUID();
         await eventsStore.set(evId, {
           id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
@@ -2197,7 +2444,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null,
           source: 'gmail', gmail_message_id: messageId,
           sender_name: senderName, sender_email: senderEmail, subject,
-          status: 'pending', type: ev.is_all_day ? 'other' : 'timed',
+          status: bfCalEventId ? 'added' : 'pending',
+          reviewed: false,
+          calEventId: bfCalEventId || null,
+          gcalId: bfCalEventId ? bfTargetCalId : null,
+          approved_at: bfCalEventId ? new Date().toISOString() : null,
+          type: ev.is_all_day ? 'other' : 'timed',
           created_at: new Date().toISOString(),
         });
         eventsStored++;

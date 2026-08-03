@@ -569,6 +569,20 @@
   .test-mode-field input:focus { outline: none; background: white; }
   .test-mode-field input::placeholder { color: #aaa; font-style: italic; }
 
+  /* ── Undo toast ─────────────────────────────────────────────────────────── */
+  #undo-toast {
+    display: none; position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: var(--bg); padding: 14px 20px;
+    z-index: 9999; align-items: center; gap: 16px; min-width: 320px;
+    font-size: 13px; font-weight: 500; border: 1.5px solid var(--bg);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  }
+  #undo-toast.visible { display: flex; }
+  .undo-toast-msg { flex: 1; }
+  .undo-toast-bar { position: absolute; bottom: 0; left: 0; height: 3px; background: var(--pill); transition: width linear; }
+  .undo-toast-btn { background: none; border: 1.5px solid var(--bg); color: var(--bg); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif; flex-shrink: 0; }
+  .undo-toast-btn:hover { background: var(--bg); color: var(--ink); }
+
 </style>
 </head>
 <body>
@@ -625,7 +639,7 @@
   <div class="page active" id="page-review">
     <div class="page-title-block">
       <div class="page-headline" id="review-page-title">REVIEW THE<br>QUEUE</div>
-      <div class="page-desc" id="review-page-sub">Events extracted from Gmail, waiting for your approval before they reach Google Calendar.</div>
+      <div class="page-desc" id="review-page-sub">Events added to your Google Calendar — review, edit, or remove anything Criba got wrong.</div>
     </div>
     <div id="review-list"></div>
   </div>
@@ -634,7 +648,7 @@
   <div class="page" id="page-recent">
     <div class="page-title-block">
       <div class="page-headline page-headline-sm">APPROVED</div>
-      <div class="page-desc">Events already added to your Google Calendar — edit or update any time.</div>
+      <div class="page-desc">All events Criba has added to your Google Calendar. Edit any time.</div>
     </div>
     <div id="recent-list"></div>
   </div>
@@ -662,6 +676,18 @@
           <button class="btn-outlined btn-sm" onclick="clearTestCalendar()">Clear</button>
         </div>
         <div id="test-cal-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
+      </div>
+    </div>
+
+    <!-- Migration: move per-person calendars to single primary calendar -->
+    <div class="test-mode-panel" style="margin-top:0">
+      <div class="test-mode-panel-header">
+        <span class="test-mode-panel-title">Migrate to Single Calendar</span>
+        <button class="btn-outlined btn-sm" id="migrate-btn" onclick="runMigration()">Run migration</button>
+      </div>
+      <div class="test-mode-body open">
+        <div class="test-mode-desc">Moves all events from per-person Google Calendars (Aarav's, Arin's, etc.) onto your primary calendar with person-color coding, de-duplicates, then deletes the old calendars. Run once.</div>
+        <div id="migrate-status" style="font-size:12px;margin-top:8px;color:var(--text2);font-style:italic"></div>
       </div>
     </div>
 
@@ -701,7 +727,7 @@
   <div class="page" id="page-settings">
     <div class="page-title-block">
       <div class="page-headline page-headline-sm">FAMILY</div>
-      <div class="page-desc">Add family members to give each person their own color-coded Google Calendar.</div>
+      <div class="page-desc">Add family members — each person gets a distinct event color on your shared Google Calendar.</div>
     </div>
     <div class="settings-section">
       <div class="settings-section-title">Members</div>
@@ -751,6 +777,12 @@
       <div class="page-desc" id="cat-page-sub" style="text-align:left;max-width:none">Review events by group and add them to your calendar.</div>
     </div>
     <div id="category-groups-container"></div>
+  </div>
+  <!-- Undo toast — shown after Dismiss, gives 8 seconds to cancel GCal deletion -->
+  <div id="undo-toast">
+    <div class="undo-toast-msg" id="undo-toast-msg">Event removed from calendar</div>
+    <button class="undo-toast-btn" onclick="undoDismiss()">Undo</button>
+    <div class="undo-toast-bar" id="undo-toast-bar" style="width:100%"></div>
   </div>
 </div><!-- /#app-screen -->
 
@@ -1102,6 +1134,97 @@ async function clearTestCalendar() {
   } catch {}
 }
 
+// ── Undo toast (dismiss-from-calendar safety net) ─────────────────────────
+let _undoTimer = null;
+let _undoPendingId = null;
+let _undoBarInterval = null;
+
+function dismissFromCalendar(id, title) {
+  // If there's already a pending undo, commit it now before starting a new one
+  if (_undoPendingId && _undoPendingId !== id) commitDismiss();
+
+  _undoPendingId = id;
+  const toast = document.getElementById('undo-toast');
+  const msg = document.getElementById('undo-toast-msg');
+  const bar = document.getElementById('undo-toast-bar');
+  if (msg) msg.textContent = `"${title || 'Event'}" removed from calendar`;
+  if (bar) { bar.style.transition = 'none'; bar.style.width = '100%'; }
+  if (toast) toast.classList.add('visible');
+
+  // Animate the progress bar over 8 seconds
+  clearInterval(_undoBarInterval);
+  clearTimeout(_undoTimer);
+  const DURATION = 8000;
+  const start = Date.now();
+  if (bar) {
+    requestAnimationFrame(() => {
+      bar.style.transition = `width ${DURATION}ms linear`;
+      bar.style.width = '0%';
+    });
+  }
+
+  _undoTimer = setTimeout(() => commitDismiss(), DURATION);
+
+  // Optimistically remove from review UI immediately
+  const card = document.getElementById(`rcard-${id}`);
+  if (card) card.style.opacity = '0.3';
+}
+
+function undoDismiss() {
+  if (!_undoPendingId) return;
+  clearTimeout(_undoTimer);
+  clearInterval(_undoBarInterval);
+  const toast = document.getElementById('undo-toast');
+  if (toast) toast.classList.remove('visible');
+  // Restore card opacity
+  const card = document.getElementById(`rcard-${_undoPendingId}`);
+  if (card) card.style.opacity = '';
+  _undoPendingId = null;
+}
+
+async function commitDismiss() {
+  if (!_undoPendingId) return;
+  const id = _undoPendingId;
+  _undoPendingId = null;
+  clearTimeout(_undoTimer);
+  clearInterval(_undoBarInterval);
+  const toast = document.getElementById('undo-toast');
+  if (toast) toast.classList.remove('visible');
+  try {
+    await fetch('/api/events/delete-from-calendar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+  } catch {}
+  pendingEvents = pendingEvents.filter(e => e.id !== id);
+  renderReview();
+}
+
+async function markReviewedAndDismiss(id) {
+  try {
+    await fetch('/api/events/mark-reviewed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+    pendingEvents = pendingEvents.filter(e => e.id !== id);
+    renderReview();
+  } catch {}
+}
+
+async function runMigration() {
+  const btn = document.getElementById('migrate-btn');
+  const status = document.getElementById('migrate-status');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Migrating…';
+  try {
+    const res = await fetch('/api/migrate/single-calendar', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      if (status) status.textContent = data.message || `Done — moved ${data.moved} events, skipped ${data.skipped} duplicates.`;
+      await loadRecentEvents();
+    } else {
+      if (status) status.textContent = 'Migration failed.';
+    }
+  } catch (e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+  }
+  if (btn) btn.disabled = false;
+}
+
 async function checkGmailStatus() {
   try {
     const res = await fetch('/api/user/status');
@@ -1177,17 +1300,11 @@ let lastScanDays = null; // set after a successful backfill so the header reflec
 
 function updateReviewCount(n) {
   const label = document.getElementById('review-count-label');
-  if (label) label.textContent = n > 0 ? ` (${n} pending)` : '';
+  if (label) label.textContent = n > 0 ? ` (${n})` : '';
 }
 
 function updateReviewHeader(days) {
-  const title = document.getElementById('review-page-title');
-  const sub = document.getElementById('review-page-sub');
-  if (!title || !sub) return;
-  if (!days) return; // keep default until first scan
-  const label = days <= 2 ? '48-hour' : `${days}-day`;
-  title.textContent = `Review your ${label} event queue`;
-  sub.textContent = 'Events extracted from Gmail in this window are waiting for your approval before reaching Google Calendar.';
+  // Review tab now shows post-write review — header stays static regardless of scan window
 }
 
 // ── Review queue render ───────────────────────────────────────────────────
@@ -1205,15 +1322,85 @@ const BACKFILL_BAR_HTML = `
 </div>
 <div id="backfill-result"></div>`;
 
+// No-op: backfill bar buttons are wired via inline onclick — nothing to attach dynamically.
+function wireBackfillBar() {}
+
+function renderPostWriteReviewCard(ev) {
+  const id = ev.id;
+  const meta = [
+    ev.date ? formatDate(ev.date) : '',
+    ev.time ? formatTime(ev.time) + (ev.end_time ? ` – ${formatTime(ev.end_time)}` : '') : '',
+    ev.location ? ev.location : '',
+  ].filter(Boolean).join(' · ');
+  const sourceTag = ev.source === 'gmail' ? `<span class="pill" style="font-size:9.5px">Gmail</span>` : ev.source ? `<span class="pill" style="font-size:9.5px">${escHtml(ev.source)}</span>` : '';
+  const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem;font-style:italic">${escHtml(ev.notes)}</div>` : '';
+  return `
+  <div class="review-card" id="rcard-${id}" style="transition:opacity 0.3s">
+    <div class="review-card-row" id="rrow-${id}">
+      <div class="review-card-content">
+        <div class="review-card-title">${escHtml(ev.title)} ${sourceTag}</div>
+        <div class="review-card-meta">${meta}</div>
+        ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong></div>` : ''}
+        ${notesHtml}
+      </div>
+      <div class="review-card-tags">
+        <button class="btn-outlined btn-sm" onclick="dismissFromCalendar('${id}', ${JSON.stringify(ev.title)})">Dismiss</button>
+        <button class="btn-filled btn-sm" onclick="openPostWriteEdit('${id}')">Edit →</button>
+      </div>
+    </div>
+    <div class="review-card-editor" id="reditor-${id}" style="display:none">
+      ${renderReviewEditor(ev)}
+    </div>
+  </div>`;
+}
+
+function openPostWriteEdit(id) {
+  const editor = document.getElementById(`reditor-${id}`);
+  if (!editor) return;
+  const isOpen = editor.style.display !== 'none';
+  editor.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) {
+    initLocationAutocomplete(`rv-loc-${id}`);
+  }
+}
+
 function renderReview() {
   const container = document.getElementById('review-list');
+  if (!container) return;
+
+  // Separate cancellation/reschedule from regular post-write review
+  const cancellations = pendingEvents.filter(e => e.status === 'pending_cancellation');
+  const reschedules = pendingEvents.filter(e => e.status === 'pending_reschedule');
+  const newEvents = pendingEvents.filter(e => e.status !== 'pending_cancellation' && e.status !== 'pending_reschedule');
+
   updateReviewCount(pendingEvents.length);
-  rvPeople = {};
+
   if (!pendingEvents.length) {
-    container.innerHTML = BACKFILL_BAR_HTML + `<div class="empty-state"><h3>All caught up</h3><p>Events from Gmail will appear here for review.</p></div>`;
+    container.innerHTML = `
+      ${BACKFILL_BAR_HTML}
+      <div class="empty-state" style="margin-top:3rem">
+        <div class="empty-icon">✓</div>
+        <h3>All caught up</h3>
+        <p>Events added to your calendar will appear here for review.<br>Dismiss anything Criba got wrong.</p>
+      </div>`;
+    wireBackfillBar();
     return;
   }
-  container.innerHTML = BACKFILL_BAR_HTML + pendingEvents.map(ev => renderReviewCard(ev)).join('');
+
+  let html = BACKFILL_BAR_HTML;
+
+  if (cancellations.length) {
+    html += `<div style="margin-bottom:2rem">${cancellations.map(renderCancellationCard).join('')}</div>`;
+  }
+  if (reschedules.length) {
+    html += `<div style="margin-bottom:2rem">${reschedules.map(renderRescheduleCard).join('')}</div>`;
+  }
+  if (newEvents.length) {
+    html += `<div style="margin-top:${(cancellations.length || reschedules.length) ? '2rem' : '2rem'}">${newEvents.map(renderPostWriteReviewCard).join('')}</div>`;
+  }
+
+  container.innerHTML = html;
+  wireBackfillBar();
 }
 
 // Labels shown in the dry-run table skip-reason column
@@ -1447,7 +1634,7 @@ function renderReviewCard(ev) {
       </div>
       <div class="review-card-tags">
         <button class="btn-outlined btn-sm" onclick="dismissReviewEvent('${id}')">Dismiss</button>
-        <button class="btn-filled btn-sm" onclick="toggleReviewCard('${id}')">Review →</button>
+        <button class="btn-filled btn-sm" onclick="toggleReviewCard('${id}')">Add →</button>
       </div>
     </div>
     <div class="review-card-editor" id="reditor-${id}" style="display:none">

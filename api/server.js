@@ -68,6 +68,28 @@ function getUserFamily(email) {
   return new RedisHashMap(`family:${email}`);
 }
 
+function getUserSettings(email) {
+  return new RedisHashMap(`settings:${email}`);
+}
+
+// Returns the effective target calendarId for an approval, respecting test mode.
+// If testCalendarId is set in user settings, ALL writes go there regardless of
+// member assignment — keeping real family calendars clean during QA.
+async function resolveTargetCalendar(email, calendar, preferredMemberId, calSrc) {
+  const settings = getUserSettings(email);
+  const testCalId = (await settings.get('testCalendarId')) || null;
+  if (testCalId) return testCalId;
+
+  if (preferredMemberId) {
+    const member = await getUserFamily(email).get(preferredMemberId);
+    if (member) return await ensureMemberCalendar(calendar, member, email);
+  } else if (calSrc?.memberId) {
+    const member = await getUserFamily(email).get(calSrc.memberId);
+    if (member) return await ensureMemberCalendar(calendar, member, email);
+  }
+  return 'primary';
+}
+
 // Creates a dedicated Google Calendar for a family member on first approval,
 // sets the chosen color, persists the calendarId back to Redis, and returns it.
 // On subsequent calls the stored calendarId is returned immediately.
@@ -477,23 +499,11 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const calendar = google.calendar({ version: 'v3', auth });
     if (!date) return res.status(400).json({ error: 'Date is required' });
 
-    // Resolve the target Google Calendar. Priority:
-    // 1. Explicit targetMemberId from UI (e.g. review queue family selector)
-    // 2. Member assignment stored on the source calendar (PDF/iCal flow)
-    // 3. Primary calendar
+    // Resolve the target Google Calendar (test mode overrides all member routing)
     const { targetMemberId } = req.body;
-    let targetCalId = 'primary';
-    if (targetMemberId) {
-      const member = await getUserFamily(req.user.email).get(targetMemberId);
-      if (member) targetCalId = await ensureMemberCalendar(calendar, member, req.user.email);
-    } else if (event.calendar_id) {
-      const cals = getUserCalendars(req.user.email);
-      const calSrc = await cals.get(event.calendar_id);
-      if (calSrc?.memberId) {
-        const member = await getUserFamily(req.user.email).get(calSrc.memberId);
-        if (member) targetCalId = await ensureMemberCalendar(calendar, member, req.user.email);
-      }
-    }
+    const cals = getUserCalendars(req.user.email);
+    const calSrc = event.calendar_id ? await cals.get(event.calendar_id) : null;
+    const targetCalId = await resolveTargetCalendar(req.user.email, calendar, targetMemberId, calSrc);
 
     const finalEndDate = endDate || event.end_date || '';
     const finalEndTime = endTime || event.end_time || '';
@@ -960,14 +970,10 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   const auth = getOAuthClient(req.user);
   const calendar = google.calendar({ version: 'v3', auth });
 
-  // Resolve target Google Calendar once for the whole group
+  // Resolve target Google Calendar once for the whole group (test mode overrides)
   const cals = getUserCalendars(req.user.email);
-  let targetCalId = 'primary';
   const calSrc = await cals.get(calendarId);
-  if (calSrc?.memberId) {
-    const member = await getUserFamily(req.user.email).get(calSrc.memberId);
-    if (member) targetCalId = await ensureMemberCalendar(calendar, member, req.user.email);
-  }
+  const targetCalId = await resolveTargetCalendar(req.user.email, calendar, null, calSrc);
 
   let addedCount = 0;
   const failed = [];
@@ -1080,6 +1086,25 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
 
 app.delete('/api/family/:id', requireAuth, async (req, res) => {
   await getUserFamily(req.user.email).delete(req.params.id);
+  res.json({ ok: true });
+});
+
+// ── User settings (test mode, etc.) ───────────────────────────────────────
+
+app.get('/api/settings', requireAuth, async (req, res) => {
+  const settings = getUserSettings(req.user.email);
+  const testCalendarId = (await settings.get('testCalendarId')) || null;
+  res.json({ testCalendarId });
+});
+
+app.patch('/api/settings', requireAuth, async (req, res) => {
+  const settings = getUserSettings(req.user.email);
+  const { testCalendarId } = req.body;
+  if (testCalendarId === null || testCalendarId === '') {
+    await settings.delete('testCalendarId');
+  } else if (typeof testCalendarId === 'string') {
+    await settings.set('testCalendarId', testCalendarId.trim());
+  }
   res.json({ ok: true });
 });
 

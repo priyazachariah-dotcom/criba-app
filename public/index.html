@@ -543,6 +543,32 @@
   }
   .btn-gcal-dismiss:hover { background: var(--bg); border-color: var(--border); }
 
+  /* ── Test mode ──────────────────────────────────────────────────────────── */
+  #test-mode-banner {
+    display: none; position: sticky; top: 88px; z-index: 99;
+    background: #111; color: #F0DAD8;
+    padding: 10px 48px; font-size: 12.5px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid #F0DAD8;
+    display: none; align-items: center; gap: 12px;
+  }
+  #test-mode-banner.active { display: flex; }
+  .test-mode-dot { width: 8px; height: 8px; background: #f0a500; border-radius: 50%; flex-shrink: 0; animation: blink 1.4s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+  .test-mode-panel { border: 1.5px solid var(--ink); padding: 20px 24px; margin-bottom: 28px; }
+  .test-mode-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; }
+  .test-mode-panel-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+  .test-mode-toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .test-mode-toggle input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); cursor: pointer; }
+  .test-mode-toggle-label { font-size: 13px; font-weight: 500; }
+  .test-mode-body { margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(17,17,17,0.15); display: none; }
+  .test-mode-body.open { display: block; }
+  .test-mode-desc { font-size: 13px; color: var(--text2); font-style: italic; margin-bottom: 14px; line-height: 1.55; }
+  .test-mode-field { display: flex; gap: 10px; align-items: center; }
+  .test-mode-field input { flex: 1; padding: 8px 12px; border: 1.5px solid var(--ink); font-size: 13px; background: var(--bg); font-family: inherit; color: var(--ink); }
+  .test-mode-field input:focus { outline: none; background: white; }
+  .test-mode-field input::placeholder { color: #aaa; font-style: italic; }
+
 </style>
 </head>
 <body>
@@ -579,6 +605,12 @@
     </div>
   </header>
 
+  <!-- Test mode banner — sticky warning shown whenever test mode is active -->
+  <div id="test-mode-banner">
+    <span class="test-mode-dot"></span>
+    TEST MODE — all approvals writing to test calendar, not real family calendars
+  </div>
+
   <!-- Gmail disconnect banner — shown when cron detects watch renewal failure -->
   <div id="gmail-disconnect-banner" class="hidden">
     <span class="material-icons disconnect-banner-icon">warning</span>
@@ -613,6 +645,26 @@
       <div class="page-headline page-headline-sm">UPLOAD</div>
       <div class="page-desc">Connect calendar sources via URL or PDF. Add all events at once or review each group first.</div>
     </div>
+    <!-- Test mode panel -->
+    <div class="test-mode-panel">
+      <div class="test-mode-panel-header">
+        <span class="test-mode-panel-title">Test Mode</span>
+        <label class="test-mode-toggle">
+          <input type="checkbox" id="test-mode-checkbox" onchange="toggleTestMode(this.checked)" />
+          <span class="test-mode-toggle-label" id="test-mode-toggle-label">Off</span>
+        </label>
+      </div>
+      <div class="test-mode-body" id="test-mode-body">
+        <div class="test-mode-desc">When active, all approvals write to this test calendar instead of real family calendars. Safe to use during QA and development.</div>
+        <div class="test-mode-field">
+          <input type="text" id="test-cal-id-input" placeholder="Google Calendar ID  (e.g. abc123@group.calendar.google.com)" />
+          <button class="btn-filled btn-sm" onclick="saveTestCalendar()">Save</button>
+          <button class="btn-outlined btn-sm" onclick="clearTestCalendar()">Clear</button>
+        </div>
+        <div id="test-cal-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
+      </div>
+    </div>
+
     <div id="cal-form-container" style="display:none">
       <div class="cal-form">
         <h3>Add calendar</h3>
@@ -983,6 +1035,71 @@ function showApp() {
   loadPlacesScript();
   loadData();
   checkGmailStatus();
+  loadTestModeSettings();
+}
+
+// ── Test mode ──────────────────────────────────────────────────────────────
+async function loadTestModeSettings() {
+  try {
+    const res = await fetch('/api/settings');
+    if (!res.ok) return;
+    const { testCalendarId } = await res.json();
+    applyTestModeUI(testCalendarId || '');
+  } catch {}
+}
+
+function applyTestModeUI(calId) {
+  const active = !!calId;
+  const checkbox = document.getElementById('test-mode-checkbox');
+  const body = document.getElementById('test-mode-body');
+  const label = document.getElementById('test-mode-toggle-label');
+  const input = document.getElementById('test-cal-id-input');
+  const banner = document.getElementById('test-mode-banner');
+  if (checkbox) checkbox.checked = active;
+  if (label) label.textContent = active ? 'On' : 'Off';
+  if (body) body.classList.toggle('open', active);
+  if (input && calId) input.value = calId;
+  if (banner) banner.classList.toggle('active', active);
+}
+
+async function toggleTestMode(on) {
+  const label = document.getElementById('test-mode-toggle-label');
+  const body = document.getElementById('test-mode-body');
+  if (label) label.textContent = on ? 'On' : 'Off';
+  if (body) body.classList.toggle('open', on);
+  if (!on) {
+    await clearTestCalendar();
+  } else {
+    // Just open the panel — user still needs to enter and save a calendar ID
+    document.getElementById('test-cal-status').textContent = 'Enter a Google Calendar ID below and click Save.';
+  }
+}
+
+async function saveTestCalendar() {
+  const input = document.getElementById('test-cal-id-input');
+  const status = document.getElementById('test-cal-status');
+  const calId = input?.value.trim();
+  if (!calId) { if (status) status.textContent = 'Please enter a calendar ID.'; return; }
+  try {
+    const res = await fetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ testCalendarId: calId }) });
+    if (res.ok) {
+      if (status) status.textContent = `✓ Saved — approvals will write to: ${calId}`;
+      applyTestModeUI(calId);
+    } else {
+      if (status) status.textContent = 'Failed to save. Try again.';
+    }
+  } catch { if (status) status.textContent = 'Network error.'; }
+}
+
+async function clearTestCalendar() {
+  const status = document.getElementById('test-cal-status');
+  const input = document.getElementById('test-cal-id-input');
+  try {
+    await fetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ testCalendarId: null }) });
+    if (input) input.value = '';
+    if (status) status.textContent = '';
+    applyTestModeUI('');
+  } catch {}
 }
 
 async function checkGmailStatus() {

@@ -2297,10 +2297,15 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const labelIds = meta.labelIds || [];
 
       // ── Primary-tab filter (Part 1) ─────────────────────────────────────
-      // Only process CATEGORY_PERSONAL (Gmail Primary tab). Promotional / Social
-      // emails are excluded here; Updates / Forums pass through (they contain
-      // legitimate calendar content like invoices and school announcements).
-      if (!labelIds.includes('CATEGORY_PERSONAL')) {
+      // Exclude Promotions and Social tabs. Updates/Forums pass through (they
+      // contain legitimate calendar content like invoices and school announcements).
+      // NOTE: we use a denylist rather than requiring CATEGORY_PERSONAL, because
+      // self-sent emails (from:self to:self) appear in Gmail's Primary tab visually
+      // but the API does NOT apply CATEGORY_PERSONAL to them — they arrive with
+      // only INBOX/SENT/UNREAD labels and no CATEGORY_* label at all. Requiring
+      // CATEGORY_PERSONAL would silently drop all self-sent emails.
+      const EXCLUDED_CATEGORIES = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL']);
+      if (labelIds.some(l => EXCLUDED_CATEGORIES.has(l))) {
         skippedCategory++;
         if (!dryRun) await redis.del(lockKey);
         // Not shown as individual rows in dry-run — summarised in header count only

@@ -337,10 +337,45 @@
   .reconnect-btn:disabled { opacity: 0.6; cursor: default; }
 
   /* ── Recurrence row ──────────────────────────────────────────────── */
-  .gcal-recurrence-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 0.5rem; font-size: 0.85rem; color: var(--text2); background: var(--bg); padding: 0.5rem 0.75rem; }
-  .gcal-recurrence-row .material-icons { font-size: 16px !important; color: var(--gcal-icon); flex-shrink: 0; margin-top: 2px; }
+  .gcal-recurrence-row { display: flex; align-items: center; gap: 8px; margin-bottom: 0.5rem; }
+  .gcal-recurrence-row .material-icons { font-size: 18px !important; color: var(--gcal-icon); flex-shrink: 0; }
   .gcal-recurrence-text { flex: 1; }
   .gcal-recurrence-remove { font-size: 0.8rem; color: var(--red); background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline; margin-top: 2px; }
+  .recurrence-select { padding: 0.4rem 0.625rem; border: 1px solid transparent; font-size: 0.875rem; color: var(--ink); font-family: inherit; background: transparent; cursor: pointer; transition: background 0.1s, border-color 0.1s; }
+  .recurrence-select:hover { background: var(--bg); border-color: rgba(17,17,17,0.2); }
+  .recurrence-select:focus { border-color: var(--blue); background: white; outline: none; }
+
+  /* ── Reminders section ───────────────────────────────────────────── */
+  .reminders-section { margin-bottom: 2rem; }
+  .reminders-section-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text3); margin-bottom: 0.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--ink); }
+  .reminder-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 0; border-bottom: 1px solid rgba(17,17,17,0.1); }
+  .reminder-card:last-child { border-bottom: none; }
+  .reminder-headline { font-size: 0.925rem; font-weight: 600; color: var(--ink); }
+  .reminder-source { font-size: 0.75rem; color: var(--text3); margin-top: 2px; font-style: italic; }
+  .reminder-actions { display: flex; gap: 0.5rem; flex-shrink: 0; }
+  .reminder-editor-wrap { border-top: 1px solid rgba(17,17,17,0.1); margin-top: 0; }
+
+  /* ── Custom Recurrence Modal ─────────────────────────────────────── */
+  .custom-recur-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 1rem; }
+  .custom-recur-modal { background: white; border: 1.5px solid var(--ink); padding: 1.5rem; width: 100%; max-width: 400px; }
+  .custom-recur-title { font-size: 1rem; font-weight: 700; margin-bottom: 1.25rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .custom-recur-row { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  .custom-recur-label { font-size: 0.875rem; color: var(--ink); white-space: nowrap; }
+  .custom-recur-num { width: 60px; padding: 0.4rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); text-align: center; }
+  .custom-recur-num:focus { outline: none; background: white; }
+  .custom-recur-select { padding: 0.4rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
+  .custom-recur-select:focus { outline: none; background: white; }
+  .weekday-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .weekday-btn { width: 34px; height: 34px; border: 1.5px solid var(--ink); background: transparent; font-size: 0.8rem; font-weight: 600; cursor: pointer; font-family: inherit; color: var(--ink); transition: background 0.1s, color 0.1s; }
+  .weekday-btn.active { background: var(--ink); color: white; }
+  .ends-section { margin-bottom: 1rem; }
+  .ends-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.625rem; }
+  .ends-radio-row { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 0.5rem; font-size: 0.875rem; }
+  .ends-radio-row input[type=radio] { accent-color: var(--ink); }
+  .ends-date-input { padding: 0.35rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
+  .ends-date-input:focus { outline: none; background: white; }
+  .custom-recur-actions { display: flex; gap: 0.75rem; justify-content: flex-end; border-top: 1px solid rgba(17,17,17,0.15); padding-top: 1.25rem; margin-top: 0.25rem; }
+  #weekday-row-wrap { margin-bottom: 1rem; }
 
   /* ── People / contacts ───────────────────────────────────────────── */
   .people-search-wrap { position: relative; }
@@ -751,6 +786,54 @@
           <button class="btn-primary" onclick="addMemberFromSettings()">Add</button>
           <button class="btn-secondary" onclick="toggleAddMemberForm()">Cancel</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Recurrence Modal -->
+  <div id="custom-recur-overlay" style="display:none" class="custom-recur-overlay" onclick="if(event.target===this)closeCustomRecur(false)">
+    <div class="custom-recur-modal">
+      <div class="custom-recur-title">Custom recurrence</div>
+      <div class="custom-recur-row">
+        <span class="custom-recur-label">Repeat every</span>
+        <input type="number" class="custom-recur-num" id="cr-interval" min="1" max="99" value="1" />
+        <select class="custom-recur-select" id="cr-freq" onchange="onCrFreqChange()">
+          <option value="DAILY">day</option>
+          <option value="WEEKLY" selected>week</option>
+          <option value="MONTHLY">month</option>
+          <option value="YEARLY">year</option>
+        </select>
+      </div>
+      <div id="weekday-row-wrap">
+        <div class="custom-recur-label" style="margin-bottom:0.5rem;font-size:0.8rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.05em">Repeat on</div>
+        <div class="weekday-row">
+          <button class="weekday-btn" data-day="SU" onclick="toggleWeekday(this)">S</button>
+          <button class="weekday-btn" data-day="MO" onclick="toggleWeekday(this)">M</button>
+          <button class="weekday-btn" data-day="TU" onclick="toggleWeekday(this)">T</button>
+          <button class="weekday-btn" data-day="WE" onclick="toggleWeekday(this)">W</button>
+          <button class="weekday-btn" data-day="TH" onclick="toggleWeekday(this)">T</button>
+          <button class="weekday-btn" data-day="FR" onclick="toggleWeekday(this)">F</button>
+          <button class="weekday-btn" data-day="SA" onclick="toggleWeekday(this)">S</button>
+        </div>
+      </div>
+      <div class="ends-section">
+        <div class="ends-title">Ends</div>
+        <label class="ends-radio-row">
+          <input type="radio" name="cr-ends" value="never" checked onchange="onCrEndsChange()" /> Never
+        </label>
+        <label class="ends-radio-row">
+          <input type="radio" name="cr-ends" value="on" onchange="onCrEndsChange()" /> On
+          <input type="date" class="ends-date-input" id="cr-ends-date" style="display:none" />
+        </label>
+        <label class="ends-radio-row">
+          <input type="radio" name="cr-ends" value="after" onchange="onCrEndsChange()" /> After
+          <input type="number" class="custom-recur-num" id="cr-ends-count" min="1" max="999" value="13" style="display:none" />
+          <span id="cr-ends-occ-label" style="display:none;font-size:0.875rem">occurrences</span>
+        </label>
+      </div>
+      <div class="custom-recur-actions">
+        <button class="btn-outlined btn-sm" onclick="closeCustomRecur(false)">Cancel</button>
+        <button class="btn-filled btn-sm" onclick="closeCustomRecur(true)">Done</button>
       </div>
     </div>
   </div>
@@ -1395,6 +1478,74 @@ function openPostWriteEdit(id) {
   }
 }
 
+const REMINDER_SOURCE_TYPES = new Set(['deadline', 'action_item']);
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const RRULE_DAY_NAMES_EARLY = { MO:'Monday', TU:'Tuesday', WE:'Wednesday', TH:'Thursday', FR:'Friday', SA:'Saturday', SU:'Sunday' };
+const RRULE_DAY_ABBRS_EARLY = ['SU','MO','TU','WE','TH','FR','SA'];
+
+function isReminderEvent(e) {
+  return REMINDER_SOURCE_TYPES.has(e.source_type);
+}
+
+// Format a date as "Aug 7th", "Jan 1st" etc.
+function formatDeadlineDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T12:00:00');
+  const mon = MONTH_NAMES[d.getMonth()].slice(0, 3);
+  const day = d.getDate();
+  const suffix = day === 1 || day === 21 || day === 31 ? 'st' : day === 2 || day === 22 ? 'nd' : day === 3 || day === 23 ? 'rd' : 'th';
+  return `${mon} ${day}${suffix}`;
+}
+
+function reminderHeadline(ev) {
+  const dateStr = ev.date ? formatDeadlineDate(ev.date) : '';
+  const title = ev.title;
+  if (!dateStr) return escHtml(title);
+  // If title already contains the date string, just show it as-is
+  const titleLower = title.toLowerCase();
+  if (dateStr && !titleLower.includes(dateStr.toLowerCase())) {
+    // Append "on Aug 7th" only if the date isn't already in the title
+    return `${escHtml(title)} <span style="font-weight:400;color:var(--text2)">on ${escHtml(dateStr)}</span>`;
+  }
+  return escHtml(title);
+}
+
+function renderReminderCard(ev) {
+  const id = ev.id;
+  const sourceTag = ev.source === 'gmail' ? `<span class="pill" style="font-size:9px">Gmail</span>` : ev.source ? `<span class="pill" style="font-size:9px">${escHtml(ev.source)}</span>` : '';
+  const typeLabel = ev.source_type === 'deadline' ? 'deadline' : 'action item';
+  return `
+  <div id="rcard-${id}" style="transition:opacity 0.3s">
+    <div class="reminder-card">
+      <div>
+        <div class="reminder-headline">${reminderHeadline(ev)} ${sourceTag}</div>
+        ${ev.sender_name ? `<div class="reminder-source">from ${escHtml(ev.sender_name)} · ${typeLabel}</div>` : `<div class="reminder-source">${typeLabel}</div>`}
+      </div>
+      <div class="reminder-actions">
+        <button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')">Edit</button>
+        <button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteReminder('${id}', ${JSON.stringify(ev.title)})">Delete</button>
+      </div>
+    </div>
+    <div class="reminder-editor-wrap" id="reditor-${id}" style="display:none">
+      ${renderReviewEditor(ev)}
+    </div>
+  </div>`;
+}
+
+async function deleteReminder(id, title) {
+  if (!confirm(`Delete "${title}" from your calendar?`)) return;
+  const card = document.getElementById(`rcard-${id}`);
+  if (card) card.style.opacity = '0.4';
+  try {
+    await fetch('/api/events/delete-from-calendar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+    pendingEvents = pendingEvents.filter(e => e.id !== id);
+    renderReview();
+  } catch (e) {
+    if (card) card.style.opacity = '1';
+    alert('Failed to delete — please try again.');
+  }
+}
+
 function renderReview() {
   const container = document.getElementById('review-list');
   if (!container) return;
@@ -1402,7 +1553,9 @@ function renderReview() {
   // Separate cancellation/reschedule from regular post-write review
   const cancellations = pendingEvents.filter(e => e.status === 'pending_cancellation');
   const reschedules = pendingEvents.filter(e => e.status === 'pending_reschedule');
-  const newEvents = pendingEvents.filter(e => e.status !== 'pending_cancellation' && e.status !== 'pending_reschedule');
+  const allNew = pendingEvents.filter(e => e.status !== 'pending_cancellation' && e.status !== 'pending_reschedule');
+  const reminders = allNew.filter(isReminderEvent);
+  const timedEvents = allNew.filter(e => !isReminderEvent(e));
 
   updateReviewCount(pendingEvents.length);
 
@@ -1426,8 +1579,14 @@ function renderReview() {
   if (reschedules.length) {
     html += `<div style="margin-bottom:2rem">${reschedules.map(renderRescheduleCard).join('')}</div>`;
   }
-  if (newEvents.length) {
-    html += `<div style="margin-top:${(cancellations.length || reschedules.length) ? '2rem' : '2rem'}">${newEvents.map(renderPostWriteReviewCard).join('')}</div>`;
+  if (timedEvents.length) {
+    html += `<div style="margin-top:1.5rem">${timedEvents.map(renderPostWriteReviewCard).join('')}</div>`;
+  }
+  if (reminders.length) {
+    html += `<div class="reminders-section" style="margin-top:2rem">
+      <div class="reminders-section-label">Reminders &amp; Deadlines</div>
+      ${reminders.map(renderReminderCard).join('')}
+    </div>`;
   }
 
   container.innerHTML = html;
@@ -1783,33 +1942,230 @@ function toggleCancelCard(id) {
   }
 }
 
-// Convert a Google Calendar RRULE string to a human-readable English description.
-// Handles the common patterns Claude will produce. Unrecognised rules fall back to the raw string.
-function rruleToEnglish(rule) {
-  if (!rule) return '';
-  const r = rule.replace(/^RRULE:/i, '');
-  const parts = Object.fromEntries(r.split(';').map(p => p.split('=')));
-  const freq = (parts.FREQ || '').toUpperCase();
-  const byday = parts.BYDAY || '';
-  const dayNames = { MO: 'Monday', TU: 'Tuesday', WE: 'Wednesday', TH: 'Thursday', FR: 'Friday', SA: 'Saturday', SU: 'Sunday' };
-  const days = byday ? byday.split(',').map(d => dayNames[d] || d).join(' and ') : '';
-  if (freq === 'DAILY') return 'Repeats every day';
-  if (freq === 'WEEKLY') return days ? `Repeats every ${days}` : 'Repeats weekly';
-  if (freq === 'MONTHLY') {
-    if (byday) return `Repeats monthly on the ${days}`;
-    return 'Repeats monthly';
-  }
-  if (freq === 'YEARLY') return 'Repeats annually';
-  return `Repeats (${rule})`;
+// ── Recurrence helpers ─────────────────────────────────────────────────────
+
+const RRULE_DAY_NAMES = RRULE_DAY_NAMES_EARLY;
+const RRULE_DAY_ABBRS = RRULE_DAY_ABBRS_EARLY;
+const NTH_LABELS = ['','first','second','third','fourth','fifth'];
+
+function parseRruleParts(rule) {
+  const r = (rule || '').replace(/^RRULE:/i, '');
+  return Object.fromEntries(r.split(';').filter(Boolean).map(p => { const i = p.indexOf('='); return [p.slice(0,i), p.slice(i+1)]; }));
 }
 
-// Per-event recurrence override: null = keep rule, false = user removed it
+// Human-readable description of an RRULE
+function rruleToEnglish(rule) {
+  if (!rule) return 'Does not repeat';
+  const p = parseRruleParts(rule);
+  const freq = (p.FREQ || '').toUpperCase();
+  const interval = parseInt(p.INTERVAL || '1', 10);
+  const byday = p.BYDAY || '';
+  const days = byday ? byday.split(',').map(d => RRULE_DAY_NAMES[d.replace(/^-?\d+/,'')] || d).join(', ') : '';
+  const every = interval > 1 ? ` every ${interval}` : '';
+
+  if (freq === 'DAILY') return interval === 1 ? 'Every day' : `Every ${interval} days`;
+  if (freq === 'WEEKLY') {
+    if (byday === 'MO,TU,WE,TH,FR') return 'Every weekday (Monday to Friday)';
+    return days ? `Weekly${every} on ${days}` : `Weekly${every}`;
+  }
+  if (freq === 'MONTHLY') {
+    if (byday) {
+      const m = byday.match(/^(-?\d+)([A-Z]+)$/);
+      if (m) { const nth = parseInt(m[1]); return `Monthly on the ${NTH_LABELS[nth] || nth+'th'} ${RRULE_DAY_NAMES[m[2]] || m[2]}`; }
+    }
+    return `Monthly${every}`;
+  }
+  if (freq === 'YEARLY') return `Annually`;
+  return rule;
+}
+
+// Given an event date string (YYYY-MM-DD), compute the standard dropdown options
+function getRecurrenceOptions(dateStr) {
+  const opts = [{ value: '', label: 'Does not repeat' }];
+  if (!dateStr) { opts.push({ value: 'custom', label: 'Custom...' }); return opts; }
+
+  const d = new Date(dateStr + 'T12:00:00');
+  const dow = d.getDay(); // 0=Sun
+  const dayAbbr = RRULE_DAY_ABBRS[dow];
+  const dayName = RRULE_DAY_NAMES[dayAbbr];
+  const dayOfMonth = d.getDate();
+  const nth = Math.ceil(dayOfMonth / 7);
+  const monthName = MONTH_NAMES[d.getMonth()];
+
+  opts.push({ value: 'RRULE:FREQ=DAILY', label: 'Daily' });
+  opts.push({ value: `RRULE:FREQ=WEEKLY;BYDAY=${dayAbbr}`, label: `Weekly on ${dayName}` });
+  opts.push({ value: `RRULE:FREQ=MONTHLY;BYDAY=${nth}${dayAbbr}`, label: `Monthly on the ${NTH_LABELS[nth] || nth+'th'} ${dayName}` });
+  opts.push({ value: `RRULE:FREQ=YEARLY`, label: `Annually on ${monthName} ${dayOfMonth}` });
+  opts.push({ value: 'RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR', label: 'Every weekday (Monday to Friday)' });
+  opts.push({ value: 'custom', label: 'Custom...' });
+  return opts;
+}
+
+// Map an existing RRULE to a dropdown value (or 'custom' if no match)
+function rruleToDropdownValue(rule, dateStr) {
+  if (!rule) return '';
+  const opts = getRecurrenceOptions(dateStr);
+  const match = opts.find(o => o.value === rule && o.value !== 'custom');
+  return match ? match.value : 'custom';
+}
+
+// Per-event in-memory recurrence state: stores current RRULE (or '' for none)
+const rvRecurrenceState = {};   // id → RRULE string | ''
+
+function getEvRecurrence(id) {
+  return Object.prototype.hasOwnProperty.call(rvRecurrenceState, id) ? rvRecurrenceState[id] : null;
+}
+
+function renderRecurrenceDropdown(id, currentRule, dateStr) {
+  const opts = getRecurrenceOptions(dateStr);
+  const selectedVal = rruleToDropdownValue(currentRule, dateStr);
+  const optHtml = opts.map(o => `<option value="${escHtml(o.value)}" ${o.value === selectedVal ? 'selected' : ''}>${escHtml(o.label)}</option>`).join('');
+  return `<select class="recurrence-select" id="rv-recur-sel-${id}" onchange="onRecurrenceDropdownChange('${id}', this.value, '${escHtml(dateStr || '')}')">
+    ${optHtml}
+  </select>`;
+}
+
+function onRecurrenceDropdownChange(id, value, dateStr) {
+  if (value === 'custom') {
+    // Revert dropdown to previous value while modal is open
+    const current = getEvRecurrence(id) ?? (document.getElementById(`rv-recur-sel-${id}`)._baseRule || null);
+    openCustomRecur(id, current, dateStr);
+    return;
+  }
+  rvRecurrenceState[id] = value; // '' = does not repeat
+}
+
+// ── Custom Recurrence Modal ────────────────────────────────────────────────
+
+let _crCurrentId = null;
+let _crDateStr = null;
+let _crCallback = null;
+
+function openCustomRecur(id, currentRule, dateStr) {
+  _crCurrentId = id;
+  _crDateStr = dateStr;
+
+  // Pre-fill from existing rule if possible
+  const p = parseRruleParts(currentRule || '');
+  const freq = p.FREQ || 'WEEKLY';
+  const interval = parseInt(p.INTERVAL || '1', 10);
+  const byday = p.BYDAY || '';
+  const until = p.UNTIL || '';
+  const count = parseInt(p.COUNT || '13', 10);
+
+  document.getElementById('cr-interval').value = interval;
+  document.getElementById('cr-freq').value = freq;
+
+  // Weekday buttons — reset then activate
+  document.querySelectorAll('.weekday-btn').forEach(btn => btn.classList.remove('active'));
+  if (byday) {
+    byday.split(',').forEach(d => {
+      const btn = document.querySelector(`.weekday-btn[data-day="${d}"]`);
+      if (btn) btn.classList.add('active');
+    });
+  } else if (freq === 'WEEKLY' && dateStr) {
+    // Default to the event's own day of week
+    const dow = new Date(dateStr + 'T12:00:00').getDay();
+    const btn = document.querySelector(`.weekday-btn[data-day="${RRULE_DAY_ABBRS[dow]}"]`);
+    if (btn) btn.classList.add('active');
+  }
+
+  // Ends
+  if (until) {
+    document.querySelector('input[name=cr-ends][value=on]').checked = true;
+    document.getElementById('cr-ends-date').value = until.slice(0,8).replace(/(\d{4})(\d{2})(\d{2})/,'$1-$2-$3');
+  } else if (p.COUNT) {
+    document.querySelector('input[name=cr-ends][value=after]').checked = true;
+    document.getElementById('cr-ends-count').value = count;
+  } else {
+    document.querySelector('input[name=cr-ends][value=never]').checked = true;
+  }
+  onCrFreqChange();
+  onCrEndsChange();
+
+  document.getElementById('custom-recur-overlay').style.display = 'flex';
+}
+
+function closeCustomRecur(save) {
+  if (save) {
+    const rule = buildRruleFromCustom();
+    const id = _crCurrentId;
+    rvRecurrenceState[id] = rule;
+    // Update the dropdown to show 'Custom...' as selected while displaying the description
+    const sel = document.getElementById(`rv-recur-sel-${id}`);
+    if (sel) {
+      // Ensure 'Custom...' option is selected
+      sel.value = 'custom';
+      // Update the label of the Custom option to show description
+      const customOpt = Array.from(sel.options).find(o => o.value === 'custom');
+      if (customOpt) customOpt.text = rruleToEnglish(rule) || 'Custom...';
+    }
+  } else {
+    // Cancelled — revert dropdown to previous saved value
+    const id = _crCurrentId;
+    const sel = document.getElementById(`rv-recur-sel-${id}`);
+    if (sel) {
+      const savedRule = getEvRecurrence(id);
+      if (savedRule !== null) {
+        const opts = getRecurrenceOptions(_crDateStr);
+        const match = opts.find(o => o.value === savedRule);
+        sel.value = match ? savedRule : 'custom';
+      } else {
+        sel.value = '';
+      }
+    }
+  }
+  document.getElementById('custom-recur-overlay').style.display = 'none';
+}
+
+function buildRruleFromCustom() {
+  const freq = document.getElementById('cr-freq').value;
+  const interval = parseInt(document.getElementById('cr-interval').value, 10) || 1;
+
+  let parts = [`FREQ=${freq}`];
+  if (interval > 1) parts.push(`INTERVAL=${interval}`);
+
+  if (freq === 'WEEKLY') {
+    const days = Array.from(document.querySelectorAll('.weekday-btn.active')).map(b => b.dataset.day);
+    if (days.length) parts.push(`BYDAY=${days.join(',')}`);
+  }
+
+  const endsVal = document.querySelector('input[name=cr-ends]:checked')?.value || 'never';
+  if (endsVal === 'on') {
+    const dateVal = document.getElementById('cr-ends-date').value;
+    if (dateVal) parts.push(`UNTIL=${dateVal.replace(/-/g,'')}T000000Z`);
+  } else if (endsVal === 'after') {
+    const count = parseInt(document.getElementById('cr-ends-count').value, 10) || 13;
+    parts.push(`COUNT=${count}`);
+  }
+
+  return 'RRULE:' + parts.join(';');
+}
+
+function onCrFreqChange() {
+  const freq = document.getElementById('cr-freq').value;
+  document.getElementById('weekday-row-wrap').style.display = freq === 'WEEKLY' ? 'block' : 'none';
+}
+
+function onCrEndsChange() {
+  const val = document.querySelector('input[name=cr-ends]:checked')?.value || 'never';
+  document.getElementById('cr-ends-date').style.display = val === 'on' ? 'inline-block' : 'none';
+  document.getElementById('cr-ends-count').style.display = val === 'after' ? 'inline-block' : 'none';
+  document.getElementById('cr-ends-occ-label').style.display = val === 'after' ? 'inline' : 'none';
+}
+
+function toggleWeekday(btn) {
+  btn.classList.toggle('active');
+}
+
+// Per-event recurrence override: null = keep rule, false = user removed it (legacy compat)
 const rvRecurrenceRemoved = {};
 
 function removeRecurrence(id) {
-  rvRecurrenceRemoved[id] = true;
-  const row = document.getElementById(`rv-recurrence-row-${id}`);
-  if (row) row.innerHTML = `<span class="material-icons">repeat</span><span class="gcal-recurrence-text" style="color:var(--text2);font-style:italic">Recurrence removed — will add as single event</span>`;
+  rvRecurrenceState[id] = '';
+  // Refresh the dropdown to show "Does not repeat"
+  const sel = document.getElementById(`rv-recur-sel-${id}`);
+  if (sel) sel.value = '';
 }
 
 function renderReviewEditor(ev) {
@@ -1865,14 +2221,12 @@ function renderReviewEditor(ev) {
         <div class="selected-people" id="rv-speople-${id}"></div>
       </div>
     </div>
-    ${ev.recurrence_rule ? `
-    <div class="gcal-recurrence-row" id="rv-recurrence-row-${id}">
-      <span class="material-icons">repeat</span>
-      <div class="gcal-recurrence-text">
-        ${escHtml(rruleToEnglish(ev.recurrence_rule))}
-        <br><button class="gcal-recurrence-remove" onclick="removeRecurrence('${id}')">Remove recurrence</button>
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">repeat</span>
+      <div class="gcal-fields">
+        ${renderRecurrenceDropdown(id, ev.recurrence_rule || null, ev.date || '')}
       </div>
-    </div>` : ''}
+    </div>
     ${memberSelect}
     <div class="gcal-actions">
       <button class="btn-gcal-add" id="rv-addbtn-${id}" onclick="approveReviewEvent('${id}')">Add to Calendar</button>
@@ -1977,8 +2331,10 @@ async function approveReviewEvent(id) {
     location: document.getElementById(`rv-loc-${id}`)?.value || ev.location || '',
     attendees: rvPeople[id] || [],
     targetMemberId: document.getElementById(`rv-member-${id}`)?.value || '',
-    // Send recurrenceRule explicitly: null if user removed it, undefined to use stored value
-    ...(ev.recurrence_rule !== undefined ? { recurrenceRule: rvRecurrenceRemoved[id] ? null : ev.recurrence_rule } : {}),
+    // Send recurrenceRule: use in-memory state if set by dropdown/custom modal, else fall back to stored value
+    recurrenceRule: Object.prototype.hasOwnProperty.call(rvRecurrenceState, id)
+      ? (rvRecurrenceState[id] || null)
+      : (rvRecurrenceRemoved[id] ? null : (ev.recurrence_rule || null)),
   };
   try {
     const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });

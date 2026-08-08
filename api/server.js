@@ -2261,7 +2261,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Stage 2 (full-body) fetch budget per invocation. Each Stage 2 + Claude call takes ~4s;
   // 35 fetches leaves comfortable headroom inside Vercel's 60s limit.
   // Dry-run scans more aggressively (no Claude calls), capped at 200 to avoid timeout.
-  const MAX_FULL_FETCHES = dryRun ? 200 : 35;
+  // Dry-run: metadata only (no Claude), so 200 is safe.
+  // Live: each Stage 2 fetch + Claude call can take 1-3s; 12 per batch keeps
+  // well under the 55s AbortController limit even on slow responses.
+  const MAX_FULL_FETCHES = dryRun ? 200 : 12;
 
   // Rate-limit live scans to once per 24h (Part 6). Only applied at offset=0 (first batch);
   // batch continuations (offset > 0) are exempt. Controls cost from repeated re-scans,
@@ -2592,7 +2595,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Only stamp the rate-limit timestamp on final completion (not on truncated mid-scan
   // batches, not on dry-runs, and critically not on timed-out/failed requests that never
   // reach this point). offset===0 means this is the first (or only) batch of a new scan.
-  if (!dryRun && !truncated && offset === 0) {
+  // Stamp rate limit on final completion of any live scan (offset===0 single-batch
+  // OR the last batch of a multi-batch chain where truncated===false).
+  if (!dryRun && !truncated) {
     await redis.set(`backfillLastRun:${email}`, Date.now().toString(), 'EX', BACKFILL_COOLDOWN_SEC);
   }
   res.json({

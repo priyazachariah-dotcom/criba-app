@@ -1430,6 +1430,7 @@ const BACKFILL_BAR_HTML = `
   <div class="scan-bar-btns">
     <button class="btn-outlined btn-sm" id="backfill-btn-clear" onclick="clearFingerprints()" title="Remove seen-email cache so all messages in the window are re-evaluated">Reset dedup</button>
     <button class="btn-outlined btn-sm" id="backfill-btn-cooldown" onclick="clearBackfillCooldown()" title="Clear the 24h scan rate limit — use after a timed-out scan">Reset scan lock</button>
+    <button class="btn-outlined btn-sm" onclick="showScanTrace()" title="Show per-email pipeline decisions from the last scan">Scan trace</button>
     <button class="btn-outlined btn-sm" id="backfill-btn-dry" onclick="runBackfill(2, true)" title="Preview which emails would be sent to AI — no API calls">Dry run</button>
     <button class="btn-outlined btn-sm" id="backfill-btn-7" onclick="runBackfill(7)">Last 7 days</button>
     <button class="btn-filled btn-sm" id="backfill-btn-2" onclick="runBackfill(2)">Scan now</button>
@@ -1708,6 +1709,72 @@ async function clearBackfillCooldown() {
     btn.disabled = false;
     btn.textContent = 'Reset scan lock';
   }
+}
+
+async function showScanTrace() {
+  const result = document.getElementById('backfill-result');
+  if (!result) return;
+  result.textContent = 'Loading scan trace…';
+  try {
+    const res = await fetch('/api/scan/trace?limit=300');
+    if (!res.ok) { result.textContent = 'Failed to load trace'; return; }
+    const entries = await res.json();
+    if (!entries.length) { result.textContent = 'No scan trace data yet — run a scan first.'; return; }
+
+    const STAGE_COLOR = {
+      'SKIP-CAT':   '#94a3b8',
+      'SKIP-DEDUP': '#94a3b8',
+      'SKIP-BODY':  '#f59e0b',
+      'SENT-TO-AI': '#3b82f6',
+      'DATE-NORM':  '#8b5cf6',
+      'DROPPED':    '#ef4444',
+      'STORED':     '#22c55e',
+      'ERROR':      '#ef4444',
+    };
+
+    const rows = entries.map(e => {
+      const time = new Date(e.ts).toLocaleTimeString();
+      const color = STAGE_COLOR[e.stage] || '#999';
+      const subject = e.subject ? escHtml(e.subject.slice(0, 55)) : '—';
+      const from = e.from ? escHtml(e.from.replace(/<.*>/, '').trim().slice(0, 30)) : '—';
+      const extra = e.stage === 'SKIP-CAT'  ? ` label=${escHtml(e.label||'')}` :
+                    e.stage === 'DATE-NORM'  ? ` "${escHtml(e.rawDate||'')}"→"${escHtml(e.normalized||'')}"` :
+                    e.stage === 'DROPPED'    ? ` reason=${escHtml(e.reason||'')} raw="${escHtml(e.rawDate||'null')}"` :
+                    e.stage === 'SENT-TO-AI' ? ` events=${e.claudeEvents}` :
+                    e.stage === 'STORED'     ? ` "${escHtml(e.title||'')}" ${escHtml(e.date||'')} cal=${e.calEventId ? '✓' : '✗'}` :
+                    e.stage === 'SKIP-BODY'  ? ` bodyLen=${e.bodyLen}` :
+                    e.stage === 'ERROR'      ? ` ${escHtml(e.error||'')}` : '';
+      return `<tr>
+        <td style="color:var(--text3);font-size:0.7rem;white-space:nowrap">${time}</td>
+        <td><span style="font-size:0.7rem;font-weight:700;color:${color}">${e.stage}</span></td>
+        <td style="font-size:0.75rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${subject}</td>
+        <td style="font-size:0.72rem;color:var(--text3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${from}</td>
+        <td style="font-size:0.72rem;color:var(--text2)">${extra}</td>
+      </tr>`;
+    }).join('');
+
+    const counts = {};
+    entries.forEach(e => counts[e.stage] = (counts[e.stage]||0) + 1);
+    const summary = Object.entries(counts).map(([s,n]) => `${s}: ${n}`).join(' · ');
+
+    result.innerHTML = `
+      <div style="font-size:0.75rem;color:var(--text2);margin-bottom:0.5rem">${entries.length} entries · ${summary}
+        <button onclick="fetch('/api/scan/trace',{method:'DELETE'}).then(()=>document.getElementById('backfill-result').textContent='Trace cleared')"
+          style="margin-left:1rem;font-size:0.7rem;background:none;border:1px solid var(--ink);padding:2px 8px;cursor:pointer">Clear trace</button>
+      </div>
+      <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
+        <table style="width:100%;border-collapse:collapse;font-family:inherit">
+          <thead><tr style="font-size:0.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em">
+            <th style="text-align:left;padding:3px 8px 3px 0">Time</th>
+            <th style="text-align:left;padding:3px 8px">Stage</th>
+            <th style="text-align:left;padding:3px 8px">Subject</th>
+            <th style="text-align:left;padding:3px 8px">From</th>
+            <th style="text-align:left;padding:3px 8px">Detail</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  } catch { result.textContent = 'Network error loading trace'; }
 }
 
 async function runBackfill(days, dryRun = false) {

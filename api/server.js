@@ -2250,6 +2250,32 @@ function scanForDateContent(text, snippetLen) {
 // Controls cost from repeated re-scans, not from scan thoroughness.
 const BACKFILL_COOLDOWN_SEC = 24 * 60 * 60;
 
+// ── Scan trace (per-email diagnostics written to Redis) ───────────────────
+// Every pipeline decision is appended to `scanTrace:{email}` (a Redis list,
+// capped at SCAN_TRACE_MAX entries). Queryable via GET /api/scan/trace after
+// any scan — no Vercel log access needed to debug missed emails.
+const SCAN_TRACE_MAX = 600;
+
+async function traceEmail(email, entry) {
+  const key = `scanTrace:${email}`;
+  await redis.lpush(key, JSON.stringify({ ts: Date.now(), ...entry }));
+  await redis.ltrim(key, 0, SCAN_TRACE_MAX - 1);
+  await redis.expire(key, 7 * 24 * 60 * 60); // 7-day TTL
+}
+
+// GET /api/scan/trace — returns the last N pipeline decisions for the logged-in user
+app.get('/api/scan/trace', requireAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || '200', 10), SCAN_TRACE_MAX);
+  const raw = await redis.lrange(`scanTrace:${req.user.email}`, 0, limit - 1);
+  res.json(raw.map(r => JSON.parse(r)));
+});
+
+// DELETE /api/scan/trace — clear the trace log for the logged-in user
+app.delete('/api/scan/trace', requireAuth, async (req, res) => {
+  await redis.del(`scanTrace:${req.user.email}`);
+  res.json({ ok: true });
+});
+
 // Approximate token cost of FULL_EXTRACTION_PROMPT alone (chars / 4).
 // Used by dry-run to estimate how many input tokens a real extraction would spend.
 const PROMPT_TOKENS_ESTIMATE = Math.ceil(FULL_EXTRACTION_PROMPT.length / 4);
@@ -2458,6 +2484,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         skippedCategory++;
         const matchedCat = labelIds.find(l => EXCLUDED_CATEGORIES.has(l));
         console.log(`[backfill] SKIP-CAT msg=${messageId} label=${matchedCat} subject="${subject.slice(0,60)}"`);
+        await traceEmail(email, { stage: 'SKIP-CAT', messageId, subject, from, label: matchedCat });
         if (!dryRun) await redis.del(lockKey);
         continue;
       }
@@ -2470,6 +2497,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       if (await redis.exists(fpKey)) {
         skippedDedup++;
         console.log(`[backfill] SKIP-DEDUP msg=${messageId} subject="${subject.slice(0,60)}"`);
+        await traceEmail(email, { stage: 'SKIP-DEDUP', messageId, subject, from });
         if (dryRun) dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'already-processed-fingerprint' });
         else await redis.del(lockKey);
         continue;
@@ -2525,6 +2553,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // Escalated to full fetch, still no calendar signal, not image-heavy — skip
           skippedPreFilter++;
           console.log(`[backfill] SKIP-BODY msg=${messageId} subject="${subject.slice(0,60)}" bodyLen=${body.length} elapsed=${Date.now()-batchStartMs}ms`);
+          await traceEmail(email, { stage: 'SKIP-BODY', messageId, subject, from, bodyLen: body.length, snippetPreview: snippet.slice(0, 120) });
           if (dryRun) {
             dryRunMessages.push({
               messageId, subject, sizeEstimate,
@@ -2587,6 +2616,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
       eventsExtracted += extracted.length;
       console.log(`[backfill] msg=${messageId} Claude=${extracted.length} event(s) images=${images.length} claudeMs=${Date.now()-claudeStartMs} totalElapsed=${Date.now()-batchStartMs}ms call=${claudeCalls}`);
+      await traceEmail(email, { stage: 'SENT-TO-AI', messageId, subject, from, claudeEvents: extracted.length, claudeMs: Date.now()-claudeStartMs });
       // Write fingerprint NOW — after Claude has successfully returned. This way
       // a timeout or crash before this line leaves the email un-fingerprinted so
       // the next scan can retry it. Cost: a small risk of double-processing if the
@@ -2601,6 +2631,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           const normalized = normalizeEventDate(ev.date, dateSent);
           if (normalized) {
             console.log(`[backfill] DATE-NORM msg=${messageId} raw="${ev.date}" → "${normalized}" title="${(ev.title||'').slice(0,50)}"`);
+            await traceEmail(email, { stage: 'DATE-NORM', messageId, subject, from, rawDate: ev.date, normalized, title: ev.title });
             ev.date = normalized;
           }
         }
@@ -2611,7 +2642,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
         if (!ev.title || !ev.date) {
           // TODO: surface events with unparseable dates in Review so user can fix manually
-          console.log(`[backfill] DROPPED msg=${messageId} reason=${!ev.title ? 'missing-title' : 'invalid-date'} raw="${ev.date ?? 'null'}" title="${(ev.title||'').slice(0,60)}"`);
+          const dropReason = !ev.title ? 'missing-title' : 'invalid-date';
+          console.log(`[backfill] DROPPED msg=${messageId} reason=${dropReason} raw="${ev.date ?? 'null'}" title="${(ev.title||'').slice(0,60)}"`);
+          await traceEmail(email, { stage: 'DROPPED', messageId, subject, from, reason: dropReason, rawDate: ev.date ?? null, title: ev.title ?? null });
           continue;
         }
 
@@ -2679,10 +2712,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           type: ev.is_all_day ? 'other' : 'timed',
           created_at: new Date().toISOString(),
         });
+        await traceEmail(email, { stage: 'STORED', messageId, subject, from, title: ev.title, date: ev.date, calEventId: bfCalEventId, status: bfCalEventId ? 'added' : 'pending' });
         eventsStored++;
       }
     } catch (err) {
       console.error(`[backfill] ERROR msg=${messageId}:`, err.message);
+      await traceEmail(email, { stage: 'ERROR', messageId, subject: subject || '?', from: from || '?', error: err.message });
       if (!dryRun) await redis.del(lockKey);
     }
   }

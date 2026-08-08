@@ -2211,6 +2211,14 @@ const IMAGE_TOKENS_ESTIMATE = 1600;
 // Batching: each invocation does ≤ MAX_FULL_FETCHES Stage 2 fetches, then returns
 //   { truncated: true, nextOffset } for the frontend to chain the next batch.
 //
+// DELETE /api/gmail/backfill-cooldown — clears the 24h rate-limit timestamp so the user
+// can run a fresh scan immediately. Useful after a timed-out scan or a pipeline fix.
+app.delete('/api/gmail/backfill-cooldown', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  await redis.del(`backfillLastRun:${email}`);
+  res.json({ ok: true });
+});
+
 // DELETE /api/gmail/fingerprints — remove all processedEmail fingerprints that belong
 // to the current user. Uses SCAN so it's safe on large Redis keyspaces.
 // Intended for debugging / re-scanning after pipeline fixes.
@@ -2258,6 +2266,8 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Rate-limit live scans to once per 24h (Part 6). Only applied at offset=0 (first batch);
   // batch continuations (offset > 0) are exempt. Controls cost from repeated re-scans,
   // not from scan thoroughness.
+  // NOTE: the timestamp is written AFTER the scan completes (near the final res.json call below),
+  // not here — so a timed-out or failed scan does NOT consume the rate limit.
   if (!dryRun && offset === 0) {
     const lastRunTs = await redis.get(`backfillLastRun:${email}`);
     if (lastRunTs) {
@@ -2272,7 +2282,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         });
       }
     }
-    await redis.set(`backfillLastRun:${email}`, Date.now().toString(), 'EX', BACKFILL_COOLDOWN_SEC);
+    // Do NOT write the timestamp yet — only write it on successful completion below.
   }
 
   const refreshToken = await redis.get(`refreshToken:${email}`);
@@ -2579,6 +2589,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   }
 
   console.log(`[backfill] DONE scanned=${scanned} skippedLock=${skippedLock} skippedNonPrimary=${skippedCategory} skippedDedup=${skippedDedup} skippedNoSignal=${skippedPreFilter} fullFetches=${fullFetches} claudeCalls=${claudeCalls} eventsStored=${eventsStored} truncated=${truncated} nextOffset=${nextOffset}`);
+  // Only stamp the rate-limit timestamp on final completion (not on truncated mid-scan
+  // batches, not on dry-runs, and critically not on timed-out/failed requests that never
+  // reach this point). offset===0 means this is the first (or only) batch of a new scan.
+  if (!dryRun && !truncated && offset === 0) {
+    await redis.set(`backfillLastRun:${email}`, Date.now().toString(), 'EX', BACKFILL_COOLDOWN_SEC);
+  }
   res.json({
     ok: true, days, scanned, skippedLock, skippedCategory, skippedPreFilter, skippedDedup,
     fullFetches, claudeCalls, eventsExtracted, eventsStored,

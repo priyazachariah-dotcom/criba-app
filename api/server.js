@@ -2148,6 +2148,66 @@ app.get('/api/config', (req, res) => {
 // CATEGORY_PERSONAL (Primary tab) check instead — see backfill endpoint below.
 const GMAIL_NOISE_LABELS = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL']);
 
+// ── Event date normalizer ──────────────────────────────────────────────────
+// Claude sometimes returns partial dates ("August 12", "Aug 12", "8/12") without
+// a year, especially from newsletter/digest content that doesn't restate the year.
+// Given the email's received date, infer the most plausible year:
+//   - If the resulting date is in the past relative to the email date, use year+1.
+//   - Accepts ISO "YYYY-MM-DD", slash "M/D[/YY]", and "Month D[th]" natural language.
+// Returns a "YYYY-MM-DD" string, or null if parsing fails.
+const MONTH_ABBRS = {
+  january:'01',february:'02',march:'03',april:'04',may:'05',june:'06',
+  july:'07',august:'08',september:'09',october:'10',november:'11',december:'12',
+  jan:'01',feb:'02',mar:'03',apr:'04',jun:'06',jul:'07',aug:'08',
+  sep:'09',oct:'10',nov:'11',dec:'12',
+};
+
+function normalizeEventDate(rawDate, emailDateStr) {
+  if (!rawDate) return null;
+  const d = String(rawDate).trim();
+
+  // Already ISO YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+
+  // Reference year from email received date (or today as fallback)
+  const ref = emailDateStr ? new Date(emailDateStr) : new Date();
+  const refYear = isNaN(ref.getFullYear()) ? new Date().getFullYear() : ref.getFullYear();
+
+  // Slash format: M/D, M/D/YY, M/D/YYYY
+  const slashMatch = d.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+  if (slashMatch) {
+    let year = slashMatch[3] ? parseInt(slashMatch[3], 10) : null;
+    if (year && year < 100) year += 2000;
+    const mon = String(slashMatch[1]).padStart(2, '0');
+    const day = String(slashMatch[2]).padStart(2, '0');
+    if (!year) {
+      year = refYear;
+      const candidate = new Date(`${year}-${mon}-${day}`);
+      if (candidate < ref) year++;
+    }
+    const iso = `${year}-${mon}-${day}`;
+    return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso : null;
+  }
+
+  // Natural language: "August 12", "Aug 12th", "August 12, 2026"
+  const nlMatch = d.match(/^([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:[,\s]+(\d{4}))?$/i);
+  if (nlMatch) {
+    const monKey = nlMatch[1].toLowerCase();
+    const mon = MONTH_ABBRS[monKey];
+    if (!mon) return null;
+    const day = String(nlMatch[2]).padStart(2, '0');
+    let year = nlMatch[3] ? parseInt(nlMatch[3], 10) : null;
+    if (!year) {
+      year = refYear;
+      const candidate = new Date(`${year}-${mon}-${day}`);
+      if (candidate < ref) year++;
+    }
+    return `${year}-${mon}-${day}`;
+  }
+
+  return null;
+}
+
 // ── Snippet-based calendar-signal scanner (backfill pre-filter, Parts 2-3) ──
 // Runs against subject + Gmail snippet (~200 chars) at Stage 1.
 // If the snippet is too short to be conclusive, the message is escalated to a
@@ -2535,7 +2595,25 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
       for (const ev of extracted) {
-        if (!ev.title || !ev.date) continue;
+        // Normalize date before validity check — Claude sometimes returns partial
+        // dates ("August 12") without a year, especially from newsletter content.
+        if (ev.date && !/^\d{4}-\d{2}-\d{2}$/.test(ev.date)) {
+          const normalized = normalizeEventDate(ev.date, dateSent);
+          if (normalized) {
+            console.log(`[backfill] DATE-NORM msg=${messageId} raw="${ev.date}" → "${normalized}" title="${(ev.title||'').slice(0,50)}"`);
+            ev.date = normalized;
+          }
+        }
+        if (ev.old_date && !/^\d{4}-\d{2}-\d{2}$/.test(ev.old_date)) {
+          const normalized = normalizeEventDate(ev.old_date, dateSent);
+          if (normalized) ev.old_date = normalized;
+        }
+
+        if (!ev.title || !ev.date) {
+          // TODO: surface events with unparseable dates in Review so user can fix manually
+          console.log(`[backfill] DROPPED msg=${messageId} reason=${!ev.title ? 'missing-title' : 'invalid-date'} raw="${ev.date ?? 'null'}" title="${(ev.title||'').slice(0,60)}"`);
+          continue;
+        }
 
         const intent = ev.intent || 'new_event';
 

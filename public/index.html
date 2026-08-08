@@ -1428,7 +1428,8 @@ const BACKFILL_BAR_HTML = `
 <div class="scan-bar">
   <span class="scan-bar-label">Scan Gmail</span>
   <div class="scan-bar-btns">
-    <button class="btn-outlined btn-sm" id="backfill-btn-clear" onclick="clearFingerprints()" title="Remove seen-email cache so all messages in the window are re-evaluated">Reset dedup</button>
+    <button class="btn-outlined btn-sm" id="backfill-btn-clear" onclick="clearFingerprints(false)" title="Remove seen-email cache so all messages in the window are re-evaluated">Reset dedup</button>
+    <button class="btn-outlined btn-sm" id="backfill-btn-clear-force" onclick="clearFingerprints(true)" title="Force-delete ALL fingerprints (bypasses value filter — use if normal reset doesn't work)" style="color:var(--red);border-color:var(--red)">Force reset dedup</button>
     <button class="btn-outlined btn-sm" id="backfill-btn-cooldown" onclick="clearBackfillCooldown()" title="Clear the 24h scan rate limit — use after a timed-out scan">Reset scan lock</button>
     <button class="btn-outlined btn-sm" onclick="showScanTrace()" title="Show per-email pipeline decisions from the last scan">Scan trace</button>
     <button class="btn-outlined btn-sm" id="backfill-btn-dry" onclick="runBackfill(2, true)" title="Preview which emails would be sent to AI — no API calls">Dry run</button>
@@ -1665,26 +1666,31 @@ function renderDryRunTable(result, accumulated, queryStr) {
     </div>`;
 }
 
-async function clearFingerprints() {
-  const btn = document.getElementById('backfill-btn-clear');
+async function clearFingerprints(force = false) {
+  const btnId = force ? 'backfill-btn-clear-force' : 'backfill-btn-clear';
+  const btn = document.getElementById(btnId);
   const result = document.getElementById('backfill-result');
   if (!btn) return;
   btn.disabled = true;
   btn.textContent = 'Resetting…';
   if (result) result.innerHTML = '';
   try {
-    const res = await fetch('/api/gmail/fingerprints', { method: 'DELETE' });
+    const url = '/api/gmail/fingerprints' + (force ? '?force=1' : '');
+    const res = await fetch(url, { method: 'DELETE' });
     const data = await res.json();
     if (res.ok) {
-      result.textContent = `Reset complete — ${data.deleted} fingerprint${data.deleted !== 1 ? 's' : ''} cleared (${data.scanned} keys scanned). Next scan will re-evaluate all messages in the window.`;
+      const detail = force
+        ? `Force reset complete — ${data.deleted} fingerprints deleted (${data.scanned} scanned).`
+        : `Reset complete — ${data.deleted} cleared, ${data.skipped || 0} skipped (other users), ${data.scanned} scanned.${data.sampleValues?.length ? ` Sample values: ${data.sampleValues.join(', ')}` : ''}`;
+      result.textContent = detail + ' Next scan will re-evaluate all messages in the window.';
     } else {
       result.textContent = data.error || 'Reset failed — try again';
     }
-  } catch (err) {
+  } catch {
     result.textContent = 'Network error — try again';
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Reset dedup';
+    btn.textContent = force ? 'Force reset dedup' : 'Reset dedup';
   }
 }
 

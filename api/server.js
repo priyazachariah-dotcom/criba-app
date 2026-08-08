@@ -2310,25 +2310,34 @@ app.delete('/api/gmail/backfill-cooldown', requireAuth, async (req, res) => {
 // Intended for debugging / re-scanning after pipeline fixes.
 app.delete('/api/gmail/fingerprints', requireAuth, async (req, res) => {
   const email = req.user.email;
-  let cursor = '0';
+  // ?force=1 skips value-matching and deletes ALL processedEmail keys.
+  // Use when the normal value-filtered delete isn't clearing the expected keys.
+  const force = req.query.force === '1';
+  let cursor = 0; // ioredis returns cursor as number; compare as number throughout
   let deleted = 0;
+  let skipped = 0;
   let scanned = 0;
+  const sample = []; // first 5 seen values for diagnostics
   try {
     do {
       const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', 'processedEmail:*', 'COUNT', 200);
-      cursor = nextCursor;
+      cursor = parseInt(nextCursor, 10); // normalise: ioredis may return string or number
       if (keys.length === 0) continue;
       scanned += keys.length;
-      // Fetch values in one round-trip to find which keys belong to this user
-      const values = await redis.mget(...keys);
-      const mine = keys.filter((_, idx) => values[idx] === email);
-      if (mine.length > 0) {
-        await redis.del(...mine);
-        deleted += mine.length;
+      if (force) {
+        await redis.del(...keys);
+        deleted += keys.length;
+      } else {
+        const values = await redis.mget(...keys);
+        if (sample.length < 5) sample.push(...values.filter(Boolean).slice(0, 5 - sample.length));
+        const mine = keys.filter((_, idx) => values[idx] === email);
+        const others = keys.length - mine.length;
+        skipped += others;
+        if (mine.length > 0) { await redis.del(...mine); deleted += mine.length; }
       }
-    } while (cursor !== '0');
-    console.log(`[fingerprints] cleared email=${email} deleted=${deleted} scanned=${scanned}`);
-    res.json({ ok: true, deleted, scanned });
+    } while (cursor !== 0);
+    console.log(`[fingerprints] cleared email=${email} force=${force} deleted=${deleted} skipped=${skipped} scanned=${scanned} sampleValues=${JSON.stringify(sample)}`);
+    res.json({ ok: true, deleted, skipped, scanned, force, sampleValues: sample });
   } catch (err) {
     console.error('[fingerprints] clear failed:', err.message);
     res.status(500).json({ error: 'Failed to clear fingerprints: ' + err.message });

@@ -2396,8 +2396,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const EXCLUDED_CATEGORIES = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL']);
       if (labelIds.some(l => EXCLUDED_CATEGORIES.has(l))) {
         skippedCategory++;
+        const matchedCat = labelIds.find(l => EXCLUDED_CATEGORIES.has(l));
+        console.log(`[backfill] SKIP-CAT msg=${messageId} label=${matchedCat} subject="${subject.slice(0,60)}"`);
         if (!dryRun) await redis.del(lockKey);
-        // Not shown as individual rows in dry-run — summarised in header count only
         continue;
       }
 
@@ -2408,6 +2409,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const fpKey = `processedEmail:${fingerprint}`;
       if (await redis.exists(fpKey)) {
         skippedDedup++;
+        console.log(`[backfill] SKIP-DEDUP msg=${messageId} subject="${subject.slice(0,60)}"`);
         if (dryRun) dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'already-processed-fingerprint' });
         else await redis.del(lockKey);
         continue;
@@ -2456,10 +2458,13 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       // If snippet didn't clearly match (escalation path), run pattern on full body (Part 3)
       let bodyScan = null;
       if (!snippetScan.pass && !isImageHeavy) {
-        bodyScan = scanForDateContent(`${subject} ${body.slice(0, 2000)}`);
+        // 5000 chars: wide enough for digest emails that have long HTML boilerplate
+        // before the actual schedule content (nav, headers, unsubscribe links, etc.)
+        bodyScan = scanForDateContent(`${subject} ${body.slice(0, 5000)}`);
         if (!bodyScan.pass) {
           // Escalated to full fetch, still no calendar signal, not image-heavy — skip
           skippedPreFilter++;
+          console.log(`[backfill] SKIP-BODY msg=${messageId} subject="${subject.slice(0,60)}" bodyLen=${body.length} elapsed=${Date.now()-batchStartMs}ms`);
           if (dryRun) {
             dryRunMessages.push({
               messageId, subject, sizeEstimate,
@@ -2508,8 +2513,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         continue;
       }
 
-      // ── Live path: fingerprint write → images → Claude → store ──────────
-      await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
+      // ── Live path: images → Claude → store → fingerprint write ─────────
+      // Fingerprint is written AFTER Claude returns, not before. Writing it
+      // before meant a timed-out batch would permanently mark the email as
+      // processed for 30 days even though no events were ever extracted.
 
       const images = imageParts.length > 0
         ? await fetchEmailImages(fullRes.data.payload, gmail, messageId)
@@ -2520,6 +2527,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
       eventsExtracted += extracted.length;
       console.log(`[backfill] msg=${messageId} Claude=${extracted.length} event(s) images=${images.length} claudeMs=${Date.now()-claudeStartMs} totalElapsed=${Date.now()-batchStartMs}ms call=${claudeCalls}`);
+      // Write fingerprint NOW — after Claude has successfully returned. This way
+      // a timeout or crash before this line leaves the email un-fingerprinted so
+      // the next scan can retry it. Cost: a small risk of double-processing if the
+      // server crashes between here and the response, but that's far better than
+      // permanently skipping an email that was never actually extracted.
+      await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
       for (const ev of extracted) {
         if (!ev.title || !ev.date) continue;

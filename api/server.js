@@ -2262,9 +2262,15 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // 35 fetches leaves comfortable headroom inside Vercel's 60s limit.
   // Dry-run scans more aggressively (no Claude calls), capped at 200 to avoid timeout.
   // Dry-run: metadata only (no Claude), so 200 is safe.
-  // Live: each Stage 2 fetch + Claude call can take 1-3s; 12 per batch keeps
-  // well under the 55s AbortController limit even on slow responses.
-  const MAX_FULL_FETCHES = dryRun ? 200 : 12;
+  // Live: hard Stage 2 cap as secondary guard; primary guard is wall-clock below.
+  const MAX_FULL_FETCHES = dryRun ? 200 : 20;
+  // Wall-clock budget: truncate after 40s regardless of message count.
+  // This is the primary timeout guard — it fires before the 55s client AbortController
+  // and well before Vercel's 60s hard limit, leaving 15-20s margin for response overhead.
+  // Stage 1 metadata fetches (~150ms each) and Redis ops eat time before Stage 2 even starts,
+  // so a per-message cap alone is not sufficient for large inboxes.
+  const BATCH_WALL_CLOCK_MS = dryRun ? 50000 : 40000;
+  const batchStartMs = Date.now();
 
   // Rate-limit live scans to once per 24h (Part 6). Only applied at offset=0 (first batch);
   // batch continuations (offset > 0) are exempt. Controls cost from repeated re-scans,
@@ -2341,6 +2347,18 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
   for (let i = 0; i < toProcess.length; i++) {
     const messageId = toProcess[i];
+
+    // ── Wall-clock budget check ──────────────────────────────────────────────
+    // Check BEFORE acquiring lock or making any network call, so we can safely
+    // truncate and let the next batch continue from this message.
+    const elapsedMs = Date.now() - batchStartMs;
+    if (elapsedMs >= BATCH_WALL_CLOCK_MS) {
+      console.log(`[backfill] WALL-CLOCK TRUNCATE elapsed=${elapsedMs}ms limit=${BATCH_WALL_CLOCK_MS}ms at i=${i} offset=${offset} scanned=${scanned} fullFetches=${fullFetches}`);
+      truncated = true;
+      nextOffset = offset + i;
+      break;
+    }
+
     scanned++;
 
     // ── Lock check ──────────────────────────────────────────────────────────
@@ -2426,10 +2444,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         break;
       }
       fullFetches++;
+      const stage2StartMs = Date.now();
 
       // ── Stage 2: full body fetch ─────────────────────────────────────────
       const fullRes = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
       const body = extractEmailBody(fullRes.data.payload);
+      console.log(`[backfill] stage2 msg=${messageId} fetch=${Date.now()-stage2StartMs}ms bodyLen=${body.length} elapsed=${Date.now()-batchStartMs}ms`);
       const imageParts = collectImageParts(fullRes.data.payload);
       const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
 
@@ -2496,9 +2516,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         : [];
 
       claudeCalls++;
+      const claudeStartMs = Date.now();
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
       eventsExtracted += extracted.length;
-      console.log(`[backfill] msg=${messageId} Claude=${extracted.length} event(s) images=${images.length} call=${claudeCalls}`);
+      console.log(`[backfill] msg=${messageId} Claude=${extracted.length} event(s) images=${images.length} claudeMs=${Date.now()-claudeStartMs} totalElapsed=${Date.now()-batchStartMs}ms call=${claudeCalls}`);
 
       for (const ev of extracted) {
         if (!ev.title || !ev.date) continue;

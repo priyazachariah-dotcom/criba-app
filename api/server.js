@@ -2442,6 +2442,49 @@ app.get('/api/debug/extract', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/debug/scan-list?days=7 — run the EXACT query the backfill uses and
+// report, per message, whether it is still fingerprinted and whether the snippet
+// pre-filter would pass it. No Claude calls, so it returns in a second or two.
+//
+// Answers the question a scan trace cannot: was this email even a candidate?
+app.get('/api/debug/scan-list', requireAuth, async (req, res) => {
+  const days = parseInt(req.query.days, 10) || 7;
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const gmail = google.gmail({ version: 'v1', auth });
+    const afterDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const afterYMD = `${afterDate.getUTCFullYear()}/${String(afterDate.getUTCMonth() + 1).padStart(2, '0')}/${String(afterDate.getUTCDate()).padStart(2, '0')}`;
+    const q = `in:inbox -category:promotions -category:social after:${afterYMD}`;
+
+    const listRes = await gmail.users.messages.list({ userId: 'me', q, maxResults: 150 });
+    const ids = (listRes.data.messages || []).map(m => m.id);
+
+    const rows = [];
+    for (const id of ids) {
+      const meta = await gmail.users.messages.get({
+        userId: 'me', id, format: 'metadata',
+        metadataHeaders: ['Subject', 'From', 'Date'],
+      });
+      const headers = meta.data.payload.headers || [];
+      const h = (n) => headers.find(x => x.name.toLowerCase() === n)?.value || '';
+      const subject = h('subject');
+      const from = h('from');
+      const dateSent = h('date');
+      const senderEmail = (from.match(/<(.+?)>/)?.[1] || from).toLowerCase();
+      const fpRaw = `${senderEmail}:${subject.trim()}:${dateSent.trim()}`;
+      const fpKey = `processedEmail:${crypto.createHash('sha256').update(fpRaw).digest('hex')}`;
+      rows.push({
+        subject, from, dateSent,
+        fingerprinted: (await redis.exists(fpKey)) === 1,
+        snippetPreFilter: scanForDateContent(`${subject} ${meta.data.snippet || ''}`).pass,
+      });
+    }
+    res.json({ query: q, days, returned: rows.length, messages: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete('/api/gmail/backfill-cooldown', requireAuth, async (req, res) => {
   const email = req.user.email;
   await redis.del(`backfillLastRun:${email}`);

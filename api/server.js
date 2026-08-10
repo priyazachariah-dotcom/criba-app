@@ -855,6 +855,23 @@ function parseIcalEventDates(ev) {
 // Falls back to the old heuristic (ics `categories` field, type "other") if
 // the AI call fails or returns something unparseable, so an Anthropic outage
 // doesn't break a previously-reliable, non-AI import path.
+// Pull the text out of a Claude response.
+//
+// Do NOT assume content[0] is the text block. Extended-thinking models put a
+// `thinking` block first, which has no `.text` property — indexing blindly
+// threw "Cannot read properties of undefined (reading 'trim')" on every single
+// extraction, after the model had already spent ~20s thinking.
+function getResponseText(response) {
+  const blocks = response?.content;
+  if (!Array.isArray(blocks)) throw new Error('Claude response had no content array');
+  const textBlock = blocks.find(b => b?.type === 'text' && typeof b.text === 'string');
+  if (!textBlock) {
+    const types = blocks.map(b => b?.type).join(',') || 'none';
+    throw new Error(`Claude response had no text block (types: ${types})`);
+  }
+  return textBlock.text;
+}
+
 async function classifyIcalEventsWithAI(rawEvents) {
   const compact = rawEvents.map((r, index) => ({
     index,
@@ -879,7 +896,7 @@ Return ONLY valid JSON, no markdown, in this shape: {"results":[{"index":0,"type
     max_tokens: Math.min(8192, 1000 + rawEvents.length * 40),
     messages: [{ role: 'user', content: prompt }],
   });
-  const text = response.content[0].text;
+  const text = getResponseText(response);
   const parsed = JSON.parse(text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim());
   if (!Array.isArray(parsed.results)) throw new Error('AI classification response missing results array');
   return parsed.results;
@@ -968,7 +985,7 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
         ]
       }]
     });
-    const text = response.content[0].text;
+    const text = getResponseText(response);
     let flatEvents;
     try {
       const raw = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim());
@@ -1593,7 +1610,7 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
     max_tokens: 2048,
     messages: [{ role: 'user', content: messageContent }]
   });
-  const text = response.content[0].text.trim();
+  const text = getResponseText(response).trim();
   try {
     const raw = JSON.parse(text.replace(/^```json\s*/,'').replace(/\s*```$/,''));
     const events = Array.isArray(raw) ? raw : [];
@@ -2364,11 +2381,11 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   //   so 8 overran the 60s limit. Unprocessed emails are never fingerprinted,
   //   so whatever we don't reach is picked up by the next scan.
   const MAX_MESSAGES = 150;
-  const MAX_CLAUDE_CALLS = dryRun ? 0 : 3;
-  // Deliberately conservative. The frontend aborts at 55s, so the budget plus
-  // one in-flight extraction plus its calendar writes must finish well inside
-  // that. Returning a short, honest result beats timing out with nothing.
-  const TIME_BUDGET_MS = 25000;
+  const MAX_CLAUDE_CALLS = dryRun ? 0 : 6;
+  // The frontend aborts at 55s, so the budget plus one in-flight extraction
+  // plus its calendar writes must finish inside that. Returning a short,
+  // honest result beats timing out with nothing.
+  const TIME_BUDGET_MS = 35000;
   const startedAt = Date.now();
 
   const refreshToken = await redis.get(`refreshToken:${email}`);

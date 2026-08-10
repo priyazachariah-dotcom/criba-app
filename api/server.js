@@ -2381,11 +2381,13 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   //   so 8 overran the 60s limit. Unprocessed emails are never fingerprinted,
   //   so whatever we don't reach is picked up by the next scan.
   const MAX_MESSAGES = 150;
-  const MAX_CLAUDE_CALLS = dryRun ? 0 : 6;
-  // The frontend aborts at 55s, so the budget plus one in-flight extraction
-  // plus its calendar writes must finish inside that. Returning a short,
-  // honest result beats timing out with nothing.
-  const TIME_BUDGET_MS = 35000;
+  // No cap on the number of extractions — we process everything we can reach.
+  // The only limit is wall-clock, and that one is not ours to remove: Vercel
+  // kills the function at 60s and the client aborts at 55s. We stop at 42s so
+  // an in-flight extraction plus its calendar writes can still finish and the
+  // user gets a real response. Anything unreached stays unfingerprinted and is
+  // picked up by the next scan.
+  const TIME_BUDGET_MS = 42000;
   const startedAt = Date.now();
 
   const refreshToken = await redis.get(`refreshToken:${email}`);
@@ -2506,14 +2508,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       continue;
     }
 
-    // ── Stop conditions ──────────────────────────────────────────────────────
-    // Checked before starting a new extraction, so we never begin work we
-    // can't finish inside Vercel's 60s ceiling.
-    if (claudeCalls >= MAX_CLAUDE_CALLS) {
-      console.log(`[backfill] Claude cap reached (${MAX_CLAUDE_CALLS}), stopping`);
-      hitLimit = true;
-      break;
-    }
+    // ── Stop condition ───────────────────────────────────────────────────────
+    // Wall clock only. Checked before starting an extraction so we never begin
+    // work we can't finish inside Vercel's 60s ceiling.
     if (Date.now() - startedAt > TIME_BUDGET_MS) {
       console.log(`[backfill] time budget reached (${Date.now() - startedAt}ms), stopping`);
       hitLimit = true;

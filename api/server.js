@@ -2605,7 +2605,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const images = c.imageParts.length > 0 ? await fetchEmailImages(c.payload, gmail, c.messageId) : [];
       const t0 = Date.now();
       const extracted = await extractGmailEvents(c.body, c.senderName, c.senderEmail, c.subject, images, c.dateSent);
-      return { extracted, claudeMs: Date.now() - t0 };
+      return { extracted, claudeMs: Date.now() - t0, imageCount: images.length };
     }));
     console.log(`[backfill] wave of ${wave.length} finished in ${Date.now() - waveStart}ms elapsed=${Date.now() - startedAt}`);
 
@@ -2618,11 +2618,15 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         await traceEmail(email, { stage: 'ERROR', messageId: c.messageId, subject: c.subject, from: c.from, error: r.reason?.message || 'extraction failed' });
         continue;
       }
-      const { extracted, claudeMs } = r.value;
+      const { extracted, claudeMs, imageCount } = r.value;
       const { messageId, subject, from, dateSent, senderName, senderEmail, fpKey } = c;
       await traceEmail(email, {
         stage: 'SENT-TO-AI', messageId, subject, from, claudeEvents: extracted.length,
         claudeMs, preClaudeMs: 0, elapsedMs: Date.now() - startedAt,
+        // An events=0 result is ambiguous without these: it can mean the email
+        // genuinely had no dates, or that the body was cut at 8000 chars before
+        // the schedule appeared, or that the content was in an unfetched image.
+        bodyLen: c.body.length, truncated: c.body.length > 8000, imgs: imageCount,
       });
 
       try {

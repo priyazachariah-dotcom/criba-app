@@ -2358,9 +2358,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
 
   // Hard caps to stay inside Vercel's 60s limit:
-  //   80 messages max (metadata ~150ms each → ~12s serial, well within budget)
+  //   150 messages max (metadata ~150ms each → ~22s serial, inside budget)
   //   8 Claude calls max (~4-5s each → ~40s max for extractions)
-  const MAX_MESSAGES = 80;
+  const MAX_MESSAGES = 150;
   const MAX_CLAUDE_CALLS = dryRun ? 0 : 8;
 
   const refreshToken = await redis.get(`refreshToken:${email}`);
@@ -2372,7 +2372,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
   const afterDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const afterYMD = `${afterDate.getUTCFullYear()}/${String(afterDate.getUTCMonth() + 1).padStart(2, '0')}/${String(afterDate.getUTCDate()).padStart(2, '0')}`;
-  const q = `in:inbox after:${afterYMD}`;
+  // Filter promotions/social at the Gmail query level so they never consume
+  // the message budget — far cheaper than fetching metadata and discarding it.
+  const q = `in:inbox -category:promotions -category:social after:${afterYMD}`;
 
   console.log(`[backfill] START email=${email} days=${days} after=${afterYMD} dryRun=${dryRun}`);
 
@@ -2413,13 +2415,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       continue;
     }
 
-    // ── Category filter ──────────────────────────────────────────────────────
-    const EXCLUDED = new Set(['CATEGORY_PROMOTIONS', 'CATEGORY_SOCIAL']);
-    if (labelIds.some(l => EXCLUDED.has(l))) {
-      skippedCategory++;
-      await traceEmail(email, { stage: 'SKIP-CAT', messageId, subject, from, label: labelIds.find(l => EXCLUDED.has(l)) });
-      continue;
-    }
+    // Category filtering now happens in the Gmail query above (-category:...),
+    // so promotions/social never reach this loop. skippedCategory stays at 0
+    // for response-shape compatibility with the dry-run table.
 
     // ── Fingerprint dedup ────────────────────────────────────────────────────
     const { senderName, senderEmail } = parseFrom(from);

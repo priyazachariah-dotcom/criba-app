@@ -2364,8 +2364,11 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   //   so 8 overran the 60s limit. Unprocessed emails are never fingerprinted,
   //   so whatever we don't reach is picked up by the next scan.
   const MAX_MESSAGES = 150;
-  const MAX_CLAUDE_CALLS = dryRun ? 0 : 5;
-  const TIME_BUDGET_MS = 40000;
+  const MAX_CLAUDE_CALLS = dryRun ? 0 : 3;
+  // Deliberately conservative. The frontend aborts at 55s, so the budget plus
+  // one in-flight extraction plus its calendar writes must finish well inside
+  // that. Returning a short, honest result beats timing out with nothing.
+  const TIME_BUDGET_MS = 25000;
   const startedAt = Date.now();
 
   const refreshToken = await redis.get(`refreshToken:${email}`);
@@ -2404,7 +2407,16 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const bfCalId = dryRun ? null : await resolveTargetCalendar(email);
 
   for (const messageId of messageIds) {
+    // Deadline check at the top of every iteration, not just before Claude.
+    // Whatever we skip stays unfingerprinted and is picked up next scan.
+    if (!dryRun && Date.now() - startedAt > TIME_BUDGET_MS) {
+      console.log(`[backfill] deadline hit at top of loop after ${scanned} msgs (${Date.now() - startedAt}ms)`);
+      await traceEmail(email, { stage: 'TIMING', note: 'deadline-at-loop-top', scanned, claudeCalls, elapsedMs: Date.now() - startedAt });
+      hitLimit = true;
+      break;
+    }
     scanned++;
+    const msgStart = Date.now();
 
     let subject = '', from = '', dateSent = '', snippet = '', labelIds = [], sizeEstimate = 0;
     try {
@@ -2495,9 +2507,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     try {
       claudeCalls++;
       const images = imageParts.length > 0 ? await fetchEmailImages(fullRes.data.payload, gmail, messageId) : [];
+      const claudeStart = Date.now();
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
-      console.log(`[backfill] msg=${messageId} subject="${subject.slice(0,50)}" Claude=${extracted.length} event(s)`);
-      await traceEmail(email, { stage: 'SENT-TO-AI', messageId, subject, from, claudeEvents: extracted.length });
+      const claudeMs = Date.now() - claudeStart;
+      console.log(`[backfill] msg=${messageId} subject="${subject.slice(0,50)}" Claude=${extracted.length} event(s) claudeMs=${claudeMs} preClaudeMs=${claudeStart - msgStart} elapsed=${Date.now() - startedAt}`);
+      await traceEmail(email, {
+        stage: 'SENT-TO-AI', messageId, subject, from, claudeEvents: extracted.length,
+        claudeMs, preClaudeMs: claudeStart - msgStart, elapsedMs: Date.now() - startedAt,
+      });
 
       // Write fingerprint after Claude succeeds — not before
       await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
@@ -2561,6 +2578,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       console.error(`[backfill] Claude/store error msg=${messageId}:`, err.message);
       await traceEmail(email, { stage: 'ERROR', messageId, subject, from, error: err.message });
     }
+
+    // Total cost of this message, whatever path it took through the pipeline.
+    await traceEmail(email, { stage: 'TIMING', messageId, subject, msgMs: Date.now() - msgStart, elapsedMs: Date.now() - startedAt, claudeCalls });
   }
 
   console.log(`[backfill] DONE scanned=${scanned} skippedCat=${skippedCategory} skippedDedup=${skippedDedup} skippedSignal=${skippedPreFilter} claudeCalls=${claudeCalls} eventsStored=${eventsStored}`);

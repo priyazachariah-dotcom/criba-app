@@ -1748,6 +1748,7 @@ async function showScanTrace() {
       'DROPPED':    '#ef4444',
       'STORED':     '#22c55e',
       'ERROR':      '#ef4444',
+      'TIMING':     '#0891b2',
     };
 
     const rows = entries.map(e => {
@@ -1758,7 +1759,8 @@ async function showScanTrace() {
       const extra = e.stage === 'SKIP-CAT'  ? ` label=${escHtml(e.label||'')}` :
                     e.stage === 'DATE-NORM'  ? ` "${escHtml(e.rawDate||'')}"→"${escHtml(e.normalized||'')}"` :
                     e.stage === 'DROPPED'    ? ` reason=${escHtml(e.reason||'')} raw="${escHtml(e.rawDate||'null')}"` :
-                    e.stage === 'SENT-TO-AI' ? ` events=${e.claudeEvents}` :
+                    e.stage === 'SENT-TO-AI' ? ` events=${e.claudeEvents} claude=${e.claudeMs}ms pre=${e.preClaudeMs}ms @${e.elapsedMs}ms` :
+                    e.stage === 'TIMING'     ? (e.note ? `${escHtml(e.note)} scanned=${e.scanned} @${e.elapsedMs}ms` : `msg=${e.msgMs}ms @${e.elapsedMs}ms calls=${e.claudeCalls}`) :
                     e.stage === 'STORED'     ? ` "${escHtml(e.title||'')}" ${escHtml(e.date||'')} cal=${e.calEventId ? '✓' : '✗'}` :
                     e.stage === 'SKIP-BODY'  ? ` bodyLen=${e.bodyLen}` :
                     e.stage === 'ERROR'      ? ` ${escHtml(e.error||'')}` : '';

@@ -2362,10 +2362,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Wall-clock budget: truncate after 40s regardless of message count.
   // This is the primary timeout guard — it fires before the 55s client AbortController
   // and well before Vercel's 60s hard limit, leaving 15-20s margin for response overhead.
-  // Stage 1 metadata fetches (~150ms each) and Redis ops eat time before Stage 2 even starts,
-  // so a per-message cap alone is not sufficient for large inboxes.
-  const BATCH_WALL_CLOCK_MS = dryRun ? 50000 : 40000;
-  const batchStartMs = Date.now();
+  // Timer starts AFTER the list phase so the message-enumeration overhead doesn't eat
+  // into the budget available for actual per-message processing.
+  const BATCH_WALL_CLOCK_MS = dryRun ? 50000 : 38000;
+  let batchStartMs = Date.now(); // overwritten after list phase completes
 
   // Rate-limit live scans to once per 24h (Part 6). Only applied at offset=0 (first batch);
   // batch continuations (offset > 0) are exempt. Controls cost from repeated re-scans,
@@ -2423,7 +2423,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     return res.status(500).json({ error: 'Failed to list Gmail messages: ' + err.message });
   }
 
-  console.log(`[backfill] list: total=${allMessageIds.length} estimate=${resultSizeEstimate} processingFrom=${offset}`);
+  console.log(`[backfill] list: total=${allMessageIds.length} estimate=${resultSizeEstimate} processingFrom=${offset} listMs=${Date.now()-batchStartMs}`);
+
+  // Reset timer AFTER list phase — so the 38s budget only counts actual per-message work.
+  batchStartMs = Date.now();
 
   let scanned = 0;
   let skippedLock = 0;

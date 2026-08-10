@@ -1801,101 +1801,53 @@ async function runBackfill(days, dryRun = false) {
   const result = document.getElementById('backfill-result');
   if (!btn2) return;
 
-  // Disable all buttons; set scanning label on the clicked one
   if (btn2) { btn2.disabled = true; if (!dryRun) btn2.textContent = 'Scanning…'; }
   if (btnDry) { btnDry.disabled = true; if (dryRun) btnDry.textContent = 'Running…'; }
   if (result) result.innerHTML = '';
 
-  // Accumulator for multi-batch scan
-  let offset = 0;
-  let totalFound = null;
-  let resultSizeEstimate = null;
-  let queryStr = null;
-  let skippedLock = 0, skippedCategory = 0, skippedPreFilter = 0, skippedDedup = 0;
-  let claudeCalls = 0, eventsStored = 0;
-  let totalScanned = 0;
-  const allDryRunMessages = [];
-
   try {
-    while (true) {
-      // Per-batch 55s timeout (shorter than Vercel's 60s)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 55000);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000);
 
-      let res, data;
-      try {
-        const url = dryRun ? '/api/gmail/backfill?dryRun=true' : '/api/gmail/backfill';
-        res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ days, offset }),
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-        data = await res.json();
-      } catch (fetchErr) {
-        clearTimeout(timeoutId);
-        const timedOut = fetchErr.name === 'AbortError';
-        result.innerHTML = timedOut
-          ? `<span style="color:#ef4444">Scan timed out${offset > 0 ? ` at batch ${offset}` : ''} — try again</span>`
-          : '<span style="color:#ef4444">Network error — try again</span>';
-        return;
-      }
+    let res, data;
+    try {
+      const url = dryRun ? '/api/gmail/backfill?dryRun=true' : '/api/gmail/backfill';
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ days }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      data = await res.json();
+    } catch (fetchErr) {
+      clearTimeout(timeoutId);
+      result.innerHTML = fetchErr.name === 'AbortError'
+        ? '<span style="color:#ef4444">Scan timed out — try again</span>'
+        : '<span style="color:#ef4444">Network error — try again</span>';
+      return;
+    }
 
-      if (res.status === 429) {
-        result.textContent = data.error || 'Scan rate limited — please wait before scanning again';
-        return;
-      }
-      if (!res.ok) {
-        result.textContent = data.error || 'Scan failed — try again';
-        return;
-      }
+    if (!res.ok) {
+      result.textContent = data?.error || 'Scan failed — try again';
+      return;
+    }
 
-      // Accumulate across batches
-      totalFound = data.totalFound ?? totalFound;
-      resultSizeEstimate = data.resultSizeEstimate ?? resultSizeEstimate;
-      queryStr = queryStr ?? data.query;
-      totalScanned += data.scanned || 0;
-      skippedLock += data.skippedLock || 0;
-      skippedCategory += data.skippedCategory || 0;
-      skippedPreFilter += data.skippedPreFilter || 0;
-      skippedDedup += data.skippedDedup || 0;
-
-      if (data.dryRun) {
-        allDryRunMessages.push(...(data.messages || []));
-        if (data.truncated && data.nextOffset != null) {
-          offset = data.nextOffset;
-          if (result) result.textContent = `Dry run in progress… scanned ${totalScanned} of ${totalFound ?? '?'}`;
-          continue;
-        }
-        // Final batch — render table
-        renderDryRunTable(result, {
-          totalFound, scanned: totalScanned, resultSizeEstimate,
-          skippedLock, skippedCategory, skippedPreFilter, skippedDedup,
-          wouldExtract: allDryRunMessages.filter(m => m.verdict === 'WOULD_SEND').length,
-          totalEstTokens: allDryRunMessages.filter(m => m.verdict === 'WOULD_SEND').reduce((s, m) => s + (m.estTokens || 0), 0),
-          messages: allDryRunMessages,
-        }, queryStr);
-        break;
-      } else {
-        // Live scan batch
-        claudeCalls += data.claudeCalls || 0;
-        eventsStored += data.eventsStored || 0;
-        if (eventsStored > 0) await loadPendingEvents();
-
-        if (data.truncated && data.nextOffset != null) {
-          offset = data.nextOffset;
-          if (result) result.textContent = `Scanning… ${totalScanned}/${totalFound ?? '?'} — ${eventsStored} event${eventsStored !== 1 ? 's' : ''} found so far`;
-          continue;
-        }
-        // Final batch
-        const msg = `Scanned ${totalScanned}${totalFound ? `/${totalFound}` : ''} emails · ${claudeCalls} sent to AI · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
-        if (result) result.textContent = msg;
-        if (btn2) btn2.textContent = '✓ Done';
-        lastScanDays = days;
-        updateReviewHeader(days);
-        break;
-      }
+    if (data.dryRun) {
+      renderDryRunTable(result, {
+        totalFound: data.totalFound, scanned: data.scanned,
+        skippedCategory: data.skippedCategory, skippedPreFilter: data.skippedPreFilter, skippedDedup: data.skippedDedup,
+        wouldExtract: data.wouldExtract, totalEstTokens: data.totalEstTokens,
+        messages: data.messages,
+      }, data.query);
+    } else {
+      const eventsStored = data.eventsStored || 0;
+      if (eventsStored > 0) await loadPendingEvents();
+      const msg = `Scanned ${data.scanned}/${data.totalFound} emails · ${data.claudeCalls} sent to AI · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
+      if (result) result.textContent = msg;
+      if (btn2) btn2.textContent = '✓ Done';
+      lastScanDays = days;
+      updateReviewHeader(days);
     }
   } finally {
     if (btn2) { btn2.disabled = false; if (btn2.textContent === 'Scanning…') btn2.textContent = 'Scan now'; }

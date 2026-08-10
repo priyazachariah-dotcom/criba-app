@@ -1592,11 +1592,26 @@ async function fetchEmailImages(payload, gmail, messageId) {
 
 // Call Claude to extract calendar events from a single email.
 // When images are supplied (image-heavy emails / flyers), uses multimodal API.
-async function extractGmailEvents(body, senderName, senderEmail, subject, images = []) {
+async function extractGmailEvents(body, senderName, senderEmail, subject, images = [], dateSent = '') {
   const textContent = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, 8000);
+
+  // Anchor relative dates. Without this the model sees "Monday" or "August 12"
+  // with no year and has to guess, which is what normalizeEventDate was left
+  // cleaning up after. The sent date matters more than today's date: "this
+  // Friday" means the Friday after the email was sent, not after the scan.
+  const sentIso = dateSent ? new Date(dateSent) : null;
+  const sentLine = sentIso && !isNaN(sentIso)
+    ? `This email was sent on ${sentIso.toISOString().split('T')[0]} (${sentIso.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })}).`
+    : '';
+  const dateContext = [
+    `Today's date is ${new Date().toISOString().split('T')[0]}.`,
+    sentLine,
+    'Resolve every relative date ("Monday", "this Friday", "next week", "the 12th") against the email\'s sent date. Always output a full YYYY-MM-DD with an explicit year — never omit the year or guess one.',
+  ].filter(Boolean).join(' ');
+
   const promptText = images.length > 0
-    ? `${FULL_EXTRACTION_PROMPT}\n\nEmail text (may be minimal — event details may be in the attached image(s)):\n${textContent}`
-    : `${FULL_EXTRACTION_PROMPT}\n\nEmail:\n${textContent}`;
+    ? `${FULL_EXTRACTION_PROMPT}\n\n${dateContext}\n\nEmail text (may be minimal — event details may be in the attached image(s)):\n${textContent}`
+    : `${FULL_EXTRACTION_PROMPT}\n\n${dateContext}\n\nEmail:\n${textContent}`;
 
   const messageContent = images.length > 0
     ? [
@@ -1853,7 +1868,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         : [];
 
       console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude subject="${subject}" images=${images.length}`);
-      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
+      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images, dateSent);
       console.log(`[gmail-process] EXTRACT msg=${messageId} Claude returned ${extracted.length} event(s)`);
 
       // Mark as processed AFTER Claude returns successfully — mirroring the backfill fix.
@@ -2522,7 +2537,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       claudeCalls++;
       const images = imageParts.length > 0 ? await fetchEmailImages(fullRes.data.payload, gmail, messageId) : [];
       const claudeStart = Date.now();
-      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
+      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images, dateSent);
       const claudeMs = Date.now() - claudeStart;
       console.log(`[backfill] msg=${messageId} subject="${subject.slice(0,50)}" Claude=${extracted.length} event(s) claudeMs=${claudeMs} preClaudeMs=${claudeStart - msgStart} elapsed=${Date.now() - startedAt}`);
       await traceEmail(email, {

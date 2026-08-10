@@ -1429,7 +1429,6 @@ const BACKFILL_BAR_HTML = `
   <span class="scan-bar-label">Scan Gmail</span>
   <div class="scan-bar-btns">
     <button class="btn-outlined btn-sm" id="backfill-btn-dry" onclick="runBackfill(2, true)" title="Preview which emails would be sent to AI — no API calls">Dry run</button>
-    <button class="btn-outlined btn-sm" id="backfill-btn-7" onclick="runBackfill(7)">Last 7 days</button>
     <button class="btn-filled btn-sm" id="backfill-btn-2" onclick="runBackfill(2)">Scan now</button>
     <button class="btn-outlined btn-sm" id="backfill-debug-toggle" onclick="toggleScanDebug()" title="Developer tools" style="font-size:11px;padding:3px 8px;opacity:0.55">⚙</button>
   </div>
@@ -1797,14 +1796,12 @@ async function showScanTrace() {
 
 async function runBackfill(days, dryRun = false) {
   const btn2 = document.getElementById('backfill-btn-2');
-  const btn7 = document.getElementById('backfill-btn-7');
   const btnDry = document.getElementById('backfill-btn-dry');
   const result = document.getElementById('backfill-result');
   if (!btn2) return;
 
   // Disable all buttons; set scanning label on the clicked one
-  if (btn2) { btn2.disabled = true; if (!dryRun && days === 2) btn2.textContent = 'Scanning…'; }
-  if (btn7) { btn7.disabled = true; if (!dryRun && days === 7) btn7.textContent = 'Scanning…'; }
+  if (btn2) { btn2.disabled = true; if (!dryRun) btn2.textContent = 'Scanning…'; }
   if (btnDry) { btnDry.disabled = true; if (dryRun) btnDry.textContent = 'Running…'; }
   if (result) result.innerHTML = '';
 
@@ -1901,7 +1898,6 @@ async function runBackfill(days, dryRun = false) {
     }
   } finally {
     if (btn2) { btn2.disabled = false; if (btn2.textContent === 'Scanning…') btn2.textContent = 'Scan now'; }
-    if (btn7) { btn7.disabled = false; if (btn7.textContent === 'Scanning…') btn7.textContent = 'Last 7 days'; }
     if (btnDry) { btnDry.disabled = false; if (btnDry.textContent === 'Running…') btnDry.textContent = 'Dry run'; }
   }
 }

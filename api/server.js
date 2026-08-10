@@ -1646,14 +1646,49 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
 // NOTE: This catches duplicates already managed by Criba. It does NOT check
 // events added to Google Calendar outside of Criba (would need a slow GCal
 // API call per event).
-async function isDuplicateEvent(eventsStore, title, date) {
-  const all = await eventsStore.values();
+// Array-based variants. The backfill loop reloaded the entire event store
+// three times per extracted event, which dominated its time budget. It now
+// loads once and passes the array in, appending as it writes.
+function isDuplicateEventIn(all, title, date) {
   const norm = (s) => (s || '').toLowerCase().trim();
   return all.some(ev =>
     norm(ev.title) === norm(title) &&
     ev.date === date &&
     ev.status !== 'dismissed'
   );
+}
+
+function findConflictIn(all, date, startTime, endTime) {
+  if (!date || !startTime) return null;
+  const newStart = timeToMinutes(startTime);
+  const newEnd = endTime ? timeToMinutes(endTime) : newStart + 60;
+  for (const existing of all) {
+    if (existing.date !== date) continue;
+    if (existing.status === 'dismissed' || existing.status === 'rejected') continue;
+    if (existing.is_all_day || !existing.time) continue;
+    const exStart = timeToMinutes(existing.time);
+    const exEnd = existing.end_time ? timeToMinutes(existing.end_time) : exStart + 60;
+    if (newStart < exEnd && newEnd > exStart) {
+      const fmtTime = existing.time.replace(/^0/, '');
+      return `⚠️ Conflict: overlaps with "${existing.title}" at ${fmtTime}`;
+    }
+  }
+  return null;
+}
+
+function resolveColorIn(members, nameStrings) {
+  if (!nameStrings?.length) return null;
+  const norm = s => (s || '').toLowerCase().trim();
+  for (const name of nameStrings) {
+    const match = members.find(m => norm(m.name) === norm(name) || norm(name).includes(norm(m.name)));
+    if (match) return match.eventColor || match.color || null;
+  }
+  return null;
+}
+
+async function isDuplicateEvent(eventsStore, title, date) {
+  const all = await eventsStore.values();
+  return isDuplicateEventIn(all, title, date);
 }
 
 // Find an approved GCal-backed event that semantically matches a cancellation/reschedule signal.
@@ -2438,6 +2473,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Built once, not per extracted event — this was a redundant OAuth client
   // plus a target-calendar lookup on every single event written.
   const bfCalApi = google.calendar({ version: 'v3', auth: getOAuthClientFromRefreshToken(refreshToken) });
+  // Loaded once per request rather than three times per extracted event.
+  const knownEvents = dryRun ? [] : await eventsStore.values();
+  const familyMembers = dryRun ? [] : await getUserFamily(email).values();
   const bfCalId = dryRun ? null : await resolveTargetCalendar(email);
 
   for (const messageId of messageIds) {
@@ -2577,17 +2615,17 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           eventsStored++; continue;
         }
 
-        if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) continue;
+        if (isDuplicateEventIn(knownEvents, ev.title, ev.date)) continue;
         const startTime = ev.start_time || '', endTime = ev.end_time || '';
-        const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
+        const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime);
         const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
-        const bfColorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : []);
+        const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : []);
         let calEventId = null;
         try {
           calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: null, attendees: [] }, bfColorId);
         } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
         const evId = randomUUID();
-        await eventsStore.set(evId, {
+        const stored = {
           id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
           time: startTime, end_time: endTime, location: ev.location || '',
           is_all_day: !!ev.is_all_day, attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
@@ -2599,7 +2637,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           calEventId: calEventId || null, gcalId: calEventId ? bfCalId : null,
           approved_at: calEventId ? new Date().toISOString() : null,
           type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),
-        });
+        };
+        await eventsStore.set(evId, stored);
+        // Keep the cache current so later events in this same run still see it.
+        knownEvents.push(stored);
         await traceEmail(email, { stage: 'STORED', messageId, subject, from, title: ev.title, date: ev.date, calEventId, status: calEventId ? 'added' : 'pending' });
         eventsStored++;
       }

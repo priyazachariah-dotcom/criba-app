@@ -1564,7 +1564,11 @@ async function deleteReminder(id, title) {
 // Delete an already-approved event: removes it from Google Calendar and marks
 // it dismissed. Unlike deleteReminder, this checks the response — a failed
 // delete used to look identical to a successful one.
-async function deleteApproved(id, title) {
+// The title is looked up from state rather than passed through the onclick
+// attribute — interpolating it into the markup broke on any title containing a
+// quote, which silently killed the whole handler.
+async function deleteApproved(id) {
+  const title = (recentEvents.find(e => e.id === id) || {}).title || 'this event';
   if (!confirm(`Delete "${title}" from your Google Calendar?`)) return;
   const status = document.getElementById(`edit-status-${id}`);
   if (status) { status.textContent = 'Deleting…'; status.style.color = ''; }
@@ -2566,7 +2570,7 @@ function renderRecent() {
           <button class="btn-filled btn-sm" onclick="saveEdit('${ev.id}', '${(ev.title||'').replace(/'/g,"\\'")}')">Save changes</button>
           <button class="btn-outlined btn-sm" onclick="toggleEdit('${ev.id}')">Cancel</button>
           <button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red);margin-left:auto"
-            onclick="deleteApproved('${ev.id}', ${JSON.stringify(ev.title || '')})">Delete</button>
+            onclick="deleteApproved('${ev.id}')">Delete</button>
           <span id="edit-status-${ev.id}"></span>
         </div>
       </div>

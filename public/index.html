@@ -1430,7 +1430,7 @@ const BACKFILL_BAR_HTML = `
   <div class="scan-bar-btns">
     <button class="btn-outlined btn-sm" id="backfill-btn-dry" onclick="runBackfill(2, true)" title="Preview which emails would be sent to AI — no API calls">Dry run</button>
     <button class="btn-filled btn-sm" id="backfill-btn-2" onclick="runBackfill(2)">Scan now</button>
-    <button class="btn-outlined btn-sm" id="backfill-debug-toggle" onclick="toggleScanDebug()" title="Developer tools" style="font-size:11px;padding:3px 8px;opacity:0.55">⚙</button>
+    <button class="btn-outlined btn-sm" id="backfill-debug-toggle" onclick="toggleScanDebug()" title="Show debug tools — scan trace, reset dedup">Tools</button>
   </div>
 </div>
 <div id="scan-debug-bar" style="display:none;gap:6px;flex-wrap:wrap;margin-top:6px;padding:0 2px">
@@ -1451,7 +1451,7 @@ function toggleScanDebug() {
   if (!bar) return;
   const visible = bar.style.display !== 'none';
   bar.style.display = visible ? 'none' : 'flex';
-  if (btn) btn.style.opacity = visible ? '0.55' : '1';
+  if (btn) btn.textContent = visible ? 'Tools' : 'Hide tools';
 }
 
 function renderPostWriteReviewCard(ev) {

@@ -305,6 +305,21 @@ function getOAuthClient(user) {
   return client;
 }
 
+// Prefer the refresh token we persisted at first consent over the one in the
+// session. Google only returns a refresh token on the FIRST authorization, so
+// every later login stores '' in the JWT — meaning the session client cannot
+// renew itself and every Google call fails once the access token expires an
+// hour after login. Redis has held the working token the whole time.
+async function getUserOAuthClient(user) {
+  const stored = await redis.get(`refreshToken:${user.email}`);
+  if (stored) {
+    const client = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
+    client.setCredentials({ refresh_token: stored, access_token: user.access_token || undefined });
+    return client;
+  }
+  return getOAuthClient(user);
+}
+
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLIENT_ID,
   process.env.GOOGLE_CLIENT_SECRET,
@@ -381,7 +396,7 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
   const { q } = req.query;
   if (!q || q.length < 2) return res.json([]);
   try {
-    const auth = getOAuthClient(req.user);
+    const auth = await getUserOAuthClient(req.user);
     const people = google.people({ version: 'v1', auth });
 
     // The People API's searchContacts/otherContacts.search endpoints both use
@@ -523,7 +538,7 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
   const event = await events.get(id);
   if (!event) return res.status(404).json({ error: 'Event not found' });
   try {
-    const auth = getOAuthClient(req.user);
+    const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
     if (!date) return res.status(400).json({ error: 'Date is required' });
 
@@ -586,7 +601,7 @@ app.post('/api/events/undo', requireAuth, async (req, res) => {
   const event = await events.get(id);
   if (!event || !event.calEventId) return res.status(404).json({ error: 'Event not found' });
   try {
-    const auth = getOAuthClient(req.user);
+    const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
     await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
     event.status = 'pending';
@@ -606,7 +621,7 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
   const event = await events.get(id);
   if (!event || !event.calEventId) return res.status(404).json({ error: 'Event not found' });
   try {
-    const auth = getOAuthClient(req.user);
+    const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
     const finalEndDate = endDate || event.end_date || '';
     const finalEndTime = endTime || event.end_time || '';
@@ -656,7 +671,7 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
   if (!event) return res.status(404).json({ error: 'Event not found' });
   try {
     if (event.calEventId) {
-      const auth = getOAuthClient(req.user);
+      const auth = await getUserOAuthClient(req.user);
       const calendar = google.calendar({ version: 'v3', auth });
       await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
     }
@@ -682,7 +697,7 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
 // the corresponding Redis records. One-shot dev tool — no confirmation step.
 app.post('/api/events/cleanup-all', requireAuth, async (req, res) => {
   const eventsStore = getUserEvents(req.user.email);
-  const auth = getOAuthClient(req.user);
+  const auth = await getUserOAuthClient(req.user);
   const calendar = google.calendar({ version: 'v3', auth });
   const CLEANUP_STATUSES = new Set(['added', 'approved', 'reviewed']);
   const all = await eventsStore.entries();
@@ -730,7 +745,7 @@ app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
     const matchedEv = await eventsStore.get(matchedId);
     if (matchedEv?.calEventId) {
       try {
-        const auth = getOAuthClient(req.user);
+        const auth = await getUserOAuthClient(req.user);
         const calendar = google.calendar({ version: 'v3', auth });
         await calendar.events.delete({ calendarId: matchedEv.gcalId || 'primary', eventId: matchedEv.calEventId });
         deletedFromGcal = true;
@@ -774,7 +789,7 @@ app.post('/api/events/approve-reschedule', requireAuth, async (req, res) => {
   if (!matchedEv?.calEventId) return res.status(400).json({ error: 'Matched event has no GCal ID' });
 
   try {
-    const auth = getOAuthClient(req.user);
+    const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
     const { start, end } = buildCalendarTimes(pendingEv.date, pendingEv.time, pendingEv.end_date || '', pendingEv.end_time || '');
     await calendar.events.patch({
@@ -1034,7 +1049,7 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
   const { calendarId, selectedCategories } = req.body;
   if (!calendarId || !selectedCategories) return res.status(400).json({ error: 'Missing data' });
   const events = getUserEvents(req.user.email);
-  const auth = getOAuthClient(req.user);
+  const auth = await getUserOAuthClient(req.user);
   const calendar = google.calendar({ version: 'v3', auth });
   const targetCalId = await resolveTargetCalendar(req.user.email);
   const cals = getUserCalendars(req.user.email);
@@ -1112,7 +1127,7 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   const groupEvents = all.filter(([, ev]) => ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft');
   if (!groupEvents.length) return res.status(404).json({ error: 'No draft events found for this category' });
 
-  const auth = getOAuthClient(req.user);
+  const auth = await getUserOAuthClient(req.user);
   const calendar = google.calendar({ version: 'v3', auth });
 
   // Resolve target calendar + event color (single-calendar model, test mode overrides)
@@ -1166,7 +1181,7 @@ app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
   const all = await events.entries();
   const groupEvents = all.filter(([, ev]) => ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft');
   if (!groupEvents.length) return res.status(404).json({ error: 'No draft events found for this category' });
-  const auth = getOAuthClient(req.user);
+  const auth = await getUserOAuthClient(req.user);
   const calendar = google.calendar({ version: 'v3', auth });
   const cals = getUserCalendars(req.user.email);
   const calSrc = await cals.get(calendarId);
@@ -1273,7 +1288,7 @@ app.patch('/api/settings', requireAuth, async (req, res) => {
 // per-person calendars and clears googleCalendarId from family member records.
 app.post('/api/migrate/single-calendar', requireAuth, async (req, res) => {
   const email = req.user.email;
-  const auth = getOAuthClient(req.user);
+  const auth = await getUserOAuthClient(req.user);
   const calendarApi = google.calendar({ version: 'v3', auth });
   const familyStore = getUserFamily(email);
   const eventsStore = getUserEvents(email);

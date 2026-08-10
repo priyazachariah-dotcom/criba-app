@@ -1663,7 +1663,7 @@ function renderDryRunTable(result, accumulated, queryStr) {
       <span>Found <strong>${totalFound}</strong> in Gmail${estNote} · scanned <strong>${scanned}</strong></span>
       ${skippedCategory ? `<span><strong>${skippedCategory}</strong> non-Primary excluded</span>` : ''}
       <span><strong>${wouldExtract}</strong> would go to AI</span>
-      <span>Skipped: ${skippedLock} already&nbsp;processed · ${skippedPreFilter} no&nbsp;date&nbsp;signal · ${skippedDedup} dedup</span>
+      <span>Skipped: ${skippedDedup} already&nbsp;processed · ${skippedPreFilter} no&nbsp;date&nbsp;signal</span>
       ${totalEst ? `<span>${totalEst}</span>` : ''}
     </div>
     ${queryStr ? `<div style="font-size:0.72rem;color:#94a3b8;margin-top:0.3rem;font-family:monospace">${escHtml(queryStr)}</div>` : ''}

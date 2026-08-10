@@ -1843,9 +1843,10 @@ async function runBackfill(days, dryRun = false) {
     } else {
       const eventsStored = data.eventsStored || 0;
       if (eventsStored > 0) await loadPendingEvents();
-      const msg = `Scanned ${data.scanned}/${data.totalFound} emails · ${data.claudeCalls} sent to AI · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
+      let msg = `Scanned ${data.scanned}/${data.totalFound} emails · ${data.claudeCalls} sent to AI · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
+      if (data.hitLimit) msg += ' — more emails remain, click Scan now again';
       if (result) result.textContent = msg;
-      if (btn2) btn2.textContent = '✓ Done';
+      if (btn2) btn2.textContent = data.hitLimit ? 'Scan now' : '✓ Done';
       lastScanDays = days;
       updateReviewHeader(days);
     }

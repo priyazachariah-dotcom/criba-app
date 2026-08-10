@@ -2359,9 +2359,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
   // Hard caps to stay inside Vercel's 60s limit:
   //   150 messages max (metadata ~150ms each → ~22s serial, inside budget)
-  //   8 Claude calls max (~4-5s each → ~40s max for extractions)
+  //   5 Claude calls max, plus a wall-clock stop. A Claude call plus its
+  //   per-event calendar writes runs 6-9s, not the 4-5s originally assumed,
+  //   so 8 overran the 60s limit. Unprocessed emails are never fingerprinted,
+  //   so whatever we don't reach is picked up by the next scan.
   const MAX_MESSAGES = 150;
-  const MAX_CLAUDE_CALLS = dryRun ? 0 : 8;
+  const MAX_CLAUDE_CALLS = dryRun ? 0 : 5;
+  const TIME_BUDGET_MS = 40000;
+  const startedAt = Date.now();
 
   const refreshToken = await redis.get(`refreshToken:${email}`);
   if (!refreshToken) return res.status(400).json({ error: 'No refresh token — please sign out and sign back in' });
@@ -2390,8 +2395,13 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   console.log(`[backfill] found ${messageIds.length} messages`);
 
   let scanned = 0, skippedCategory = 0, skippedDedup = 0, skippedPreFilter = 0;
-  let claudeCalls = 0, eventsStored = 0;
+  let claudeCalls = 0, eventsStored = 0, hitLimit = false;
   const dryRunMessages = [];
+
+  // Built once, not per extracted event — this was a redundant OAuth client
+  // plus a target-calendar lookup on every single event written.
+  const bfCalApi = google.calendar({ version: 'v3', auth: getOAuthClientFromRefreshToken(refreshToken) });
+  const bfCalId = dryRun ? null : await resolveTargetCalendar(email);
 
   for (const messageId of messageIds) {
     scanned++;
@@ -2467,9 +2477,17 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       continue;
     }
 
-    // ── Claude cap ───────────────────────────────────────────────────────────
+    // ── Stop conditions ──────────────────────────────────────────────────────
+    // Checked before starting a new extraction, so we never begin work we
+    // can't finish inside Vercel's 60s ceiling.
     if (claudeCalls >= MAX_CLAUDE_CALLS) {
       console.log(`[backfill] Claude cap reached (${MAX_CLAUDE_CALLS}), stopping`);
+      hitLimit = true;
+      break;
+    }
+    if (Date.now() - startedAt > TIME_BUDGET_MS) {
+      console.log(`[backfill] time budget reached (${Date.now() - startedAt}ms), stopping`);
+      hitLimit = true;
       break;
     }
 
@@ -2518,9 +2536,6 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
         const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
         const bfColorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : []);
-        const bfAuth = getOAuthClientFromRefreshToken(refreshToken);
-        const bfCalApi = google.calendar({ version: 'v3', auth: bfAuth });
-        const bfCalId = await resolveTargetCalendar(email);
         let calEventId = null;
         try {
           calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: null, attendees: [] }, bfColorId);
@@ -2562,7 +2577,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     });
   }
 
-  res.json({ ok: true, days, scanned, skippedCategory, skippedPreFilter, skippedDedup, claudeCalls, eventsStored, totalFound: messageIds.length });
+  res.json({ ok: true, days, scanned, skippedCategory, skippedPreFilter, skippedDedup, claudeCalls, eventsStored, totalFound: messageIds.length, hitLimit });
 });
 
 app.get('*', (req, res) => {

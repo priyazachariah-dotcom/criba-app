@@ -2492,13 +2492,15 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const knownEvents = dryRun ? [] : await eventsStore.values();
   const familyMembers = dryRun ? [] : await getUserFamily(email).values();
   const bfCalId = dryRun ? null : await resolveTargetCalendar(email);
+  // Messages that passed every filter and are waiting on extraction.
+  const candidates = [];
 
   for (const messageId of messageIds) {
-    // Deadline check at the top of every iteration, not just before Claude.
-    // Whatever we skip stays unfingerprinted and is picked up next scan.
-    if (!dryRun && Date.now() - startedAt > TIME_BUDGET_MS) {
-      console.log(`[backfill] deadline hit at top of loop after ${scanned} msgs (${Date.now() - startedAt}ms)`);
-      await traceEmail(email, { stage: 'TIMING', note: 'deadline-at-loop-top', scanned, claudeCalls, elapsedMs: Date.now() - startedAt });
+    // This loop is now cheap — metadata and body fetches only, ~450ms each.
+    // Reserve most of the budget for the extraction waves that follow.
+    if (!dryRun && Date.now() - startedAt > TIME_BUDGET_MS * 0.4) {
+      console.log(`[backfill] collect phase deadline after ${scanned} msgs (${Date.now() - startedAt}ms)`);
+      await traceEmail(email, { stage: 'TIMING', note: 'deadline-in-collect', scanned, elapsedMs: Date.now() - startedAt });
       hitLimit = true;
       break;
     }
@@ -2576,97 +2578,123 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       continue;
     }
 
-    // ── Stop condition ───────────────────────────────────────────────────────
-    // Wall clock only. Checked before starting an extraction so we never begin
-    // work we can't finish inside Vercel's 60s ceiling.
+    // ── Collect for extraction ───────────────────────────────────────────────
+    // Claude calls are ~19s each and fully independent of one another, so
+    // running them serially wasted the entire budget on two emails. Gather
+    // candidates here; extract them concurrently after the loop.
+    candidates.push({
+      messageId, subject, from, dateSent, senderName, senderEmail,
+      body, imageParts, payload: fullRes.data.payload, fpKey,
+    });
+    await traceEmail(email, { stage: 'TIMING', messageId, subject, msgMs: Date.now() - msgStart, elapsedMs: Date.now() - startedAt });
+  }
+
+  // ── Parallel extraction ────────────────────────────────────────────────────
+  // Extractions run in waves. Storage stays serial because it mutates
+  // knownEvents for in-run duplicate detection and writes to Google Calendar.
+  const CONCURRENCY = 5;
+  for (let i = 0; i < candidates.length; i += CONCURRENCY) {
     if (Date.now() - startedAt > TIME_BUDGET_MS) {
-      console.log(`[backfill] time budget reached (${Date.now() - startedAt}ms), stopping`);
       hitLimit = true;
+      await traceEmail(email, { stage: 'TIMING', note: 'deadline-before-wave', scanned: candidates.length - i, elapsedMs: Date.now() - startedAt });
       break;
     }
+    const wave = candidates.slice(i, i + CONCURRENCY);
+    const waveStart = Date.now();
+    const results = await Promise.allSettled(wave.map(async (c) => {
+      const images = c.imageParts.length > 0 ? await fetchEmailImages(c.payload, gmail, c.messageId) : [];
+      const t0 = Date.now();
+      const extracted = await extractGmailEvents(c.body, c.senderName, c.senderEmail, c.subject, images, c.dateSent);
+      return { extracted, claudeMs: Date.now() - t0 };
+    }));
+    console.log(`[backfill] wave of ${wave.length} finished in ${Date.now() - waveStart}ms elapsed=${Date.now() - startedAt}`);
 
-    // ── Claude extraction ────────────────────────────────────────────────────
-    try {
+    for (let j = 0; j < wave.length; j++) {
+      const c = wave[j];
+      const r = results[j];
       claudeCalls++;
-      const images = imageParts.length > 0 ? await fetchEmailImages(fullRes.data.payload, gmail, messageId) : [];
-      const claudeStart = Date.now();
-      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images, dateSent);
-      const claudeMs = Date.now() - claudeStart;
-      console.log(`[backfill] msg=${messageId} subject="${subject.slice(0,50)}" Claude=${extracted.length} event(s) claudeMs=${claudeMs} preClaudeMs=${claudeStart - msgStart} elapsed=${Date.now() - startedAt}`);
+      if (r.status === 'rejected') {
+        console.error(`[backfill] extraction failed msg=${c.messageId}:`, r.reason?.message);
+        await traceEmail(email, { stage: 'ERROR', messageId: c.messageId, subject: c.subject, from: c.from, error: r.reason?.message || 'extraction failed' });
+        continue;
+      }
+      const { extracted, claudeMs } = r.value;
+      const { messageId, subject, from, dateSent, senderName, senderEmail, fpKey } = c;
       await traceEmail(email, {
         stage: 'SENT-TO-AI', messageId, subject, from, claudeEvents: extracted.length,
-        claudeMs, preClaudeMs: claudeStart - msgStart, elapsedMs: Date.now() - startedAt,
+        claudeMs, preClaudeMs: 0, elapsedMs: Date.now() - startedAt,
       });
 
-      // Write fingerprint after Claude succeeds — not before
-      await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
+      try {
+        // Fingerprint only after a successful extraction, so anything we did
+        // not reach stays eligible for the next scan.
+        await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
-      for (const ev of extracted) {
-        // Normalize partial dates (e.g. "August 12" → "2026-08-12")
-        if (ev.date && !/^\d{4}-\d{2}-\d{2}$/.test(ev.date)) {
-          const norm = normalizeEventDate(ev.date, dateSent);
-          if (norm) { await traceEmail(email, { stage: 'DATE-NORM', messageId, subject, rawDate: ev.date, normalized: norm }); ev.date = norm; }
-        }
-        if (!ev.title || !ev.date) { await traceEmail(email, { stage: 'DROPPED', messageId, subject, reason: !ev.title ? 'no-title' : 'bad-date', rawDate: ev.date }); continue; }
+        for (const ev of extracted) {
+          // Normalize partial dates (e.g. "August 12" → "2026-08-12")
+          if (ev.date && !/^\d{4}-\d{2}-\d{2}$/.test(ev.date)) {
+            const norm = normalizeEventDate(ev.date, dateSent);
+            if (norm) { await traceEmail(email, { stage: 'DATE-NORM', messageId, subject, rawDate: ev.date, normalized: norm }); ev.date = norm; }
+          }
+          if (!ev.title || !ev.date) { await traceEmail(email, { stage: 'DROPPED', messageId, subject, reason: !ev.title ? 'no-title' : 'bad-date', rawDate: ev.date }); continue; }
 
-        const intent = ev.intent || 'new_event';
-        if (intent === 'cancellation' || intent === 'reschedule') {
-          const matchResult = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
+          const intent = ev.intent || 'new_event';
+          if (intent === 'cancellation' || intent === 'reschedule') {
+            const matchResult = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
+            const evId = randomUUID();
+            await eventsStore.set(evId, {
+              id: evId, intent, title: ev.title, date: ev.date, end_date: ev.end_date || '',
+              time: ev.start_time || '', end_time: ev.end_time || '',
+              location: ev.location || '', is_all_day: !!ev.is_all_day,
+              attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+              notes: ev.notes || null, source_type: ev.source_type || null,
+              old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
+              matched_event_id: matchResult?.event?.id || null, matched_event_title: matchResult?.event?.title || null,
+              matched_event_confidence: matchResult?.score ?? null,
+              source: 'gmail', gmail_message_id: messageId,
+              sender_name: senderName, sender_email: senderEmail, subject,
+              status: intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule',
+              type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),
+            });
+            eventsStored++; continue;
+          }
+
+          if (isDuplicateEventIn(knownEvents, ev.title, ev.date)) continue;
+          const startTime = ev.start_time || '', endTime = ev.end_time || '';
+          const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime);
+          const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
+          const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : []);
+          let calEventId = null;
+          try {
+            calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: null, attendees: [] }, bfColorId);
+          } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
           const evId = randomUUID();
-          await eventsStore.set(evId, {
-            id: evId, intent, title: ev.title, date: ev.date, end_date: ev.end_date || '',
-            time: ev.start_time || '', end_time: ev.end_time || '',
-            location: ev.location || '', is_all_day: !!ev.is_all_day,
-            attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
-            notes: ev.notes || null, source_type: ev.source_type || null,
-            old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
-            matched_event_id: matchResult?.event?.id || null, matched_event_title: matchResult?.event?.title || null,
-            matched_event_confidence: matchResult?.score ?? null,
+          const stored = {
+            id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
+            time: startTime, end_time: endTime, location: ev.location || '',
+            is_all_day: !!ev.is_all_day, attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+            notes: combinedNotes, conflict_note: conflictNote || null,
+            source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null,
             source: 'gmail', gmail_message_id: messageId,
             sender_name: senderName, sender_email: senderEmail, subject,
-            status: intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule',
+            status: calEventId ? 'added' : 'pending', reviewed: false,
+            calEventId: calEventId || null, gcalId: calEventId ? bfCalId : null,
+            approved_at: calEventId ? new Date().toISOString() : null,
             type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),
-          });
-          eventsStored++; continue;
+          };
+          await eventsStore.set(evId, stored);
+          // Keep the cache current so later events in this same run still see it.
+          knownEvents.push(stored);
+          await traceEmail(email, { stage: 'STORED', messageId, subject, from, title: ev.title, date: ev.date, calEventId, status: calEventId ? 'added' : 'pending' });
+          eventsStored++;
         }
-
-        if (isDuplicateEventIn(knownEvents, ev.title, ev.date)) continue;
-        const startTime = ev.start_time || '', endTime = ev.end_time || '';
-        const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime);
-        const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
-        const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : []);
-        let calEventId = null;
-        try {
-          calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: null, attendees: [] }, bfColorId);
-        } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
-        const evId = randomUUID();
-        const stored = {
-          id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
-          time: startTime, end_time: endTime, location: ev.location || '',
-          is_all_day: !!ev.is_all_day, attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
-          notes: combinedNotes, conflict_note: conflictNote || null,
-          source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null,
-          source: 'gmail', gmail_message_id: messageId,
-          sender_name: senderName, sender_email: senderEmail, subject,
-          status: calEventId ? 'added' : 'pending', reviewed: false,
-          calEventId: calEventId || null, gcalId: calEventId ? bfCalId : null,
-          approved_at: calEventId ? new Date().toISOString() : null,
-          type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),
-        };
-        await eventsStore.set(evId, stored);
-        // Keep the cache current so later events in this same run still see it.
-        knownEvents.push(stored);
-        await traceEmail(email, { stage: 'STORED', messageId, subject, from, title: ev.title, date: ev.date, calEventId, status: calEventId ? 'added' : 'pending' });
-        eventsStored++;
+      } catch (err) {
+        console.error(`[backfill] store error msg=${messageId}:`, err.message);
+        await traceEmail(email, { stage: 'ERROR', messageId, subject, from, error: err.message });
       }
-    } catch (err) {
-      console.error(`[backfill] Claude/store error msg=${messageId}:`, err.message);
-      await traceEmail(email, { stage: 'ERROR', messageId, subject, from, error: err.message });
     }
-
-    // Total cost of this message, whatever path it took through the pipeline.
-    await traceEmail(email, { stage: 'TIMING', messageId, subject, msgMs: Date.now() - msgStart, elapsedMs: Date.now() - startedAt, claudeCalls });
   }
+  if (claudeCalls < candidates.length) hitLimit = true;
 
   console.log(`[backfill] DONE scanned=${scanned} skippedCat=${skippedCategory} skippedDedup=${skippedDedup} skippedSignal=${skippedPreFilter} claudeCalls=${claudeCalls} eventsStored=${eventsStored}`);
 

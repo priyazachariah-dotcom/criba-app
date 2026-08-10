@@ -1830,9 +1830,6 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         console.log(`[gmail-process] DEDUP SKIP msg=${messageId} fingerprint=${fingerprint.slice(0, 12)}… already extracted for another user`);
         continue;
       }
-      // Mark as processed for 30 days before extraction so concurrent webhooks don't race
-      await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
-
       // Fetch image data for vision extraction (only when images present)
       const images = imageParts.length > 0
         ? await fetchEmailImages(msg.payload, gmail, messageId)
@@ -1841,6 +1838,14 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude subject="${subject}" images=${images.length}`);
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images);
       console.log(`[gmail-process] EXTRACT msg=${messageId} Claude returned ${extracted.length} event(s)`);
+
+      // Mark as processed AFTER Claude returns successfully — mirroring the backfill fix.
+      // Writing before the Claude call meant any timeout or throw in extractGmailEvents
+      // permanently poisoned this fingerprint for 30 days with no events ever stored.
+      // Small residual risk: two near-simultaneous webhook deliveries for the same message
+      // (e.g. school email to both Priya and Bharat) can both pass the dedup check and
+      // both call Claude — same trade-off accepted in the backfill path.
+      await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
 
       for (const ev of extracted) {
         if (!ev.title || !ev.date) {

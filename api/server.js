@@ -1637,10 +1637,17 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
 
   const response = await anthropic.messages.create({
     model: 'claude-fable-5',
-    max_tokens: 2048,
+    // 2048 was not enough. The budget is shared with the model's thinking
+    // tokens, so a multi-event email (a week of practices, a weekly digest)
+    // could spend the whole allowance before finishing the JSON array. The
+    // reply came back cut off mid-array and the parse below threw.
+    max_tokens: 8192,
     messages: [{ role: 'user', content: messageContent }]
   });
   const text = getResponseText(response).trim();
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error(`Claude response truncated at max_tokens (${text.length} chars) — event list too long to fit`);
+  }
   try {
     const raw = JSON.parse(text.replace(/^```json\s*/,'').replace(/\s*```$/,''));
     const events = Array.isArray(raw) ? raw : [];
@@ -1651,9 +1658,13 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
         ? (ev.attendees.includes(senderName) || !senderName ? ev.attendees : [senderName, ...ev.attendees])
         : (senderName ? [senderName] : []),
     }));
-  } catch {
+  } catch (err) {
+    // Do NOT swallow this into an empty array. An unparseable response is a
+    // failure, but returning [] made it look like "this email had no events" —
+    // so the caller wrote a 30-day fingerprint and the email was never retried.
+    // Throwing records an ERROR in the trace and leaves it eligible next scan.
     console.error('Gmail extraction: JSON parse failed:', text.slice(0, 200));
-    return [];
+    throw new Error(`Claude returned unparseable JSON: ${text.slice(0, 120)}`);
   }
 }
 

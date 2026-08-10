@@ -1438,6 +1438,7 @@ const BACKFILL_BAR_HTML = `
   <button class="btn-outlined btn-sm" onclick="clearFingerprints(true)" title="Force-delete ALL fingerprints (bypasses value filter)" style="font-size:11px;color:var(--red);border-color:var(--red)">Force reset</button>
   <button class="btn-outlined btn-sm" onclick="clearBackfillCooldown()" title="Clear the 24h scan rate limit" style="font-size:11px">Reset lock</button>
   <button class="btn-outlined btn-sm" onclick="showScanTrace()" title="Show per-email pipeline decisions from the last scan" style="font-size:11px">Scan trace</button>
+  <button class="btn-outlined btn-sm" id="backfill-btn-7" onclick="runBackfill(7)" style="font-size:11px">Last 7 days</button>
 </div>
 <div id="backfill-result"></div>`;
 
@@ -1836,7 +1837,7 @@ async function runBackfill(days, dryRun = false) {
         clearTimeout(timeoutId);
         const timedOut = fetchErr.name === 'AbortError';
         result.innerHTML = timedOut
-          ? `<span style="color:#ef4444">Scan timed out${offset > 0 ? ` at batch offset ${offset}` : ''} — try "Last 48 hours" for fewer messages</span>`
+          ? `<span style="color:#ef4444">Scan timed out${offset > 0 ? ` at batch ${offset}` : ''} — try again</span>`
           : '<span style="color:#ef4444">Network error — try again</span>';
         return;
       }
@@ -1898,6 +1899,8 @@ async function runBackfill(days, dryRun = false) {
     }
   } finally {
     if (btn2) { btn2.disabled = false; if (btn2.textContent === 'Scanning…') btn2.textContent = 'Scan now'; }
+    const btn7f = document.getElementById('backfill-btn-7');
+    if (btn7f) { btn7f.disabled = false; if (btn7f.textContent === 'Scanning…') btn7f.textContent = 'Last 7 days'; }
     if (btnDry) { btnDry.disabled = false; if (btnDry.textContent === 'Running…') btnDry.textContent = 'Dry run'; }
   }
 }

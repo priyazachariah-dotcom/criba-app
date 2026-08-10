@@ -2446,21 +2446,57 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   let nextOffset = null;
   const dryRunMessages = []; // only entries shown in table (Primary, non-locked, non-dedup)
 
-  const toProcess = allMessageIds.slice(offset);
+  // Process in chunks of 150 messages per invocation so the pre-fetch phase
+  // and chaining math stay predictable regardless of inbox size.
+  const CHUNK_SIZE = 150;
+  const toProcess = allMessageIds.slice(offset, offset + CHUNK_SIZE);
+  // If there are more messages beyond this chunk, mark as truncated after processing.
+  const hasMoreBeyondChunk = offset + CHUNK_SIZE < allMessageIds.length;
+
+  // ── Phase 1: parallel Stage 1 metadata pre-fetch ────────────────────────
+  // Fetching metadata serially costs 300 msgs × 150ms = 45s.
+  // Fetching in parallel batches of 20 cuts that to ~3s (15x speedup).
+  const STAGE1_CONCURRENCY = 20;
+  const metaCache = new Map(); // messageId → Gmail message data (headers + labelIds + snippet)
+
+  for (let bi = 0; bi < toProcess.length; bi += STAGE1_CONCURRENCY) {
+    if (Date.now() - batchStartMs >= BATCH_WALL_CLOCK_MS) {
+      truncated = true; nextOffset = offset + bi;
+      console.log(`[backfill] PRE-FETCH TRUNCATE bi=${bi} elapsed=${Date.now()-batchStartMs}ms`);
+      break;
+    }
+    const batchSlice = toProcess.slice(bi, bi + STAGE1_CONCURRENCY);
+    const results = await Promise.allSettled(
+      batchSlice.map(id => gmail.users.messages.get({
+        userId: 'me', id, format: 'metadata',
+        metadataHeaders: ['Subject', 'From', 'Date'],
+      }))
+    );
+    results.forEach((r, idx) => {
+      if (r.status === 'fulfilled') metaCache.set(batchSlice[idx], r.value.data);
+    });
+  }
+  console.log(`[backfill] PRE-FETCH done: cached=${metaCache.size}/${toProcess.length} elapsed=${Date.now()-batchStartMs}ms`);
+
+  // ── Phase 2: serial Stage 2 processing ──────────────────────────────────
+  // Reset wall-clock after pre-fetch so Stage 2 (body + Claude) gets a full budget.
+  if (!truncated) batchStartMs = Date.now();
 
   for (let i = 0; i < toProcess.length; i++) {
+    if (truncated) break;
     const messageId = toProcess[i];
 
     // ── Wall-clock budget check ──────────────────────────────────────────────
-    // Check BEFORE acquiring lock or making any network call, so we can safely
-    // truncate and let the next batch continue from this message.
     const elapsedMs = Date.now() - batchStartMs;
     if (elapsedMs >= BATCH_WALL_CLOCK_MS) {
-      console.log(`[backfill] WALL-CLOCK TRUNCATE elapsed=${elapsedMs}ms limit=${BATCH_WALL_CLOCK_MS}ms at i=${i} offset=${offset} scanned=${scanned} fullFetches=${fullFetches}`);
+      console.log(`[backfill] WALL-CLOCK TRUNCATE elapsed=${elapsedMs}ms at i=${i} offset=${offset} scanned=${scanned} fullFetches=${fullFetches}`);
       truncated = true;
       nextOffset = offset + i;
       break;
     }
+
+    // Skip messages whose metadata fetch failed
+    if (!metaCache.has(messageId)) { scanned++; continue; }
 
     scanned++;
 
@@ -2474,12 +2510,8 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     }
 
     try {
-      // ── Stage 1: metadata + snippet (cheap — no body) ───────────────────
-      const metaRes = await gmail.users.messages.get({
-        userId: 'me', id: messageId, format: 'metadata',
-        metadataHeaders: ['Subject', 'From', 'Date'],
-      });
-      const meta = metaRes.data;
+      // ── Stage 1: use pre-fetched metadata (no API call needed) ──────────
+      const meta = metaCache.get(messageId);
       const metaHeaders = meta.payload?.headers || [];
       const subject  = metaHeaders.find(h => h.name.toLowerCase() === 'subject')?.value || '';
       const from     = metaHeaders.find(h => h.name.toLowerCase() === 'from')?.value || '';
@@ -2755,12 +2787,15 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     });
   }
 
+  // If we finished the chunk but there are more messages beyond it, chain the next batch.
+  if (!truncated && hasMoreBeyondChunk) {
+    truncated = true;
+    nextOffset = offset + CHUNK_SIZE;
+    console.log(`[backfill] CHUNK-END: processed chunk of ${CHUNK_SIZE}, chaining nextOffset=${nextOffset} of ${allMessageIds.length}`);
+  }
+
   console.log(`[backfill] DONE scanned=${scanned} skippedLock=${skippedLock} skippedNonPrimary=${skippedCategory} skippedDedup=${skippedDedup} skippedNoSignal=${skippedPreFilter} fullFetches=${fullFetches} claudeCalls=${claudeCalls} eventsStored=${eventsStored} truncated=${truncated} nextOffset=${nextOffset}`);
-  // Only stamp the rate-limit timestamp on final completion (not on truncated mid-scan
-  // batches, not on dry-runs, and critically not on timed-out/failed requests that never
-  // reach this point). offset===0 means this is the first (or only) batch of a new scan.
-  // Stamp rate limit on final completion of any live scan (offset===0 single-batch
-  // OR the last batch of a multi-batch chain where truncated===false).
+  // Only stamp the rate-limit timestamp on final completion (all chunks done, not truncated).
   if (!dryRun && !truncated) {
     await redis.set(`backfillLastRun:${email}`, Date.now().toString(), 'EX', BACKFILL_COOLDOWN_SEC);
   }

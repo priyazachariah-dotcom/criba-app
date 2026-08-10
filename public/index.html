@@ -1233,7 +1233,11 @@ let _undoTimer = null;
 let _undoPendingId = null;
 let _undoBarInterval = null;
 
-function dismissFromCalendar(id, title) {
+// The title is read from state, not passed in from the markup. Interpolating it
+// into a double-quoted onclick attribute broke the handler outright for any
+// title containing a quote character.
+function dismissFromCalendar(id) {
+  const title = (pendingEvents.find(e => e.id === id) || {}).title;
   // If there's already a pending undo, commit it now before starting a new one
   if (_undoPendingId && _undoPendingId !== id) commitDismiss();
 
@@ -1473,7 +1477,7 @@ function renderPostWriteReviewCard(ev) {
         ${notesHtml}
       </div>
       <div class="review-card-tags">
-        <button class="btn-outlined btn-sm" onclick="dismissFromCalendar('${id}', ${JSON.stringify(ev.title)})">Dismiss</button>
+        <button class="btn-outlined btn-sm" onclick="dismissFromCalendar('${id}')">Dismiss</button>
         <button class="btn-filled btn-sm" onclick="openPostWriteEdit('${id}')">Edit →</button>
       </div>
     </div>
@@ -1538,7 +1542,7 @@ function renderReminderCard(ev) {
       </div>
       <div class="reminder-actions">
         <button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')">Edit</button>
-        <button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteReminder('${id}', ${JSON.stringify(ev.title)})">Delete</button>
+        <button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteReminder('${id}')">Delete</button>
       </div>
     </div>
     <div class="reminder-editor-wrap" id="reditor-${id}" style="display:none">
@@ -1547,7 +1551,8 @@ function renderReminderCard(ev) {
   </div>`;
 }
 
-async function deleteReminder(id, title) {
+async function deleteReminder(id) {
+  const title = (pendingEvents.find(e => e.id === id) || {}).title || 'this event';
   if (!confirm(`Delete "${title}" from your calendar?`)) return;
   const card = document.getElementById(`rcard-${id}`);
   if (card) card.style.opacity = '0.4';

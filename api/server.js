@@ -2397,6 +2397,51 @@ const IMAGE_TOKENS_ESTIMATE = 1600;
 //
 // DELETE /api/gmail/backfill-cooldown — clears the 24h rate-limit timestamp so the user
 // can run a fresh scan immediately. Useful after a timed-out scan or a pipeline fix.
+// GET /api/debug/extract?q=<gmail search> — run the extraction pipeline against a
+// single email and return every intermediate value: the body we pulled out, its
+// length, and the model's raw reply before parsing. Deliberately a GET so it can
+// be opened straight from the browser with the session cookie.
+//
+// This exists because a whole-scan trace can only ever say events=0; it cannot
+// say whether the model was given the schedule or what it replied.
+app.get('/api/debug/extract', requireAuth, async (req, res) => {
+  const q = req.query.q;
+  if (!q) return res.status(400).json({ error: 'pass ?q=<gmail search query>' });
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const gmail = google.gmail({ version: 'v1', auth });
+    const list = await gmail.users.messages.list({ userId: 'me', q, maxResults: 1 });
+    const id = list.data.messages?.[0]?.id;
+    if (!id) return res.json({ error: 'no message matched', q });
+
+    const full = await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
+    const headers = full.data.payload.headers || [];
+    const h = (n) => headers.find(x => x.name.toLowerCase() === n)?.value || '';
+    const body = extractEmailBody(full.data.payload);
+    const subject = h('subject');
+    const dateSent = h('date');
+
+    const preFilter = scanForDateContent(`${subject} ${body.slice(0, 5000)}`);
+    let extracted = null, extractError = null;
+    try {
+      extracted = await extractGmailEvents(body, h('from'), h('from'), subject, [], dateSent);
+    } catch (err) {
+      extractError = err.message;
+    }
+    res.json({
+      messageId: id, subject, dateSent,
+      bodyLength: body.length, truncatedAt8000: body.length > 8000,
+      preFilterPassed: preFilter.pass,
+      body,
+      eventCount: extracted ? extracted.length : null,
+      extractError,
+      extracted,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.delete('/api/gmail/backfill-cooldown', requireAuth, async (req, res) => {
   const email = req.user.email;
   await redis.del(`backfillLastRun:${email}`);

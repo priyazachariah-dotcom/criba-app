@@ -107,8 +107,11 @@ async function resolveEventColorByNames(email, nameStrings) {
 // Used by all auto-write paths (Gmail, backfill, group-approve, confirm-categories).
 async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId) {
   const { start, end } = buildCalendarTimes(ev.date, ev.time || '', ev.end_date || '', ev.end_time || '');
-  const description = ev.recurrence_rule
-    ? `Added via Criba — recurring: ${ev.recurring_note || ''}`
+  // Only append the suffix when there is actually a note to append. The backfill
+  // always passes recurring_note: null, which produced the dangling
+  // "Added via Criba — recurring:" on every recurring event.
+  const description = ev.recurrence_rule && ev.recurring_note
+    ? `Added via Criba — recurring: ${ev.recurring_note}`
     : 'Added via Criba';
   const resource = {
     summary: ev.title,
@@ -1675,13 +1678,37 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
 // Array-based variants. The backfill loop reloaded the entire event store
 // three times per extracted event, which dominated its time budget. It now
 // loads once and passes the array in, appending as it writes.
-function isDuplicateEventIn(all, title, date) {
+// Reduce an RRULE to the part that identifies the series: how often it repeats
+// and on which days. "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261130" and
+// "RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=16" describe the same Monday practice —
+// they differ only in where the club chose to end it.
+function recurrenceShape(rule) {
+  if (!rule) return null;
+  const up = String(rule).toUpperCase();
+  const freq = up.match(/FREQ=([A-Z]+)/)?.[1];
+  if (!freq) return null;
+  const byday = up.match(/BYDAY=([A-Z,]+)/)?.[1] || '';
+  return `${freq}|${byday.split(',').sort().join(',')}`;
+}
+
+// A duplicate is either the same title on the same date, or — for recurring
+// events — the same title at the same time on the same repeating schedule.
+//
+// The date-only check was not enough. Two emails restating one season's
+// practices produced two weekly series with different start dates, so nothing
+// matched and both were written. On any given Monday you then saw the same
+// practice twice.
+function isDuplicateEventIn(all, title, date, opts = {}) {
   const norm = (s) => (s || '').toLowerCase().trim();
-  return all.some(ev =>
-    norm(ev.title) === norm(title) &&
-    ev.date === date &&
-    ev.status !== 'dismissed'
-  );
+  const shape = recurrenceShape(opts.recurrence);
+  const time = opts.time || '';
+  return all.some(ev => {
+    if (ev.status === 'dismissed') return false;
+    if (norm(ev.title) !== norm(title)) return false;
+    if (ev.date === date) return true;
+    if (!shape) return false;
+    return recurrenceShape(ev.recurrence_rule) === shape && (ev.time || '') === time;
+  });
 }
 
 function findConflictIn(all, date, startTime, endTime) {
@@ -1712,9 +1739,9 @@ function resolveColorIn(members, nameStrings) {
   return null;
 }
 
-async function isDuplicateEvent(eventsStore, title, date) {
+async function isDuplicateEvent(eventsStore, title, date, opts = {}) {
   const all = await eventsStore.values();
-  return isDuplicateEventIn(all, title, date);
+  return isDuplicateEventIn(all, title, date, opts);
 }
 
 // Find an approved GCal-backed event that semantically matches a cancellation/reschedule signal.
@@ -1974,7 +2001,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           continue;
         }
 
-        if (await isDuplicateEvent(eventsStore, ev.title, ev.date)) {
+        if (await isDuplicateEvent(eventsStore, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence })) {
           console.log(`[gmail-process] msg=${messageId} DEDUP SKIP event "${ev.title}" on ${ev.date} already exists`);
           continue;
         }
@@ -2762,7 +2789,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             eventsStored++; continue;
           }
 
-          if (isDuplicateEventIn(knownEvents, ev.title, ev.date)) continue;
+          if (isDuplicateEventIn(knownEvents, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence })) continue;
           const startTime = ev.start_time || '', endTime = ev.end_time || '';
           const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime);
           const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;

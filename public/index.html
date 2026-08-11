@@ -590,6 +590,20 @@
   #test-mode-banner.active { display: flex; }
   .test-mode-dot { width: 8px; height: 8px; background: #f0a500; border-radius: 50%; flex-shrink: 0; animation: blink 1.4s infinite; }
   @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* Live status pill — tells the user Criba is watching Gmail in the
+     background, so they know they do not need to press Scan. */
+  .live-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1.5px solid var(--ink); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+  .live-pill.is-off { border-color: #c5221f; color: #c5221f; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #1e8e3e; flex-shrink: 0; animation: blink 2.2s infinite; }
+  .live-pill.is-off .live-dot { background: #c5221f; animation: none; }
+  .live-sub { font-size: 0.68rem; font-weight: 400; letter-spacing: 0; text-transform: none; opacity: 0.6; }
+
+  /* Toast shown when background polling finds events that were not there
+     when the page loaded. */
+  #new-events-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(140%); background: var(--ink); color: #fff; padding: 12px 20px; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 14px; z-index: 900; transition: transform 0.28s ease; }
+  #new-events-toast.show { transform: translateX(-50%) translateY(0); }
+  #new-events-toast button { background: none; border: 1px solid rgba(255,255,255,0.5); color: #fff; padding: 4px 10px; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
   .test-mode-panel { border: 1.5px solid var(--ink); padding: 20px 24px; margin-bottom: 28px; }
   .test-mode-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; }
   .test-mode-panel-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
@@ -649,10 +663,21 @@
       <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
     </nav>
     <div class="header-user-section">
+      <span class="live-pill" id="live-pill" title="Checking…">
+        <span class="live-dot"></span>
+        <span id="live-pill-text">Checking…</span>
+        <span class="live-sub" id="live-pill-sub"></span>
+      </span>
       <span class="user-name" id="user-name"></span>
       <button class="logout-btn" onclick="logout()">Sign out</button>
     </div>
   </header>
+
+  <!-- New-events toast — raised by the background poller -->
+  <div id="new-events-toast">
+    <span id="new-events-toast-text"></span>
+    <button onclick="jumpToReview()">View</button>
+  </div>
 
   <!-- Test mode banner — sticky warning shown whenever test mode is active -->
   <div id="test-mode-banner">
@@ -1161,6 +1186,8 @@ function showApp() {
   loadPlacesScript();
   loadData();
   checkGmailStatus();
+  updateLiveStatus();
+  startLiveRefresh();
   loadTestModeSettings();
 }
 
@@ -1357,6 +1384,101 @@ async function checkGmailStatus() {
   } catch {}
 }
 
+// ── Live status + background refresh ───────────────────────────────────────
+//
+// Criba does not need a manual scan: a Gmail watch pushes every new message to
+// /api/gmail/webhook, which extracts and writes immediately. But the page used
+// to load the review queue exactly once, so an event could land while the tab
+// sat open and the user would never see it without reloading — which is why
+// pressing Scan felt mandatory. These two pieces close that gap: the pill shows
+// whether the watch is actually alive, and the poller pulls new events in.
+
+let lastPendingIds = null;   // null until the first successful load
+let liveRefreshTimer = null;
+const LIVE_REFRESH_MS = 30000;
+
+async function updateLiveStatus() {
+  const pill = document.getElementById('live-pill');
+  const text = document.getElementById('live-pill-text');
+  const sub = document.getElementById('live-pill-sub');
+  if (!pill || !text) return;
+  try {
+    const res = await fetch('/api/gmail/watch/status');
+    if (!res.ok) throw new Error('status ' + res.status);
+    const d = await res.json();
+    const live = d.registered && !d.expiredAlready && d.hasRefreshToken && !d.disconnectedAt;
+    pill.classList.toggle('is-off', !live);
+    text.textContent = live ? 'Watching Gmail' : 'Not watching';
+    if (sub) {
+      sub.textContent = live && d.expiresAt
+        ? `renews ${new Date(d.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+        : '';
+    }
+    pill.title = live
+      ? 'Criba is receiving new email from Google automatically. New events appear here on their own.'
+      : 'Criba is not receiving new email. Use Reconnect Gmail.';
+  } catch {
+    // A failed status check is not proof the watch is broken — say so rather
+    // than showing a red "not watching" the user would act on.
+    text.textContent = 'Status unknown';
+    if (sub) sub.textContent = '';
+    pill.classList.remove('is-off');
+  }
+}
+
+function showNewEventsToast(count) {
+  const toast = document.getElementById('new-events-toast');
+  const text = document.getElementById('new-events-toast-text');
+  if (!toast || !text) return;
+  text.textContent = count === 1 ? '1 new event just arrived' : `${count} new events just arrived`;
+  toast.classList.add('show');
+  clearTimeout(showNewEventsToast._t);
+  showNewEventsToast._t = setTimeout(() => toast.classList.remove('show'), 8000);
+}
+
+function jumpToReview() {
+  const toast = document.getElementById('new-events-toast');
+  if (toast) toast.classList.remove('show');
+  const btn = document.getElementById('nav-review-btn');
+  if (btn) showPage('review', btn);
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// Refresh the review queue and announce anything that was not there before.
+async function refreshPendingQuietly() {
+  try {
+    const res = await fetch('/api/events/pending');
+    if (!res.ok) return;
+    const fresh = await res.json();
+    const freshIds = new Set(fresh.map(e => e.id));
+    // Only count arrivals — an id disappearing means the user dismissed it.
+    const added = lastPendingIds === null ? 0 : [...freshIds].filter(id => !lastPendingIds.has(id)).length;
+    lastPendingIds = freshIds;
+    pendingEvents = fresh;
+    renderReview();
+    if (added > 0) showNewEventsToast(added);
+  } catch {}
+}
+
+function startLiveRefresh() {
+  if (liveRefreshTimer) return;
+  liveRefreshTimer = setInterval(() => {
+    // Don't poll a backgrounded tab — it would run all day for nothing.
+    if (document.visibilityState !== 'visible') return;
+    refreshPendingQuietly();
+    updateLiveStatus();
+  }, LIVE_REFRESH_MS);
+
+  // Coming back to the tab is the moment the user most wants current data,
+  // so refresh immediately instead of waiting out the rest of the interval.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      refreshPendingQuietly();
+      updateLiveStatus();
+    }
+  });
+}
+
 async function reconnectGmail() {
   const btn = document.getElementById('reconnect-btn');
   btn.disabled = true;
@@ -1387,7 +1509,13 @@ async function loadData() {
 async function loadPendingEvents() {
   try {
     const res = await fetch('/api/events/pending');
-    if (res.ok) { pendingEvents = await res.json(); renderReview(); }
+    if (res.ok) {
+      pendingEvents = await res.json();
+      // Seed the poller's baseline so the first tick doesn't announce the
+      // whole existing queue as "new".
+      lastPendingIds = new Set(pendingEvents.map(e => e.id));
+      renderReview();
+    }
   } catch {}
 }
 

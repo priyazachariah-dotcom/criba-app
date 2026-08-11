@@ -14,6 +14,23 @@ Criba is an AI-powered approval layer that sits between a user's communication s
 - Repo: github.com/priyazachariah-dotcom/criba-app
 - Live app: criba.app
 
+## How Gmail scanning works
+Criba does not poll Gmail. On sign-in it registers a Gmail **watch**, and Google
+pushes every new message to `/api/gmail/webhook`, which extracts and writes
+immediately. The nightly cron (`/api/cron/gmail`, 02:00 UTC) only renews
+expiring watches and sends the evening summary.
+
+Because the watch only delivers mail that arrives *after* it is registered, a
+new account would otherwise start with an empty queue. So on first sign-in Criba
+runs one automatic **24-hour scan** (`needsOnboardingScan` on
+`/api/user/status`, cleared by `POST /api/user/onboarded`).
+
+**Criba starts working from the moment you sign in.** Email older than 24 hours
+at sign-up is out of scope by design — 24h reliably finishes inside the 60s
+function budget, so a new user's first experience can never be a timeout. The
+manual "Scan now" button remains for backfilling after an outage; it is not
+needed in normal use.
+
 ## Git workflow
 - Commit after completing each logical fix or feature
 - Push to the main branch automatically — do not wait for approval

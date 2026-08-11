@@ -1381,7 +1381,54 @@ async function checkGmailStatus() {
     } else {
       banner.classList.add('hidden');
     }
+    if (data.needsOnboardingScan) runOnboardingScan();
   } catch {}
+}
+
+// ── First-run scan ─────────────────────────────────────────────────────────
+//
+// The Gmail watch only delivers mail arriving after sign-in, so without this a
+// new user's first sight of Criba is an empty queue. One 24h scan, run once,
+// automatically. Deliberately not longer: 24h always finishes inside the 60s
+// function budget, so the first thing a new user experiences can't be a
+// timeout. Anything older than a day is out of scope by design — Criba starts
+// working from the moment you sign in.
+async function runOnboardingScan() {
+  // loadData() and the 30s poller both render the review queue. Without this
+  // flag they would repaint the empty state over the "Setting up" message a
+  // moment after it appears.
+  onboardingScanRunning = true;
+  const container = document.getElementById('review-list');
+  if (container) {
+    container.innerHTML = `
+      <div class="empty-state" style="margin-top:3rem">
+        <div class="empty-icon">◴</div>
+        <h3>Setting up</h3>
+        <p>Reading the last 24 hours of your email to get you started.<br>This takes up to a minute.</p>
+      </div>`;
+  }
+
+  // Mark onboarding done up front. If the scan times out or errors we still
+  // want the user in the normal app, not stuck re-scanning on every load.
+  try { await fetch('/api/user/onboarded', { method: 'POST' }); } catch {}
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000);
+    const res = await fetch('/api/gmail/backfill', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days: 1 }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (res.ok) await res.json();
+  } catch {}
+
+  // Either way, fall back to the normal queue — which renders the real empty
+  // state if the scan found nothing.
+  onboardingScanRunning = false;
+  await loadPendingEvents();
 }
 
 // ── Live status + background refresh ───────────────────────────────────────
@@ -1395,6 +1442,7 @@ async function checkGmailStatus() {
 
 let lastPendingIds = null;   // null until the first successful load
 let liveRefreshTimer = null;
+let onboardingScanRunning = false;
 const LIVE_REFRESH_MS = 30000;
 
 async function updateLiveStatus() {
@@ -1725,6 +1773,8 @@ async function deleteApproved(id) {
 function renderReview() {
   const container = document.getElementById('review-list');
   if (!container) return;
+  // The first-run scan owns this container until it finishes.
+  if (onboardingScanRunning) return;
 
   // Separate cancellation/reschedule from regular post-write review
   const cancellations = pendingEvents.filter(e => e.status === 'pending_cancellation');

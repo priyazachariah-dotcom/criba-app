@@ -2100,7 +2100,37 @@ app.post('/api/gmail/watch', requireAuth, async (req, res) => {
 // (currently: gmailDisconnected flag set by cron when watch renewal fails)
 app.get('/api/user/status', requireAuth, async (req, res) => {
   const disconnectedAt = await redis.get(`gmailDisconnected:${req.user.email}`);
-  res.json({ gmailDisconnected: !!disconnectedAt, gmailDisconnectedAt: disconnectedAt || null });
+  // The Gmail watch only delivers mail arriving after it is registered, so a
+  // brand-new account starts with an empty queue and nothing to look at. One
+  // 24h scan on first sign-in gives them something immediately; after that the
+  // watch covers everything and no manual scan is needed.
+  let onboardedAt = await redis.get(`onboarded:${req.user.email}`);
+
+  // Existing accounts predate this flag. Treat anyone who already has events as
+  // onboarded and write the flag, so the change doesn't fire a surprise scan
+  // for every current user on their next page load.
+  if (!onboardedAt) {
+    const existing = await getUserEvents(req.user.email).values();
+    if (existing.length > 0) {
+      onboardedAt = new Date().toISOString();
+      await redis.set(`onboarded:${req.user.email}`, onboardedAt);
+    }
+  }
+
+  res.json({
+    gmailDisconnected: !!disconnectedAt,
+    gmailDisconnectedAt: disconnectedAt || null,
+    needsOnboardingScan: !onboardedAt,
+  });
+});
+
+// POST /api/user/onboarded — mark the one-time onboarding scan as done.
+// Set once the scan has been *attempted*, not only when it succeeds: a user
+// whose first scan errors should still land in the normal app rather than
+// re-scanning on every page load.
+app.post('/api/user/onboarded', requireAuth, async (req, res) => {
+  await redis.set(`onboarded:${req.user.email}`, new Date().toISOString());
+  res.json({ ok: true });
 });
 
 // POST /api/gmail/reconnect — re-registers Gmail watch and clears disconnect flag

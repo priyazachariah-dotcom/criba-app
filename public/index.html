@@ -489,8 +489,6 @@
   .event-field input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.875rem; background: var(--bg); color: var(--text); font-family: inherit; }
   .event-field input:focus { outline: none; border-color: var(--accent); background: white; }
   .event-field.full { grid-column: 1 / -1; }
-  .bharat-check { display: flex; align-items: center; gap: 8px; font-size: 0.875rem; color: var(--text2); margin-bottom: 1rem; }
-  .bharat-check input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
   .add-people-section { margin-bottom: 1rem; }
   .add-people-section label { font-size: 0.75rem; color: var(--text2); display: block; margin-bottom: 4px; }
   .event-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
@@ -736,6 +734,22 @@
           <button class="btn-outlined btn-sm" onclick="clearTestCalendar()">Clear</button>
         </div>
         <div id="test-cal-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
+      </div>
+    </div>
+
+    <!-- Partner sharing — the address offered as an extra invitee on approval -->
+    <div class="test-mode-panel">
+      <div class="test-mode-panel-header">
+        <span class="test-mode-panel-title">Share with partner</span>
+      </div>
+      <div class="test-mode-body">
+        <div class="test-mode-desc">Add someone who should be invited to family events. When set, each event gets an optional "invite them too" checkbox before you add it to your calendar.</div>
+        <div class="test-mode-field">
+          <input type="text" id="partner-email-input" placeholder="partner@example.com" />
+          <button class="btn-filled btn-sm" onclick="savePartnerEmail()">Save</button>
+          <button class="btn-outlined btn-sm" onclick="clearPartnerEmail()">Clear</button>
+        </div>
+        <div id="partner-email-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
       </div>
     </div>
 
@@ -1196,8 +1210,11 @@ async function loadTestModeSettings() {
   try {
     const res = await fetch('/api/settings');
     if (!res.ok) return;
-    const { testCalendarId } = await res.json();
+    const { testCalendarId, partnerEmail } = await res.json();
     applyTestModeUI(testCalendarId || '');
+    partnerShareEmail = partnerEmail || '';
+    const partnerInput = document.getElementById('partner-email-input');
+    if (partnerInput) partnerInput.value = partnerShareEmail;
   } catch {}
 }
 
@@ -1226,6 +1243,36 @@ async function toggleTestMode(on) {
     // Just open the panel — user still needs to enter and save a calendar ID
     document.getElementById('test-cal-status').textContent = 'Enter a Google Calendar ID below and click Save.';
   }
+}
+
+async function savePartnerEmail() {
+  const input = document.getElementById('partner-email-input');
+  const status = document.getElementById('partner-email-status');
+  const val = input?.value.trim();
+  if (!val) { if (status) status.textContent = 'Please enter an email address.'; return; }
+  try {
+    const res = await fetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ partnerEmail: val }) });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      partnerShareEmail = val;
+      if (status) status.textContent = `✓ Saved — ${val} can be invited to events.`;
+    } else {
+      if (status) status.textContent = data.error || 'Failed to save. Try again.';
+    }
+  } catch { if (status) status.textContent = 'Network error.'; }
+}
+
+async function clearPartnerEmail() {
+  const status = document.getElementById('partner-email-status');
+  try {
+    const res = await fetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ partnerEmail: '' }) });
+    if (res.ok) {
+      partnerShareEmail = '';
+      const input = document.getElementById('partner-email-input');
+      if (input) input.value = '';
+      if (status) status.textContent = 'Cleared — no partner will be invited.';
+    } else if (status) status.textContent = 'Failed to clear. Try again.';
+  } catch { if (status) status.textContent = 'Network error.'; }
 }
 
 async function saveTestCalendar() {
@@ -1443,6 +1490,9 @@ async function runOnboardingScan() {
 let lastPendingIds = null;   // null until the first successful load
 let liveRefreshTimer = null;
 let onboardingScanRunning = false;
+// The user's nominated partner address, loaded from settings. Empty means the
+// "invite partner too" checkbox is not offered at all.
+let partnerShareEmail = '';
 const LIVE_REFRESH_MS = 30000;
 
 async function updateLiveStatus() {
@@ -3156,13 +3206,14 @@ function renderInlineEditor(ev, ci, ei) {
       </div>
     </div>
 
+    ${partnerShareEmail ? `
     <div class="gcal-row">
       <span class="material-icons gcal-icon">check_box_outline_blank</span>
       <label class="gcal-checkbox-label">
-        <input type="checkbox" id="ced-bharat-${key}" />
-        Add to Bharat's calendar too
+        <input type="checkbox" id="ced-partner-${key}" />
+        Invite ${escHtml(partnerShareEmail)} too
       </label>
-    </div>
+    </div>` : ''}
 
     <div class="gcal-actions">
       <button class="btn-gcal-add" id="ced-add-${key}" onclick="cedApprove('${ev.id}', '${key}', ${ci}, ${ei})">Add to Calendar</button>
@@ -3336,7 +3387,7 @@ async function cedApprove(evId, key, ci, ei) {
     endTime:  document.getElementById(`ced-endtime-${key}`)?.value || '',
     location: document.getElementById(`ced-loc-${key}`)?.value || '',
     attendees: cedPeople[key] || [],
-    shareToBharat: document.getElementById(`ced-bharat-${key}`)?.checked || false,
+    sharePartner: document.getElementById(`ced-partner-${key}`)?.checked || false,
   };
   try {
     const res = await fetch('/api/events/approve', {

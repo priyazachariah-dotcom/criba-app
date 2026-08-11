@@ -536,7 +536,7 @@ app.get('/api/events/recent', requireAuth, async (req, res) => {
 });
 
 app.post('/api/events/approve', requireAuth, async (req, res) => {
-  const { id, title, date, time, endDate, endTime, location, attendees, shareToBharat } = req.body;
+  const { id, title, date, time, endDate, endTime, location, attendees, sharePartner } = req.body;
   const events = getUserEvents(req.user.email);
   const event = await events.get(id);
   if (!event) return res.status(404).json({ error: 'Event not found' });
@@ -556,7 +556,14 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const finalEndTime = endTime || event.end_time || '';
     const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime);
     const eventAttendees = [];
-    if (shareToBharat) eventAttendees.push({ email: 'bharatguruprakash@gmail.com' });
+    // Was a hardcoded personal address behind a "share to Bharat" flag. Fine
+    // when the only user was its author; a privacy problem the moment anyone
+    // else signs in. Now each user nominates their own partner in settings, and
+    // the checkbox only appears once they have.
+    if (sharePartner) {
+      const partnerEmail = await getUserSettings(req.user.email).get('partnerEmail');
+      if (partnerEmail) eventAttendees.push({ email: partnerEmail });
+    }
     if (attendees && Array.isArray(attendees)) {
       attendees.forEach(a => { if (a.email) eventAttendees.push({ email: a.email }); });
     }
@@ -1271,16 +1278,28 @@ app.delete('/api/family/:id', requireAuth, async (req, res) => {
 app.get('/api/settings', requireAuth, async (req, res) => {
   const settings = getUserSettings(req.user.email);
   const testCalendarId = (await settings.get('testCalendarId')) || null;
-  res.json({ testCalendarId });
+  const partnerEmail = (await settings.get('partnerEmail')) || null;
+  res.json({ testCalendarId, partnerEmail });
 });
 
 app.patch('/api/settings', requireAuth, async (req, res) => {
   const settings = getUserSettings(req.user.email);
-  const { testCalendarId } = req.body;
+  const { testCalendarId, partnerEmail } = req.body;
   if (testCalendarId === null || testCalendarId === '') {
     await settings.delete('testCalendarId');
   } else if (typeof testCalendarId === 'string') {
     await settings.set('testCalendarId', testCalendarId.trim());
+  }
+  if (partnerEmail === null || partnerEmail === '') {
+    await settings.delete('partnerEmail');
+  } else if (typeof partnerEmail === 'string') {
+    const trimmed = partnerEmail.trim();
+    // This address ends up as an attendee on real calendar invites, so a typo
+    // mails a stranger. Reject anything that isn't plausibly an address.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      return res.status(400).json({ error: 'Not a valid email address' });
+    }
+    await settings.set('partnerEmail', trimmed);
   }
   res.json({ ok: true });
 });
@@ -2182,9 +2201,17 @@ app.post('/api/gmail/webhook', async (req, res) => {
     const verifier = new google.auth.OAuth2();
     const ticket = await verifier.verifyIdToken({ idToken: token });
     const payload = ticket.getPayload();
-    // Gmail push notifications are signed by this Google service account
+    // Gmail push notifications are signed by this Google service account, and
+    // ONLY this one is acceptable.
+    //
+    // This check used to read `!validEmails.includes(email) && !email_verified`.
+    // Because that is an AND, any Google-issued token with a verified email
+    // satisfied it — which is essentially every Google token in existence. In
+    // practice the endpoint was open to anyone who could mint a Google ID token,
+    // letting them force-process any mailbox Criba holds a refresh token for and
+    // burn the Claude budget. Requiring the push service account closes it.
     const validEmails = ['gmail-api-push@system.gserviceaccount.com'];
-    if (!validEmails.includes(payload.email) && !payload.email_verified) {
+    if (!payload.email_verified || !validEmails.includes(payload.email)) {
       console.error(`[webhook] REJECTED — token issuer "${payload.email}" not in allowlist`);
       return res.status(401).json({ error: 'Invalid token issuer' });
     }

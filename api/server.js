@@ -246,8 +246,28 @@ function addDaysToDateStr(dateStr, days) {
 // (multi-day all-day events, e.g. a school break) and/or end time (timed
 // events). Falls back to the original single-day / start+1hr behavior
 // when no end date/time is supplied, so existing callers keep working.
+// Deadlines and action items usually arrive with no clock time, and the model
+// fills that in as "00:00". Written literally that puts a reminder at midnight,
+// where it sits at the very top of the day and is easy to sleep through — and
+// on some views reads as belonging to the night before. 6am is the start of a
+// realistic day, so a reminder is the first thing seen rather than the last.
+//
+// Tradeoff: an event genuinely at midnight (a New Year countdown) also moves to
+// 6am. Rare enough, and correctable in the editor, to be worth it.
+const MIDNIGHT_REMINDER_TIME = '06:00';
+
+// Gmail extraction emits start_time; the PDF/iCal path emits time. Normalize
+// whichever is present so the stored record matches what lands on the calendar.
+function shiftMidnightToMorning(ev) {
+  for (const key of ['start_time', 'time']) {
+    if (ev[key] === '00:00' || ev[key] === '0:00') ev[key] = MIDNIGHT_REMINDER_TIME;
+  }
+  return ev;
+}
+
 function buildCalendarTimes(date, time, endDate, endTime) {
   const tz = 'America/Los_Angeles';
+  if (time === '00:00' || time === '0:00') time = MIDNIGHT_REMINDER_TIME;
   if (time && time.trim() !== '') {
     const start = { dateTime: `${date}T${time}:00`, timeZone: tz };
     let finalEndTime = endTime && endTime.trim() !== '' ? endTime : null;
@@ -670,6 +690,32 @@ app.post('/api/events/mark-reviewed', requireAuth, async (req, res) => {
   ev.status = 'reviewed';
   await events.set(req.body.id, ev);
   res.json({ ok: true });
+});
+
+// Mark every event currently in the review queue as reviewed.
+//
+// The queue is post-write: everything in it is already on the calendar, so for
+// most people most of the time the correct action on the whole list is "yes,
+// fine". Without this the only way to empty a long queue was to press OK on
+// each card, which is why the tab grew unbounded.
+//
+// Deliberately only touches events the queue itself would show — same predicate
+// as GET /api/events/pending — so a bulk OK can never silently clear something
+// that needs a decision, like a cancellation or a reschedule.
+app.post('/api/events/review-all-ok', requireAuth, async (req, res) => {
+  const events = getUserEvents(req.user.email);
+  const all = await events.values();
+  let cleared = 0;
+  for (const ev of all) {
+    if (ev.status === 'pending_cancellation' || ev.status === 'pending_reschedule') continue;
+    if ((ev.status === 'added' || ev.status === 'pending') && !ev.reviewed) {
+      ev.reviewed = true;
+      ev.status = 'reviewed';
+      await events.set(ev.id, ev);
+      cleared++;
+    }
+  }
+  res.json({ ok: true, cleared });
 });
 
 // Delete event from Google Calendar (Dismiss in post-write review).
@@ -1991,6 +2037,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           console.log(`[gmail-process] msg=${messageId} skipping event missing title/date: ${JSON.stringify(ev).slice(0,100)}`);
           continue;
         }
+        shiftMidnightToMorning(ev);
 
         const intent = ev.intent || 'new_event';
 
@@ -2824,6 +2871,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             if (norm) { await traceEmail(email, { stage: 'DATE-NORM', messageId, subject, rawDate: ev.date, normalized: norm }); ev.date = norm; }
           }
           if (!ev.title || !ev.date) { await traceEmail(email, { stage: 'DROPPED', messageId, subject, reason: !ev.title ? 'no-title' : 'bad-date', rawDate: ev.date }); continue; }
+          // Deadlines come back as midnight; move them to 6am here as well as in
+          // buildCalendarTimes so the stored record and the UI agree with the
+          // calendar rather than showing "12:00 AM".
+          shiftMidnightToMorning(ev);
 
           const intent = ev.intent || 'new_event';
           if (intent === 'cancellation' || intent === 'reschedule') {

@@ -1310,6 +1310,11 @@ let _undoBarInterval = null;
 // The title is read from state, not passed in from the markup. Interpolating it
 // into a double-quoted onclick attribute broke the handler outright for any
 // title containing a quote character.
+// Delete from Google Calendar, with an 8s undo window. Named for what it does
+// — the old name, dismissFromCalendar, is kept as an alias because the reminder
+// cards and cancellation cards still call it.
+function deleteFromReview(id) { return dismissFromCalendar(id); }
+
 function dismissFromCalendar(id) {
   const title = (pendingEvents.find(e => e.id === id) || {}).title;
   // If there's already a pending undo, commit it now before starting a new one
@@ -1367,6 +1372,25 @@ async function commitDismiss() {
   } catch {}
   pendingEvents = pendingEvents.filter(e => e.id !== id);
   renderReview();
+}
+
+// Clear the whole queue in one action. Nothing is removed from Google Calendar
+// — every event stays put and moves to Edit Calendar Events, where it can still
+// be changed or deleted later.
+async function markAllReviewed() {
+  const btn = document.getElementById('review-all-ok-btn');
+  const n = pendingEvents.filter(e => e.status !== 'pending_cancellation' && e.status !== 'pending_reschedule').length;
+  if (!confirm(`Keep all ${n} events on your calendar and clear the review list?\n\nNothing is deleted — they move to Edit Calendar Events.`)) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Clearing…'; }
+  try {
+    const res = await fetch('/api/events/review-all-ok', { method: 'POST' });
+    if (!res.ok) throw new Error('request failed');
+    await loadPendingEvents();
+    await loadRecentEvents();
+  } catch {
+    if (btn) { btn.disabled = false; btn.textContent = 'OK to all'; }
+    alert('Could not clear the list — please try again.');
+  }
 }
 
 async function markReviewedAndDismiss(id) {
@@ -1703,8 +1727,13 @@ function renderPostWriteReviewCard(ev) {
         ${notesHtml}
       </div>
       <div class="review-card-tags">
-        <button class="btn-outlined btn-sm" onclick="dismissFromCalendar('${id}')">Dismiss</button>
-        <button class="btn-filled btn-sm" onclick="openPostWriteEdit('${id}')">Edit →</button>
+        <!-- "Dismiss" used to be the only exit from this queue, and it deleted
+             the event from Google Calendar — a name that reads like "hide this"
+             doing something destructive. The common case is the opposite: the
+             event is already on the calendar and is fine. OK is now that path. -->
+        <button class="btn-outlined btn-sm" onclick="deleteFromReview('${id}')" title="Remove this event from your Google Calendar">Delete</button>
+        <button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')" title="Change the details, then save to your calendar">Edit</button>
+        <button class="btn-filled btn-sm" onclick="markReviewedAndDismiss('${id}')" title="Keep on your calendar and move to Edit Calendar Events">OK</button>
       </div>
     </div>
     <div class="review-card-editor" id="reditor-${id}" style="display:none">
@@ -1767,8 +1796,9 @@ function renderReminderCard(ev) {
         ${ev.sender_name ? `<div class="reminder-source">from ${escHtml(ev.sender_name)} · ${typeLabel}</div>` : `<div class="reminder-source">${typeLabel}</div>`}
       </div>
       <div class="reminder-actions">
-        <button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')">Edit</button>
         <button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteReminder('${id}')">Delete</button>
+        <button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')">Edit</button>
+        <button class="btn-filled btn-sm" onclick="markReviewedAndDismiss('${id}')" title="Keep on your calendar and clear from this list">OK</button>
       </div>
     </div>
     <div class="reminder-editor-wrap" id="reditor-${id}" style="display:none">
@@ -1848,6 +1878,18 @@ function renderReview() {
   }
 
   let html = BACKFILL_BAR_HTML;
+
+  // Bulk exit from a long queue. Only offered when there is enough of a list to
+  // make pressing OK on each card tedious.
+  const bulkCount = timedEvents.length + reminders.length;
+  if (bulkCount >= 3) {
+    html += `<div class="scan-bar" style="margin-top:0.75rem">
+      <span class="scan-bar-label">${bulkCount} to review</span>
+      <div class="scan-bar-btns">
+        <button class="btn-outlined btn-sm" id="review-all-ok-btn" onclick="markAllReviewed()" title="Keep all of these on your calendar and clear the list">OK to all</button>
+      </div>
+    </div>`;
+  }
 
   if (cancellations.length) {
     html += `<div style="margin-bottom:2rem">${cancellations.map(renderCancellationCard).join('')}</div>`;

@@ -2981,6 +2981,96 @@ function chooseDuplicatesToDelete(problem) {
   return ranked.slice(1);
 }
 
+// POST /api/calendar/reset — remove everything Criba ever wrote. Dry run
+// unless { confirm: "DELETE ALL CRIBA EVENTS" }.
+//
+// For starting over after a testing period. Identification is by the
+// "Added via Criba" description stamp, which only our own writes carry, so
+// events the user created by hand and events from subscribed feeds are never
+// candidates. Recurring series are deleted once, not per instance.
+app.post('/api/calendar/reset', requireAuth, async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.body?.days, 10) || 365, 1), 730);
+  // Testing wrote events in the past too, so look back as well as forward.
+  const back = Math.min(Math.max(parseInt(req.body?.daysBack, 10) || 180, 0), 730);
+  const confirmed = req.body?.confirm === 'DELETE ALL CRIBA EVENTS';
+
+  const auth = await getUserOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const timeMin = new Date(Date.now() - back * 86400000);
+  const timeMax = new Date(Date.now() + days * 86400000);
+
+  // Only calendars we could have written to. Subscribed feeds are read-only
+  // and are skipped entirely rather than attempted and failed.
+  let cals;
+  try {
+    cals = await visibleCalendars(calendar, await resolveTargetCalendar(req.user.email));
+  } catch (err) {
+    return res.status(502).json({ error: 'could not list calendars', detail: err.message });
+  }
+
+  const found = new Map();   // series/event id -> record
+  const errors = [];
+  for (const cal of cals) {
+    try {
+      const resp = await calendar.events.list({
+        calendarId: cal.id, timeMin: timeMin.toISOString(), timeMax: timeMax.toISOString(),
+        singleEvents: true, maxResults: 2500,
+        fields: 'items(id,summary,description,start,recurringEventId)',
+      });
+      for (const it of resp.data.items || []) {
+        if (!/Added via Criba/i.test(it.description || '')) continue;
+        const id = it.recurringEventId || it.id;
+        if (found.has(id)) { found.get(id).instances++; continue; }
+        found.set(id, {
+          deleteId: id, calendarId: cal.id, calendar: cal.name,
+          title: it.summary || '', isSeries: !!it.recurringEventId, instances: 1,
+          firstDate: it.start?.date || (it.start?.dateTime || '').slice(0, 10),
+        });
+      }
+    } catch (err) {
+      errors.push({ calendar: cal.name, error: err.message });
+    }
+  }
+
+  const plan = [...found.values()];
+  if (!confirmed) {
+    return res.json({
+      dryRun: true, windowFrom: timeMin.toISOString().slice(0, 10), windowTo: timeMax.toISOString().slice(0, 10),
+      calendarsScanned: cals.map(c => c.name), calendarErrors: errors,
+      wouldDelete: plan.length,
+      totalInstances: plan.reduce((n, p) => n + p.instances, 0),
+      plan,
+      note: 'Nothing was deleted. Re-send with {"confirm":"DELETE ALL CRIBA EVENTS"} to apply.',
+    });
+  }
+
+  const deleted = [], failed = [];
+  for (const t of plan) {
+    try {
+      await calendar.events.delete({ calendarId: t.calendarId, eventId: t.deleteId, sendUpdates: 'none' });
+      deleted.push(t);
+    } catch (err) {
+      if (err.code === 410 || err.code === 404) deleted.push({ ...t, alreadyGone: true });
+      else failed.push({ ...t, error: err.message });
+    }
+  }
+
+  // Clear Criba's own records too, otherwise the review queue and Edit
+  // Calendar Events still list events that no longer exist.
+  const store = getUserEvents(req.user.email);
+  let storeCleared = 0;
+  if (req.body?.keepStore !== true) {
+    for (const ev of await store.values()) {
+      if (ev.calEventId || ev.status === 'added' || ev.status === 'reviewed' || ev.status === 'duplicate') {
+        await store.delete(ev.id);
+        storeCleared++;
+      }
+    }
+  }
+
+  res.json({ dryRun: false, deleted: deleted.length, failed: failed.length, storeCleared, failedItems: failed });
+});
+
 // POST /api/calendar/cleanup-duplicates — dry run unless { confirm: "DELETE" }.
 //
 // Deletes the whole recurring series (seriesId) rather than single instances,

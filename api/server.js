@@ -354,6 +354,11 @@ const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.profile',
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/calendar.events',
+  // Read-only list of which calendars the user subscribes to. calendar.events
+  // alone cannot call calendarList.list, and without it duplicate detection is
+  // blind to anything living on a second calendar — which is exactly where
+  // subscribed club/school feeds put their copy of an event we also wrote.
+  'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
   'https://www.googleapis.com/auth/contacts.readonly',
   'https://www.googleapis.com/auth/contacts.other.readonly',
   'https://www.googleapis.com/auth/directory.readonly',
@@ -2679,8 +2684,19 @@ async function scanCalendarDuplicates(user, days) {
   const timeMin = new Date();
   const timeMax = new Date(Date.now() + days * 86400000);
 
-  const list = await calendar.calendarList.list({ maxResults: 250, fields: 'items(id,summary)' });
-  const calendars = (list.data.items || []).map(c => ({ id: c.id, name: c.summary || c.id }));
+  // Sessions created before the calendarlist scope was added cannot list
+  // calendars. Degrade to the primary calendar rather than failing outright —
+  // a partial scan still finds Criba-wrote-it-twice, just not cross-calendar
+  // collisions. scopeLimited tells the caller which kind of answer this is.
+  let calendars, scopeLimited = false;
+  try {
+    const list = await calendar.calendarList.list({ maxResults: 250, fields: 'items(id,summary)' });
+    calendars = (list.data.items || []).map(c => ({ id: c.id, name: c.summary || c.id }));
+  } catch (err) {
+    if (err.code !== 403 && !/insufficient/i.test(err.message || '')) throw err;
+    scopeLimited = true;
+    calendars = [{ id: 'primary', name: 'primary' }];
+  }
 
   const all = [];
   const calendarErrors = [];
@@ -2784,7 +2800,7 @@ async function scanCalendarDuplicates(user, days) {
     copies: p.copies,
   }));
 
-  return { calendars, calendarErrors, all, clusters, problems, auth };
+  return { calendars, calendarErrors, all, clusters, problems, auth, scopeLimited };
 }
 
 app.get('/api/debug/calendar-duplicates', requireAuth, async (req, res) => {
@@ -2793,6 +2809,10 @@ app.get('/api/debug/calendar-duplicates', requireAuth, async (req, res) => {
     const r = await scanCalendarDuplicates(req.user, days);
     res.json({
       windowDays: days,
+      scopeLimited: r.scopeLimited,
+      scopeNote: r.scopeLimited
+        ? 'Only the primary calendar was read — sign out and back in to grant calendar-list access and see cross-calendar duplicates.'
+        : undefined,
       calendarsScanned: r.calendars.map(c => c.name),
       calendarErrors: r.calendarErrors,
       totalEventsScanned: r.all.length,

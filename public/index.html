@@ -1693,11 +1693,61 @@ const BACKFILL_BAR_HTML = `
   <button class="btn-outlined btn-sm" id="backfill-btn-cooldown" onclick="clearBackfillCooldown()" title="Clear the 24h scan rate limit" style="font-size:11px">Reset lock</button>
   <button class="btn-outlined btn-sm" onclick="showScanTrace()" title="Show per-email pipeline decisions from the last scan" style="font-size:11px">Scan trace</button>
   <button class="btn-outlined btn-sm" id="backfill-btn-7" onclick="runBackfill(7)" style="font-size:11px">Last 7 days</button>
+  <button class="btn-outlined btn-sm" id="backfill-btn-reset" onclick="startFresh()" title="Remove every event Criba has written to your calendar, and empty the review queue" style="font-size:11px;color:var(--red);border-color:var(--red)">Start fresh</button>
 </div>
 <div id="backfill-result"></div>`;
 
 // No-op: backfill bar buttons are wired via inline onclick — nothing to attach dynamically.
 function wireBackfillBar() {}
+
+// Two-step by design: the first call is a dry run that reports what would go,
+// and the user confirms against that real count rather than a promise. Deleting
+// calendar events is not undoable, so a single mis-click must not do it.
+async function startFresh() {
+  const out = document.getElementById('backfill-result');
+  const say = html => { if (out) out.innerHTML = html; };
+  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Checking your calendar…</div>');
+  let plan;
+  try {
+    const res = await fetch('/api/calendar/reset', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    plan = await res.json();
+    if (!res.ok) throw new Error(plan.detail || plan.error || 'Scan failed');
+  } catch (err) {
+    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">Could not read your calendar: ${escHtml(err.message)}</div>`);
+    return;
+  }
+
+  if (!plan.wouldDelete) {
+    say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Nothing to remove — Criba has no events on your calendar.</div>');
+    return;
+  }
+
+  const series = plan.plan.filter(p => p.isSeries).length;
+  const detail = series ? ` (${series} of them repeating series)` : '';
+  const ok = confirm(
+    `Remove ${plan.wouldDelete} event${plan.wouldDelete === 1 ? '' : 's'}${detail} that Criba added to your calendar?\n\n` +
+    `Covers ${plan.windowFrom} to ${plan.windowTo}. Events you created yourself and events from subscribed calendars are not touched. ` +
+    `Your review queue will also be emptied.\n\nThis cannot be undone.`
+  );
+  if (!ok) { say(''); return; }
+
+  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Removing…</div>');
+  try {
+    const res = await fetch('/api/calendar/reset', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'DELETE ALL CRIBA EVENTS' }),
+    });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.detail || r.error || 'Reset failed');
+    say(`<div style="padding:8px 2px;font-size:0.8125rem">Removed ${r.deleted} event${r.deleted === 1 ? '' : 's'}${r.failed ? `, ${r.failed} could not be removed` : ''}. Queue cleared — run a scan when you're ready.</div>`);
+    lastPendingIds = null;
+    await loadPendingEvents();
+  } catch (err) {
+    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">Reset failed: ${escHtml(err.message)}</div>`);
+  }
+}
 
 function toggleScanDebug() {
   const bar = document.getElementById('scan-debug-bar');

@@ -1137,7 +1137,9 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
         const evId = randomUUID();
         const norm = normalizeExtractedEvent(ev);
         const conflictNote = await findConflict(events, ev.date, norm.time, norm.end_time);
-        const combinedNotes = [norm.notes, conflictNote].filter(Boolean).join('\n') || null;
+        // The conflict is stored separately in conflict_note and rendered on its own
+        // line, so folding it into notes as well printed the same warning twice.
+        const combinedNotes = norm.notes || null;
         eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, notes: combinedNotes, conflict_note: conflictNote || null, attendees: Array.isArray(ev.attendees) ? ev.attendees : [], category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
       }
     }
@@ -2325,7 +2327,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         const startTime = ev.start_time || '';
         const endTime = ev.end_time || '';
         const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
-        const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
+        const combinedNotes = ev.notes || null;
 
         // Auto-write to calendar immediately
         const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
@@ -3597,7 +3599,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // the calendar are both worth surfacing; prefer whichever we find.
           const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime)
             || findCalendarConflict(existingCalEvents, ev.date, startTime, endTime);
-          const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
+          const combinedNotes = ev.notes || null;
           const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
           let calEventId = null;
           // The check above only saw the target calendar; autoWriteToCalendar

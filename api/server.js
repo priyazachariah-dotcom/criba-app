@@ -2663,6 +2663,139 @@ app.get('/api/debug/duplicates', requireAuth, async (req, res) => {
   });
 });
 
+// GET /api/debug/calendar-duplicates?days=120 — read-only.
+//
+// Reads the actual Google Calendar rather than Criba's store, and reads EVERY
+// calendar the user is subscribed to, not just the one Criba writes to. Both
+// details matter: Criba has written series it no longer holds records for
+// (orphans), and the collisions the user actually sees are often Criba's copy
+// on the primary calendar versus a club's iCal feed on a separate calendar —
+// a comparison no single-calendar query can make.
+//
+// Changes nothing. Reports clusters so we can decide what to delete.
+app.get('/api/debug/calendar-duplicates', requireAuth, async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 120, 1), 400);
+  const auth = await getUserOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const timeMin = new Date();
+  const timeMax = new Date(Date.now() + days * 86400000);
+
+  let calendars = [];
+  try {
+    const list = await calendar.calendarList.list({ maxResults: 250, fields: 'items(id,summary)' });
+    calendars = (list.data.items || []).map(c => ({ id: c.id, name: c.summary || c.id }));
+  } catch (err) {
+    return res.status(502).json({ error: 'calendarList.list failed', detail: err.message });
+  }
+
+  const all = [];
+  const calendarErrors = [];
+  for (const cal of calendars) {
+    try {
+      const resp = await calendar.events.list({
+        calendarId: cal.id,
+        timeMin: timeMin.toISOString(),
+        timeMax: timeMax.toISOString(),
+        singleEvents: true,   // expand recurring series into dated instances
+        maxResults: 2500,
+        fields: 'items(id,summary,description,start,end,recurringEventId)',
+      });
+      for (const it of resp.data.items || []) {
+        const date = it.start?.date || (it.start?.dateTime || '').slice(0, 10);
+        if (!date) continue;
+        const desc = it.description || '';
+        all.push({
+          calendarId: cal.id, calendarName: cal.name,
+          eventId: it.id, seriesId: it.recurringEventId || null,
+          title: it.summary || '', date,
+          time: it.start?.dateTime ? it.start.dateTime.slice(11, 16) : '',
+          endTime: it.end?.dateTime ? it.end.dateTime.slice(11, 16) : '',
+          isAllDay: !!it.start?.date,
+          // "Added via Criba" is stamped on everything we write. The dangling
+          // "— recurring:" suffix additionally marks the older buggy writes,
+          // which makes it a reliable discriminator when two Criba series
+          // collide and we have to choose which one to keep.
+          fromCriba: /Added via Criba/i.test(desc),
+          legacyMarker: /Added via Criba\s*—\s*recurring:\s*$/i.test(desc.trim()),
+        });
+      }
+    } catch (err) {
+      calendarErrors.push({ calendar: cal.name, error: err.message });
+    }
+  }
+
+  // Group by date, then cluster within the date by loose title match and
+  // near-identical start time — the same test the write path uses, so what
+  // this reports and what Criba suppresses stay in agreement.
+  const byDate = new Map();
+  for (const ev of all) {
+    if (!byDate.has(ev.date)) byDate.set(ev.date, []);
+    byDate.get(ev.date).push(ev);
+  }
+  const clusters = [];
+  for (const [date, evs] of byDate) {
+    const used = new Set();
+    for (let i = 0; i < evs.length; i++) {
+      if (used.has(i)) continue;
+      const group = [evs[i]];
+      for (let j = i + 1; j < evs.length; j++) {
+        if (used.has(j)) continue;
+        if (!titlesLooselyMatch(evs[i].title, evs[j].title)) continue;
+        const bothTimed = evs[i].time && evs[j].time && !evs[i].isAllDay && !evs[j].isAllDay;
+        if (bothTimed && Math.abs(timeToMinutes(evs[i].time) - timeToMinutes(evs[j].time)) > 30) continue;
+        used.add(j);
+        group.push(evs[j]);
+      }
+      if (group.length < 2) continue;
+      used.add(i);
+      const cribaCopies = group.filter(g => g.fromCriba).length;
+      clusters.push({
+        date,
+        title: group[0].title,
+        count: group.length,
+        // Two Criba copies is our bug. One Criba copy plus a feed copy is a
+        // collision with someone else's data — different problem, different fix.
+        kind: cribaCopies >= 2 ? 'criba-wrote-twice'
+            : cribaCopies === 1 ? 'criba-vs-external'
+            : 'external-only',
+        crossCalendar: new Set(group.map(g => g.calendarId)).size > 1,
+        copies: group.map(g => ({
+          calendar: g.calendarName, title: g.title, time: g.time || 'all-day',
+          eventId: g.eventId, seriesId: g.seriesId,
+          fromCriba: g.fromCriba, legacyMarker: g.legacyMarker,
+        })),
+      });
+    }
+  }
+  clusters.sort((a, b) => a.date.localeCompare(b.date));
+
+  // A recurring series collides once per instance; collapse to series pairs so
+  // a weekly clash reads as one problem instead of sixteen.
+  const seriesPairs = new Map();
+  for (const c of clusters) {
+    const key = c.copies.map(x => x.seriesId || x.eventId).sort().join('|');
+    if (!seriesPairs.has(key)) seriesPairs.set(key, { ...c, occurrences: 0, firstDate: c.date, lastDate: c.date });
+    const s = seriesPairs.get(key);
+    s.occurrences++;
+    s.lastDate = c.date;
+  }
+
+  res.json({
+    windowDays: days,
+    calendarsScanned: calendars.map(c => c.name),
+    calendarErrors,
+    totalEventsScanned: all.length,
+    duplicateInstances: clusters.length,
+    distinctProblems: seriesPairs.size,
+    problems: [...seriesPairs.values()].map(p => ({
+      title: p.title, kind: p.kind, crossCalendar: p.crossCalendar,
+      occurrences: p.occurrences, firstDate: p.firstDate, lastDate: p.lastDate,
+      copies: p.copies,
+    })),
+    instances: clusters.slice(0, 60),
+  });
+});
+
 // DELETE /api/scan/trace — clear the trace log for the logged-in user
 app.delete('/api/scan/trace', requireAuth, async (req, res) => {
   await redis.del(`scanTrace:${req.user.email}`);

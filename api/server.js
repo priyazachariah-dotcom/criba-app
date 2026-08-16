@@ -712,15 +712,63 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     if (recurrenceRule) calEventResource.recurrence = [recurrenceRule];
     if (colorId) calEventResource.colorId = String(colorId);
 
-    const calEvent = await calendar.events.insert({
-      calendarId: targetCalId,
-      sendUpdates: 'all',
-      resource: calEventResource,
-    });
+    // Approving an event that is already on the calendar must update that event,
+    // not add a second one. This path inserts directly rather than going through
+    // autoWriteToCalendar, so it had neither the already-written guard nor the
+    // duplicate check — a second click, or an edit-then-approve, produced a
+    // visible duplicate.
+    let calEvent;
+    if (event.calEventId) {
+      try {
+        calEvent = await calendar.events.patch({
+          calendarId: event.gcalId || targetCalId,
+          eventId: event.calEventId,
+          sendUpdates: 'all',
+          resource: calEventResource,
+        });
+      } catch (err) {
+        // The user deleted it from Google Calendar by hand. Our stored id is
+        // stale, so approving should put it back rather than fail.
+        if (err.code !== 404 && err.code !== 410) throw err;
+        event.calEventId = null;
+        calEvent = await calendar.events.insert({
+          calendarId: targetCalId, sendUpdates: 'all', resource: calEventResource,
+        });
+      }
+    } else {
+      const dup = await findExistingOnAnyCalendar(calendar, targetCalId, {
+        title: calEventResource.summary, date, time: time || '',
+      });
+      if (dup?.id) {
+        event.gcalId = dup.calendarId || targetCalId;
+        if (dup.recurringEventId) {
+          // A single instance of a series. Patching it would detach that one
+          // occurrence and leave the rest untouched, which is worse than
+          // leaving it alone — adopt it and change nothing.
+          calEvent = { data: { id: dup.recurringEventId } };
+        } else {
+          calEvent = await calendar.events.patch({
+            calendarId: event.gcalId,
+            eventId: dup.id,
+            sendUpdates: 'all',
+            resource: calEventResource,
+          });
+        }
+      } else {
+        calEvent = await calendar.events.insert({
+          calendarId: targetCalId,
+          sendUpdates: 'all',
+          resource: calEventResource,
+        });
+      }
+    }
     event.status = 'added';
     event.reviewed = true; // manually approved events are already reviewed
     event.calEventId = calEvent.data.id;
-    event.gcalId = targetCalId;
+    // Keep the calendar we actually wrote to. Overwriting it with the target
+    // would strand an event we adopted or patched on a different calendar,
+    // making later undo and update calls fail.
+    event.gcalId = event.gcalId || targetCalId;
     event.approved_at = new Date().toISOString();
     event.title = title || event.title;
     event.date = date;
@@ -2027,9 +2075,13 @@ async function fetchExistingCalendarEvents(calendarApi, calendarId, dates) {
       timeMax: timeMax.toISOString(),
       singleEvents: true,          // expand recurrence into instances so a
       maxResults: 2500,            // weekly series matches on each date
-      fields: 'items(summary,start,end)',
+      // id/recurringEventId let a caller that finds a duplicate act on the
+      // existing event (update it) rather than only knowing one exists.
+      fields: 'items(id,summary,start,end,recurringEventId)',
     });
     return (resp.data.items || []).map(it => ({
+      id: it.id,
+      recurringEventId: it.recurringEventId || null,
       title: it.summary || '',
       date: it.start?.date || (it.start?.dateTime || '').slice(0, 10),
       time: it.start?.dateTime ? it.start.dateTime.slice(11, 16) : '',

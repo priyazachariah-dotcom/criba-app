@@ -233,6 +233,7 @@ For each extracted item return a JSON object with:
 - end_date (YYYY-MM-DD, only if multi-day, else null)
 - start_time (HH:MM 24hr format, null if all-day)
 - end_time (HH:MM 24hr format, null if all-day or unknown — default 1 hour after start if timed)
+- timezone (IANA name, e.g. "America/New_York", ONLY when the content explicitly states a timezone that the time is given in — "10pm ET", "3pm Eastern", "14:00 GMT". Report the time exactly as written along with the zone it was written in; do NOT convert it yourself. Use null when no timezone is stated, which is the normal case for local school and club events.)
 - location (full address if available, venue name if not, null if none)
 - is_all_day (boolean)
 - attendees (array of family member name strings tagged to this event, empty array if none specified)
@@ -307,8 +308,68 @@ function shiftMidnightToMorning(ev) {
   return ev;
 }
 
+const LOCAL_TZ = 'America/Los_Angeles';
+
+// What UTC instant is "2026-08-18 22:00" in the given timezone?
+//
+// Intl can format an instant into a zone but not parse a wall-clock time out of
+// one, so: treat the wall clock as if it were UTC, see how that instant renders
+// in the target zone, and subtract the difference. Handles DST correctly because
+// the offset is measured at the actual date rather than assumed.
+function zonedWallClockToUtc(dateStr, timeStr, tz) {
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const [h, mi] = timeStr.split(':').map(Number);
+  const naive = Date.UTC(y, mo - 1, d, h, mi);
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }).formatToParts(new Date(naive)).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+  const asSeen = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour % 24, +parts.minute);
+  return naive - (asSeen - naive);
+}
+
+// Rewrite a date/time stated in another timezone into local wall-clock time.
+// A 10pm Eastern webinar has to land at 7pm on a Pacific calendar; storing 22:00
+// and labelling it Pacific — which is what we did — is simply the wrong time.
+function convertToLocalTime(date, time, fromTz) {
+  if (!date || !time || !fromTz || fromTz === LOCAL_TZ) return { date, time };
+  try {
+    const instant = new Date(zonedWallClockToUtc(date, time, fromTz));
+    if (isNaN(instant)) return { date, time };
+    const p = new Intl.DateTimeFormat('en-CA', {
+      timeZone: LOCAL_TZ, hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    }).formatToParts(instant).reduce((acc, x) => (acc[x.type] = x.value, acc), {});
+    return { date: `${p.year}-${p.month}-${p.day}`, time: `${String(+p.hour % 24).padStart(2, '0')}:${p.minute}` };
+  } catch {
+    // An unrecognised timezone name must not lose the event.
+    return { date, time };
+  }
+}
+
+// Applies the conversion across whichever field names the caller uses (Gmail
+// extraction emits start_time, the PDF path emits time) and returns a note
+// describing what changed, or null if nothing did.
+function normalizeEventTimezone(ev) {
+  const tz = ev.timezone || ev.time_zone || null;
+  if (!tz || tz === LOCAL_TZ || !ev.date) return null;
+  const startKey = ev.start_time !== undefined && ev.start_time !== null ? 'start_time' : 'time';
+  const startVal = ev[startKey];
+  if (!startVal) return null;
+  const start = convertToLocalTime(ev.date, startVal, tz);
+  if (start.time === startVal && start.date === ev.date) return null;
+  if (ev.end_time) {
+    const end = convertToLocalTime(ev.end_date || ev.date, ev.end_time, tz);
+    ev.end_time = end.time;
+    if (ev.end_date) ev.end_date = end.date;
+  }
+  ev[startKey] = start.time;
+  ev.date = start.date;
+  return `Stated as ${startVal} ${tz.split('/').pop().replace(/_/g, ' ')} time.`;
+}
+
 function buildCalendarTimes(date, time, endDate, endTime) {
-  const tz = 'America/Los_Angeles';
+  const tz = LOCAL_TZ;
   if (time === '00:00' || time === '0:00') time = MIDNIGHT_REMINDER_TIME;
   if (time && time.trim() !== '') {
     const start = { dateTime: `${date}T${time}:00`, timeZone: tz };
@@ -2290,6 +2351,10 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           continue;
         }
         shiftMidnightToMorning(ev);
+        // Convert before anything else reads the time: dedup, conflict checks
+        // and the calendar write all have to agree on when this actually is.
+        const tzNote = normalizeEventTimezone(ev);
+        if (tzNote) ev.notes = [ev.notes, tzNote].filter(Boolean).join(' ');
 
         const intent = ev.intent || 'new_event';
 
@@ -3546,6 +3611,8 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // buildCalendarTimes so the stored record and the UI agree with the
           // calendar rather than showing "12:00 AM".
           shiftMidnightToMorning(ev);
+          const bfTzNote = normalizeEventTimezone(ev);
+          if (bfTzNote) ev.notes = [ev.notes, bfTzNote].filter(Boolean).join(' ');
 
           const intent = ev.intent || 'new_event';
           if (intent === 'cancellation' || intent === 'reschedule') {

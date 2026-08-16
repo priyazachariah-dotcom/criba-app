@@ -2673,20 +2673,14 @@ app.get('/api/debug/duplicates', requireAuth, async (req, res) => {
 // a comparison no single-calendar query can make.
 //
 // Changes nothing. Reports clusters so we can decide what to delete.
-app.get('/api/debug/calendar-duplicates', requireAuth, async (req, res) => {
-  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 120, 1), 400);
-  const auth = await getUserOAuthClient(req.user);
+async function scanCalendarDuplicates(user, days) {
+  const auth = await getUserOAuthClient(user);
   const calendar = google.calendar({ version: 'v3', auth });
   const timeMin = new Date();
   const timeMax = new Date(Date.now() + days * 86400000);
 
-  let calendars = [];
-  try {
-    const list = await calendar.calendarList.list({ maxResults: 250, fields: 'items(id,summary)' });
-    calendars = (list.data.items || []).map(c => ({ id: c.id, name: c.summary || c.id }));
-  } catch (err) {
-    return res.status(502).json({ error: 'calendarList.list failed', detail: err.message });
-  }
+  const list = await calendar.calendarList.list({ maxResults: 250, fields: 'items(id,summary)' });
+  const calendars = (list.data.items || []).map(c => ({ id: c.id, name: c.summary || c.id }));
 
   const all = [];
   const calendarErrors = [];
@@ -2698,14 +2692,17 @@ app.get('/api/debug/calendar-duplicates', requireAuth, async (req, res) => {
         timeMax: timeMax.toISOString(),
         singleEvents: true,   // expand recurring series into dated instances
         maxResults: 2500,
-        fields: 'items(id,summary,description,start,end,recurringEventId)',
+        fields: 'items(id,summary,description,start,end,recurringEventId,attendees(email))',
       });
       for (const it of resp.data.items || []) {
         const date = it.start?.date || (it.start?.dateTime || '').slice(0, 10);
         if (!date) continue;
         const desc = it.description || '';
+        // Used to break ties: between two Criba copies of the same practice,
+        // the one carrying guests is the one whose invite people actually got.
+        const guests = (it.attendees || []).length;
         all.push({
-          calendarId: cal.id, calendarName: cal.name,
+          calendarId: cal.id, calendarName: cal.name, guests,
           eventId: it.id, seriesId: it.recurringEventId || null,
           title: it.summary || '', date,
           time: it.start?.dateTime ? it.start.dateTime.slice(11, 16) : '',
@@ -2760,8 +2757,9 @@ app.get('/api/debug/calendar-duplicates', requireAuth, async (req, res) => {
             : 'external-only',
         crossCalendar: new Set(group.map(g => g.calendarId)).size > 1,
         copies: group.map(g => ({
-          calendar: g.calendarName, title: g.title, time: g.time || 'all-day',
-          eventId: g.eventId, seriesId: g.seriesId,
+          calendar: g.calendarName, calendarId: g.calendarId,
+          title: g.title, time: g.time || 'all-day',
+          eventId: g.eventId, seriesId: g.seriesId, guests: g.guests,
           fromCriba: g.fromCriba, legacyMarker: g.legacyMarker,
         })),
       });
@@ -2780,20 +2778,132 @@ app.get('/api/debug/calendar-duplicates', requireAuth, async (req, res) => {
     s.lastDate = c.date;
   }
 
-  res.json({
-    windowDays: days,
-    calendarsScanned: calendars.map(c => c.name),
-    calendarErrors,
-    totalEventsScanned: all.length,
-    duplicateInstances: clusters.length,
-    distinctProblems: seriesPairs.size,
-    problems: [...seriesPairs.values()].map(p => ({
-      title: p.title, kind: p.kind, crossCalendar: p.crossCalendar,
-      occurrences: p.occurrences, firstDate: p.firstDate, lastDate: p.lastDate,
-      copies: p.copies,
-    })),
-    instances: clusters.slice(0, 60),
+  const problems = [...seriesPairs.values()].map(p => ({
+    title: p.title, kind: p.kind, crossCalendar: p.crossCalendar,
+    occurrences: p.occurrences, firstDate: p.firstDate, lastDate: p.lastDate,
+    copies: p.copies,
+  }));
+
+  return { calendars, calendarErrors, all, clusters, problems, auth };
+}
+
+app.get('/api/debug/calendar-duplicates', requireAuth, async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 120, 1), 400);
+  try {
+    const r = await scanCalendarDuplicates(req.user, days);
+    res.json({
+      windowDays: days,
+      calendarsScanned: r.calendars.map(c => c.name),
+      calendarErrors: r.calendarErrors,
+      totalEventsScanned: r.all.length,
+      duplicateInstances: r.clusters.length,
+      distinctProblems: r.problems.length,
+      problems: r.problems,
+      instances: r.clusters.slice(0, 60),
+    });
+  } catch (err) {
+    res.status(502).json({ error: 'calendar scan failed', detail: err.message });
+  }
+});
+
+// Which copy in a cluster should be deleted?
+//
+// Deliberately narrow. Only clusters where Criba wrote BOTH copies are
+// eligible: those are unambiguously our bug, and both copies are ours to
+// remove. A Criba copy colliding with a club feed is NOT touched here —
+// deciding which of those to keep is the user's call, not a heuristic's.
+//
+// Within an eligible cluster we keep exactly one copy and delete the rest,
+// preferring to keep the one with guests (its invite already went out) and,
+// failing that, the one without the legacy "— recurring:" description, which
+// marks the older buggy write.
+function chooseDuplicatesToDelete(problem) {
+  if (problem.kind !== 'criba-wrote-twice') return [];
+  const criba = problem.copies.filter(c => c.fromCriba);
+  if (criba.length < 2) return [];
+  const ranked = [...criba].sort((a, b) => {
+    if (a.guests !== b.guests) return b.guests - a.guests;       // guests first
+    if (a.legacyMarker !== b.legacyMarker) return a.legacyMarker ? 1 : -1;  // clean description first
+    return String(a.eventId).localeCompare(String(b.eventId));   // stable
   });
+  return ranked.slice(1);
+}
+
+// POST /api/calendar/cleanup-duplicates — dry run unless { confirm: "DELETE" }.
+//
+// Deletes the whole recurring series (seriesId) rather than single instances,
+// since a duplicated weekly practice is one wrong series, not sixteen wrong
+// events. Never touches anything Criba did not write.
+app.post('/api/calendar/cleanup-duplicates', requireAuth, async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.body?.days, 10) || 180, 1), 400);
+  const confirmed = req.body?.confirm === 'DELETE';
+  let scan;
+  try {
+    scan = await scanCalendarDuplicates(req.user, days);
+  } catch (err) {
+    return res.status(502).json({ error: 'calendar scan failed', detail: err.message });
+  }
+
+  // Collapse to unique targets — one recurring series produces the same
+  // delete target on every one of its dates.
+  const targets = new Map();
+  const skipped = [];
+  for (const p of scan.problems) {
+    const doomed = chooseDuplicatesToDelete(p);
+    if (!doomed.length) {
+      skipped.push({ title: p.title, kind: p.kind, reason: p.kind === 'criba-vs-external'
+        ? 'one copy came from a subscribed feed — needs your decision'
+        : 'no Criba-written duplicate pair' });
+      continue;
+    }
+    for (const d of doomed) {
+      const id = d.seriesId || d.eventId;
+      if (targets.has(id)) continue;
+      targets.set(id, {
+        title: d.title, calendar: d.calendar, calendarId: d.calendarId,
+        deleteId: id, isSeries: !!d.seriesId, guests: d.guests,
+        legacyMarker: d.legacyMarker, occurrences: p.occurrences,
+        keeping: p.copies.find(c => c.fromCriba && (c.seriesId || c.eventId) !== id)?.eventId || null,
+      });
+    }
+  }
+
+  const plan = [...targets.values()];
+  if (!confirmed) {
+    return res.json({ dryRun: true, wouldDelete: plan.length, plan, skipped,
+      note: 'Nothing was deleted. Re-send with {"confirm":"DELETE"} to apply.' });
+  }
+
+  const calendar = google.calendar({ version: 'v3', auth: scan.auth });
+  const deleted = [], failed = [];
+  for (const t of plan) {
+    try {
+      // sendUpdates:'none' — these are Criba's own duplicate copies; the
+      // people on them should not get a cancellation email for an event that
+      // still exists on their calendar via the copy we are keeping.
+      await calendar.events.delete({ calendarId: t.calendarId, eventId: t.deleteId, sendUpdates: 'none' });
+      deleted.push(t);
+    } catch (err) {
+      // 410 means it is already gone, which is the outcome we wanted.
+      if (err.code === 410 || err.code === 404) deleted.push({ ...t, alreadyGone: true });
+      else failed.push({ ...t, error: err.message });
+    }
+  }
+  // Keep the store honest: any record pointing at an event we just removed
+  // would otherwise show in Edit Calendar Events as if it were still live.
+  const goneIds = new Set(deleted.map(d => d.deleteId));
+  const store = getUserEvents(req.user.email);
+  let storeCleared = 0;
+  for (const ev of await store.values()) {
+    if (ev.calEventId && goneIds.has(ev.calEventId)) {
+      ev.status = 'dismissed';
+      ev.calEventId = null;
+      await store.set(ev.id, ev);
+      storeCleared++;
+    }
+  }
+
+  res.json({ dryRun: false, deleted: deleted.length, failed: failed.length, storeCleared, deletedItems: deleted, failed, skipped });
 });
 
 // DELETE /api/scan/trace — clear the trace log for the logged-in user

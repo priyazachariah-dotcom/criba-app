@@ -103,9 +103,23 @@ async function resolveEventColorByNames(email, nameStrings) {
   return null;
 }
 
-// Shared helper: build GCal resource and insert event. Returns calEventId string.
+// Shared helper: build GCal resource and insert event. Returns calEventId string,
+// or null when the event is already on the calendar and was therefore not written
+// (in which case ev.duplicate_of is set to the event we found).
 // Used by all auto-write paths (Gmail, backfill, group-approve, confirm-categories).
-async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId) {
+//
+// The duplicate check lives here rather than in each caller because this is the
+// single chokepoint every write passes through. Putting it in one caller — which
+// is what we had — left the live Gmail path writing blind.
+async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts = {}) {
+  if (!opts.skipDuplicateCheck) {
+    const dup = await findExistingOnAnyCalendar(calendarApi, targetCalId, ev);
+    if (dup) {
+      ev.duplicate_of = dup;
+      console.log(`[calendar-dedup] SKIP "${ev.title}" on ${ev.date} — already on "${dup.calendarName}" as "${dup.title}"`);
+      return null;
+    }
+  }
   const { start, end } = buildCalendarTimes(ev.date, ev.time || '', ev.end_date || '', ev.end_time || '');
   // Only append the suffix when there is actually a note to append. The backfill
   // always passes recurring_note: null, which produced the dangling
@@ -1126,10 +1140,19 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
       if (selectedCategories.includes(ev.category)) {
         try {
           const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId);
-          ev.status = 'added'; ev.reviewed = false;
-          ev.calEventId = calEventId; ev.gcalId = targetCalId;
-          ev.approved_at = new Date().toISOString();
-          addedCount++;
+          if (!calEventId) {
+            // Already on a calendar — nothing written, so don't claim it was.
+            ev.status = 'duplicate'; ev.reviewed = false;
+            ev.duplicate_of_calendar = true;
+            ev.conflict_note = `Already on your calendar as "${ev.duplicate_of?.title || ev.title}" — not added again`;
+            ev.calEventId = null; ev.gcalId = null;
+          } else {
+            ev.status = 'added'; ev.reviewed = false;
+            ev.calEventId = calEventId; ev.gcalId = targetCalId;
+            ev.approved_at = new Date().toISOString();
+            addedCount++;
+          }
+          delete ev.duplicate_of;
         } catch (err) {
           console.error(`confirm-categories GCal write failed for "${ev.title}":`, err.message);
           ev.status = 'pending'; // fallback if GCal write fails
@@ -1257,6 +1280,16 @@ app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
     try {
       if (!ev.date) throw new Error('Missing date');
       const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId);
+      if (!calEventId) {
+        ev.status = 'duplicate'; ev.reviewed = false;
+        ev.duplicate_of_calendar = true;
+        ev.conflict_note = `Already on your calendar as "${ev.duplicate_of?.title || ev.title}" — not added again`;
+        ev.calEventId = null; ev.gcalId = null;
+        delete ev.duplicate_of;
+        updates.push([id, ev]);
+        continue;
+      }
+      delete ev.duplicate_of;
       ev.status = 'added'; ev.reviewed = false;
       ev.calEventId = calEventId; ev.gcalId = targetCalId;
       ev.approved_at = new Date().toISOString();
@@ -1916,6 +1949,62 @@ async function fetchExistingCalendarEvents(calendarApi, calendarId, dates) {
   }
 }
 
+// Which calendars can we see? Checking only the calendar Criba writes to is
+// not enough: a subscribed club or school feed puts its copy of the same
+// practice on its own calendar, and that is the collision users actually see.
+//
+// Cached for a few minutes because one scan writes many events and they all
+// need the same answer. Falls back to the write target alone if the user's
+// session predates the calendarlist scope.
+const _calListCache = new Map();
+async function visibleCalendars(calendarApi, targetCalId) {
+  const key = targetCalId || 'primary';
+  const hit = _calListCache.get(key);
+  if (hit && Date.now() - hit.at < 300000) return hit.cals;
+  let cals = [{ id: key, name: key }];
+  try {
+    const list = await calendarApi.calendarList.list({ maxResults: 250, fields: 'items(id,summary)' });
+    const items = (list.data.items || []).map(c => ({ id: c.id, name: c.summary || c.id }));
+    if (items.length) {
+      cals = items.some(c => c.id === key) ? items : [{ id: key, name: key }, ...items];
+    }
+  } catch (err) {
+    console.error('[calendar-dedup] calendarList.list failed, using target only:', err.message);
+  }
+  _calListCache.set(key, { cals, at: Date.now() });
+  return cals;
+}
+
+// Per-invocation cache of one calendar's events on one date. Without it, a scan
+// writing ten events across eight calendars would make eighty events.list calls.
+const _calDayCache = new Map();
+async function eventsOnDate(calendarApi, calId, date) {
+  const key = `${calId}|${date}`;
+  const hit = _calDayCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.events;
+  const events = await fetchExistingCalendarEvents(calendarApi, calId, [date, date]);
+  _calDayCache.set(key, { events, at: Date.now() });
+  return events;
+}
+
+// Is this event already on ANY calendar the user can see?
+async function findExistingOnAnyCalendar(calendarApi, targetCalId, ev) {
+  if (!ev?.date || !ev?.title) return null;
+  try {
+    const cals = await visibleCalendars(calendarApi, targetCalId);
+    for (const cal of cals) {
+      const existing = await eventsOnDate(calendarApi, cal.id, ev.date);
+      const dup = findCalendarDuplicate(existing, ev.title, ev.date, ev.time || '');
+      if (dup) return { ...dup, calendarId: cal.id, calendarName: cal.name };
+    }
+  } catch (err) {
+    // A failed lookup must never block a write. Missing an event is worse than
+    // occasionally writing a duplicate we could have caught.
+    console.error('[calendar-dedup] lookup failed, writing anyway:', err.message);
+  }
+  return null;
+}
+
 // Do two event titles refer to the same thing?
 //
 // Exact matching is useless here: the club feed says "Burlingame SC U9B Pre-NPL
@@ -2212,6 +2301,10 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         } catch (calErr) {
           console.error(`[gmail-process] GCal write failed for "${ev.title}":`, calErr.message);
         }
+        // Not written because it is already on one of the user's calendars.
+        // Recorded as 'duplicate' rather than 'pending' so the review queue says
+        // "already on your calendar" instead of looking like a failed write.
+        const calDup = evObj.duplicate_of || null;
         const evId = randomUUID();
         await eventsStore.set(evId, {
           id: evId,
@@ -2224,7 +2317,10 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           is_all_day: !!ev.is_all_day,
           attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
           notes: combinedNotes,
-          conflict_note: conflictNote || null,
+          duplicate_of_calendar: !!calDup,
+          conflict_note: calDup
+            ? `Already on your calendar as "${calDup.title}"${calDup.calendarName && calDup.calendarId !== targetCalId ? ` (${calDup.calendarName})` : ''} — not added again`
+            : conflictNote || null,
           source_type: ev.source_type || null,
           recurrence_rule: ev.recurrence || null,
           source: 'gmail',
@@ -2232,7 +2328,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           sender_name: senderName,
           sender_email: senderEmail,
           subject,
-          status: calEventId ? 'added' : 'pending',
+          status: calEventId ? 'added' : (calDup ? 'duplicate' : 'pending'),
           reviewed: false,
           calEventId: calEventId || null,
           gcalId: calEventId ? targetCalId : null,
@@ -2240,7 +2336,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
           type: ev.is_all_day ? 'other' : 'timed',
           created_at: new Date().toISOString(),
         });
-        console.log(`[gmail-process] STORED event "${ev.title}" on ${ev.date} for ${email} status=${calEventId ? 'added' : 'pending'} (id=${evId})`);
+        console.log(`[gmail-process] STORED event "${ev.title}" on ${ev.date} for ${email} status=${calEventId ? 'added' : (calDup ? 'duplicate' : 'pending')} (id=${evId})`);
       }
     } catch (err) {
       console.error(`[gmail-process] ERROR messageId=${messageId} email=${email}:`, err.message, err.stack?.split('\n')[1]);
@@ -3378,19 +3474,28 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
           const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : []);
           let calEventId = null;
+          // The check above only saw the target calendar; autoWriteToCalendar
+          // additionally checks every other calendar the user subscribes to and
+          // returns null (setting duplicate_of) instead of writing a second copy.
+          const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: null, attendees: [] };
           try {
-            calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: null, attendees: [] }, bfColorId);
+            calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId);
           } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
+          const otherCalDup = bfWriteObj.duplicate_of || null;
           const evId = randomUUID();
           const stored = {
             id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
             time: startTime, end_time: endTime, location: ev.location || '',
             is_all_day: !!ev.is_all_day, attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
-            notes: combinedNotes, conflict_note: conflictNote || null,
+            notes: combinedNotes,
+            conflict_note: otherCalDup
+              ? `Already on your calendar as "${otherCalDup.title}"${otherCalDup.calendarName && otherCalDup.calendarId !== bfCalId ? ` (${otherCalDup.calendarName})` : ''} — not added again`
+              : conflictNote || null,
+            duplicate_of_calendar: !!otherCalDup,
             source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null,
             source: 'gmail', gmail_message_id: messageId,
             sender_name: senderName, sender_email: senderEmail, subject,
-            status: calEventId ? 'added' : 'pending', reviewed: false,
+            status: calEventId ? 'added' : (otherCalDup ? 'duplicate' : 'pending'), reviewed: false,
             calEventId: calEventId || null, gcalId: calEventId ? bfCalId : null,
             approved_at: calEventId ? new Date().toISOString() : null,
             type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),

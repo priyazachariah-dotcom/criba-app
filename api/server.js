@@ -258,8 +258,12 @@ Return a JSON array only. No other text. If nothing calendar-worthy is found, re
 function normalizeExtractedEvent(ev) {
   const validTypes = ['break', 'holiday', 'timed', 'minimum_day', 'recurring', 'other'];
   const type = validTypes.includes(ev.type) ? ev.type : 'other';
-  const time = ev.time || '';
-  let endTime = ev.end_time || '';
+  // A break or a public holiday is all-day by definition. When the model
+  // attaches school hours to one anyway, honouring them turns "Christmas Break"
+  // into a 9am-2:50pm appointment on a single day.
+  const allDayType = type === 'break' || type === 'holiday';
+  const time = allDayType ? '' : (ev.time || '');
+  let endTime = allDayType ? '' : (ev.end_time || '');
   if (time && !endTime && (type === 'timed' || type === 'minimum_day')) {
     const [h, m] = time.split(':').map(Number);
     const endHour = h + 1 > 23 ? 23 : h + 1;
@@ -268,7 +272,9 @@ function normalizeExtractedEvent(ev) {
   return {
     type,
     date: ev.date,
-    end_date: type === 'break' ? (ev.end_date || ev.date) : '',
+    // Multi-day spans are not exclusive to breaks — a four-day exam week is
+    // one all-day span too. Keep an end date whenever there is no clock time.
+    end_date: type === 'break' ? (ev.end_date || ev.date) : (!time && ev.end_date ? ev.end_date : ''),
     time,
     end_time: (type === 'timed' || type === 'minimum_day') ? endTime : '',
     location: ev.location || '',
@@ -277,6 +283,61 @@ function normalizeExtractedEvent(ev) {
     source_type: ev.source_type || null,
     recurrence_rule: ev.recurrence || null,
   };
+}
+
+// The prompt says a break is ONE event spanning first day to last, but the
+// model routinely ignores it and emits one event per day — "Christmas Break"
+// arrived as 13 separate records. Collapse runs of the same title on
+// consecutive dates back into a single event with an end_date.
+//
+// Only same-titled events are merged, and only when the dates are contiguous,
+// so two genuinely separate occurrences of the same thing stay separate.
+function collapseMultiDayRuns(events) {
+  const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+  const key = ev => String(ev.title || '').trim().toLowerCase();
+  // Only span-like entries are candidates. A timed event repeating on
+  // consecutive days is a real series, not one long event.
+  const mergeable = ev => (ev.type === 'break' || ev.type === 'holiday' || ev.type === 'other') && !ev.time && isDate(ev.date);
+
+  // School calendars list only school days, so a break that runs across a
+  // weekend arrives as Dec 21-25 and Dec 28-Jan 1 with a hole in between.
+  // Treat a gap made up purely of Saturdays and Sundays as contiguous.
+  const bridges = (from, to) => {
+    let cursor = addDaysToDateStr(from, 1);
+    for (let i = 0; i < 4 && cursor <= to; i++) {
+      if (cursor === to) return true;
+      const day = new Date(cursor + 'T00:00:00').getDay();
+      if (day !== 0 && day !== 6) return false;
+      cursor = addDaysToDateStr(cursor, 1);
+    }
+    return false;
+  };
+
+  const groups = new Map();
+  const out = [];
+  for (const ev of events) {
+    if (!mergeable(ev)) { out.push(ev); continue; }
+    if (!groups.has(key(ev))) groups.set(key(ev), []);
+    groups.get(key(ev)).push(ev);
+  }
+
+  for (const group of groups.values()) {
+    group.sort((a, b) => a.date.localeCompare(b.date));
+    let run = null;
+    const flush = () => { if (run) out.push(run.ev); run = null; };
+    for (const ev of group) {
+      const last = run ? (run.ev.end_date || run.lastDate) : null;
+      if (run && (ev.date === last || bridges(last, ev.date))) {
+        run.lastDate = ev.date;
+        run.ev.end_date = ev.date;
+        continue;
+      }
+      flush();
+      run = { ev: { ...ev, end_date: ev.end_date || ev.date }, lastDate: ev.end_date || ev.date };
+    }
+    flush();
+  }
+  return out;
 }
 
 function addDaysToDateStr(dateStr, days) {
@@ -1222,6 +1283,7 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
       flatEvents = Array.isArray(raw) ? raw : [];
     } catch { return res.status(500).json({ error: 'AI could not parse this PDF.' }); }
     if (!flatEvents.length) return res.status(400).json({ error: 'No events found in this PDF' });
+    flatEvents = collapseMultiDayRuns(flatEvents);
 
     // Group flat events into categories by source_type for the category-selection screen
     const catMap = new Map();

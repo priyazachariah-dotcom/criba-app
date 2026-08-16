@@ -90,17 +90,45 @@ async function resolveEventColor(email, preferredMemberId, calSrc) {
   return member?.eventColor || member?.color || null;
 }
 
-// Resolve event color by matching name strings (from Claude attendees) to family records
-async function resolveEventColorByNames(email, nameStrings) {
-  if (!nameStrings?.length) return null;
-  const familyStore = getUserFamily(email);
-  const members = await familyStore.values();
-  const norm = s => (s || '').toLowerCase().trim();
-  for (const name of nameStrings) {
-    const match = members.find(m => norm(m.name) === norm(name) || norm(name).includes(norm(m.name)));
-    if (match) return match.eventColor || match.color || null;
+// Which family member does this event belong to?
+//
+// Matched on whole words. The old test was `attendeeName.includes(memberName)`,
+// which meant a member called "Al" matched a sender called "Alison Parker" and
+// coloured the event for the wrong person.
+//
+// Claude's attendee tagging is the primary signal, but plenty of events name the
+// child only in the title ("Aarav's soccer practice"), so `text` — title,
+// location and notes — is checked as a fallback.
+function matchFamilyMember(members, nameStrings, text = '') {
+  if (!members?.length) return null;
+  const norm = s => String(s || '').toLowerCase().trim();
+  const hasWord = (haystack, needle) => {
+    if (!needle) return false;
+    const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, 'i').test(haystack);
+  };
+  for (const name of (nameStrings || [])) {
+    const n = norm(name);
+    if (!n) continue;
+    const match = members.find(m => norm(m.name) === n || hasWord(n, norm(m.name)));
+    if (match) return match;
+  }
+  const hay = norm(text);
+  if (hay) {
+    // First name only, so "Aarav's" and "Aarav Zachariah" both hit.
+    for (const m of members) {
+      const first = norm(m.name).split(/\s+/)[0];
+      if (first && first.length > 2 && hasWord(hay, first)) return m;
+    }
   }
   return null;
+}
+
+// Resolve event color by matching name strings (from Claude attendees) to family records
+async function resolveEventColorByNames(email, nameStrings, text = '') {
+  const members = await getUserFamily(email).values();
+  const match = matchFamilyMember(members, nameStrings, text);
+  return match?.eventColor || match?.color || null;
 }
 
 // Shared helper: build GCal resource and insert event. Returns calEventId string,
@@ -1716,7 +1744,7 @@ async function fetchEmailImages(payload, gmail, messageId) {
 
 // Call Claude to extract calendar events from a single email.
 // When images are supplied (image-heavy emails / flyers), uses multimodal API.
-async function extractGmailEvents(body, senderName, senderEmail, subject, images = [], dateSent = '') {
+async function extractGmailEvents(body, senderName, senderEmail, subject, images = [], dateSent = '', familyNames = []) {
   const textContent = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, 8000);
 
   // Anchor relative dates. Without this the model sees "Monday" or "August 12"
@@ -1733,9 +1761,17 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
     'Resolve every relative date ("Monday", "this Friday", "next week", "the 12th") against the email\'s sent date. Always output a full YYYY-MM-DD with an explicit year — never omit the year or guess one.',
   ].filter(Boolean).join(' ');
 
+  // The prompt asks for "family member name strings", but until now it never
+  // said who the family are — so the model had nothing to tag against and
+  // returned an empty list, which is why events all came out the default colour.
+  const rosterContext = familyNames.length
+    ? `This person's family members are: ${familyNames.join(', ')}. For each event, put into "attendees" the names of the family members it concerns — the child whose team, class or activity it is. Infer from the team name, teacher, grade or context even when the name is not written out. Use the exact spelling listed above. Leave the array empty if the event concerns the whole family or you genuinely cannot tell.`
+    : '';
+
+  const context = [dateContext, rosterContext].filter(Boolean).join('\n\n');
   const promptText = images.length > 0
-    ? `${FULL_EXTRACTION_PROMPT}\n\n${dateContext}\n\nEmail text (may be minimal — event details may be in the attached image(s)):\n${textContent}`
-    : `${FULL_EXTRACTION_PROMPT}\n\n${dateContext}\n\nEmail:\n${textContent}`;
+    ? `${FULL_EXTRACTION_PROMPT}\n\n${context}\n\nEmail text (may be minimal — event details may be in the attached image(s)):\n${textContent}`
+    : `${FULL_EXTRACTION_PROMPT}\n\n${context}\n\nEmail:\n${textContent}`;
 
   const messageContent = images.length > 0
     ? [
@@ -1835,14 +1871,10 @@ function findConflictIn(all, date, startTime, endTime) {
   return null;
 }
 
-function resolveColorIn(members, nameStrings) {
-  if (!nameStrings?.length) return null;
-  const norm = s => (s || '').toLowerCase().trim();
-  for (const name of nameStrings) {
-    const match = members.find(m => norm(m.name) === norm(name) || norm(name).includes(norm(m.name)));
-    if (match) return match.eventColor || match.color || null;
-  }
-  return null;
+// Same rules as resolveEventColorByNames, against an already-loaded roster.
+function resolveColorIn(members, nameStrings, text = '') {
+  const match = matchFamilyMember(members, nameStrings, text);
+  return match?.eventColor || match?.color || null;
 }
 
 async function isDuplicateEvent(eventsStore, title, date, opts = {}) {
@@ -2144,6 +2176,10 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
   const gmail = google.gmail({ version: 'v1', auth });
   const calendarApi = google.calendar({ version: 'v3', auth });
   const targetCalId = await resolveTargetCalendar(email);
+  // Needed by the extraction prompt so Claude can tag which child an event is
+  // for — that tag is what drives the per-person event colour.
+  const gpFamily = await getUserFamily(email).values();
+  const gpFamilyNames = gpFamily.map(m => m.name).filter(Boolean);
 
   // Always advance historyId first so we don't reprocess on retry
   watchData.historyId = newHistoryId || startHistoryId;
@@ -2235,7 +2271,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         : [];
 
       console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude subject="${subject}" images=${images.length}`);
-      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images, dateSent);
+      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images, dateSent, gpFamilyNames);
       console.log(`[gmail-process] EXTRACT msg=${messageId} Claude returned ${extracted.length} event(s)`);
 
       // Mark as processed AFTER Claude returns successfully — mirroring the backfill fix.
@@ -2292,7 +2328,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
 
         // Auto-write to calendar immediately
-        const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : []);
+        const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
         const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: ev.recurring_note || null, attendees: [] };
         let calEventId = null;
         try {
@@ -3377,7 +3413,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     const results = await Promise.allSettled(wave.map(async (c) => {
       const images = c.imageParts.length > 0 ? await fetchEmailImages(c.payload, gmail, c.messageId) : [];
       const t0 = Date.now();
-      const extracted = await extractGmailEvents(c.body, c.senderName, c.senderEmail, c.subject, images, c.dateSent);
+      const extracted = await extractGmailEvents(c.body, c.senderName, c.senderEmail, c.subject, images, c.dateSent, familyMembers.map(m => m.name).filter(Boolean));
       return { extracted, claudeMs: Date.now() - t0, imageCount: images.length };
     }));
     console.log(`[backfill] wave of ${wave.length} finished in ${Date.now() - waveStart}ms elapsed=${Date.now() - startedAt}`);
@@ -3472,7 +3508,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime)
             || findCalendarConflict(existingCalEvents, ev.date, startTime, endTime);
           const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
-          const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : []);
+          const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
           let calEventId = null;
           // The check above only saw the target calendar; autoWriteToCalendar
           // additionally checks every other calendar the user subscribes to and

@@ -536,6 +536,9 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
     if (e.status === 'pending_cancellation' || e.status === 'pending_reschedule') return true;
     // Post-write review: 'added' events not yet reviewed and not yet past
     if ((e.status === 'added' || e.status === 'pending') && !e.reviewed && !isPast(e)) return true;
+    // Found on the calendar already and deliberately not written. Shown so the
+    // user can see Criba noticed it rather than silently dropping it.
+    if (e.status === 'duplicate' && !e.reviewed && !isPast(e)) return true;
     return false;
   }).sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
   res.json(pending);
@@ -1864,6 +1867,123 @@ function timeToMinutes(t) {
   return h * 60 + (m || 0);
 }
 
+// ── Existing Google Calendar awareness ─────────────────────────────────────
+//
+// Criba used to reason only about events it had written itself, so it could not
+// see anything already on the calendar — most importantly subscribed feeds like
+// a club's published iCal. The club publishes the practice, Criba reads the
+// same practice out of the coach's email, and the user gets two identical bars.
+// Nothing in Criba's own store looked duplicated, because only one copy was
+// ever ours.
+//
+// One list call covers a whole scan: fetch the date window once, match in
+// memory. Per-event API calls would not fit the 60s budget.
+async function fetchExistingCalendarEvents(calendarApi, calendarId, dates) {
+  const valid = dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  if (!valid.length) return [];
+  const timeMin = new Date(`${valid[0]}T00:00:00Z`);
+  const timeMax = new Date(`${valid[valid.length - 1]}T23:59:59Z`);
+  // A window wider than a couple of months means something is wrong with the
+  // extracted dates; don't pull the user's entire year in that case.
+  const spanDays = (timeMax - timeMin) / 86400000;
+  if (spanDays > 120) return [];
+  try {
+    const resp = await calendarApi.events.list({
+      calendarId: calendarId || 'primary',
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      singleEvents: true,          // expand recurrence into instances so a
+      maxResults: 2500,            // weekly series matches on each date
+      fields: 'items(summary,start,end)',
+    });
+    return (resp.data.items || []).map(it => ({
+      title: it.summary || '',
+      date: it.start?.date || (it.start?.dateTime || '').slice(0, 10),
+      time: it.start?.dateTime ? it.start.dateTime.slice(11, 16) : '',
+      end_time: it.end?.dateTime ? it.end.dateTime.slice(11, 16) : '',
+      is_all_day: !!it.start?.date,
+    })).filter(e => e.date);
+  } catch (err) {
+    // Never let this break a scan. Failing to read the calendar should mean
+    // "no extra information", not "no events written".
+    console.error('[calendar-scan] events.list failed:', err.message);
+    return [];
+  }
+}
+
+// Do two event titles refer to the same thing?
+//
+// Exact matching is useless here: the club feed says "Burlingame SC U9B Pre-NPL
+// Practice" and the coach's email yields "Practice: Burlingame SC U9B Pre-NPL
+// (Washington Park)". Compare the significant words instead, and call it a
+// match when one title's words are largely contained in the other's.
+// Only genuine filler words. Words like "practice", "game" and "meeting" are
+// deliberately NOT stripped — they are often the only thing distinguishing
+// "Freshmen Football Practice" from "Freshmen Football Game".
+const TITLE_STOPWORDS = new Set(['the','a','an','at','in','on','of','for','and','to','with','vs','v']);
+function titleTokens(s) {
+  return new Set(
+    String(s || '').toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !TITLE_STOPWORDS.has(w))
+  );
+}
+function titlesLooselyMatch(a, b) {
+  const ta = titleTokens(a), tb = titleTokens(b);
+  // Nothing distinctive left after stripping — fall back to exact comparison
+  // rather than declaring everything a match.
+  if (!ta.size || !tb.size) {
+    return String(a || '').toLowerCase().trim() === String(b || '').toLowerCase().trim();
+  }
+  let shared = 0;
+  for (const w of ta) if (tb.has(w)) shared++;
+  const union = ta.size + tb.size - shared;
+  // Jaccard, not overlap-over-smaller. Dividing by the smaller set called
+  // "Math homework due" and "Science homework due" the same event.
+  if (shared / union >= 0.6) return true;
+  // One title fully inside the other, e.g. "U9B Practice" vs "U9B Practice -
+  // Washington Park". Requires at least two words so a bare "Practice" doesn't
+  // swallow everything that mentions practice.
+  const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  if (small.size < 2) return false;
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
+}
+
+// Is this event already on the calendar, put there by something other than us?
+// Same day, similar title, and either the same start time or one of the two
+// being all-day.
+function findCalendarDuplicate(existing, title, date, time) {
+  for (const ex of existing) {
+    if (ex.date !== date) continue;
+    if (!titlesLooselyMatch(ex.title, title)) continue;
+    if (!time || !ex.time || ex.is_all_day) return ex;
+    if (ex.time === time) return ex;
+    // Within 30 minutes counts as the same fixture described slightly
+    // differently — a 3:00 practice and a 2:45 call time.
+    if (Math.abs(timeToMinutes(ex.time) - timeToMinutes(time)) <= 30) return ex;
+  }
+  return null;
+}
+
+// Overlapping, but not the same event — a genuine scheduling clash worth
+// surfacing rather than suppressing.
+function findCalendarConflict(existing, date, startTime, endTime) {
+  if (!date || !startTime) return null;
+  const newStart = timeToMinutes(startTime);
+  const newEnd = endTime ? timeToMinutes(endTime) : newStart + 60;
+  for (const ex of existing) {
+    if (ex.date !== date || ex.is_all_day || !ex.time) continue;
+    const exStart = timeToMinutes(ex.time);
+    const exEnd = ex.end_time ? timeToMinutes(ex.end_time) : exStart + 60;
+    if (newStart < exEnd && newEnd > exStart) {
+      return `⚠️ Conflict: overlaps "${ex.title}" at ${ex.time.replace(/^0/, '')} already on your calendar`;
+    }
+  }
+  return null;
+}
+
 // Check existing pending/approved events for time overlap on the same date.
 // Returns a conflict note string if a conflict exists, or null if clear.
 // Only checks timed events (is_all_day:false, time set).
@@ -2766,6 +2886,26 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const knownEvents = dryRun ? [] : await eventsStore.values();
   const familyMembers = dryRun ? [] : await getUserFamily(email).values();
   const bfCalId = dryRun ? null : await resolveTargetCalendar(email);
+
+  // What is already on the user's calendar, including subscribed feeds, so we
+  // don't add a second copy of something a club already published.
+  //
+  // Loaded lazily by month and cached: the dates aren't known until extraction
+  // has run, and an email in August routinely mentions events in September. One
+  // list call per month touched, not one per event — anything per-event would
+  // not fit the 60s budget.
+  const calMonthCache = new Map();
+  async function existingCalendarEventsFor(date) {
+    if (dryRun || !date) return [];
+    const month = date.slice(0, 7);
+    if (!calMonthCache.has(month)) {
+      const first = `${month}-01`;
+      const last = `${month}-${new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate()}`;
+      calMonthCache.set(month, await fetchExistingCalendarEvents(bfCalApi, bfCalId, [first, last]));
+    }
+    return calMonthCache.get(month);
+  }
+
   // Messages that passed every filter and are waiting on extraction.
   const candidates = [];
 
@@ -2943,7 +3083,35 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
           if (isDuplicateEventIn(knownEvents, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence })) continue;
           const startTime = ev.start_time || '', endTime = ev.end_time || '';
-          const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime);
+
+          // Already on the calendar from somewhere else — typically a club's
+          // subscribed feed. Record it so the user can see Criba found it and
+          // chose not to add a second copy, but do not write.
+          const existingCalEvents = await existingCalendarEventsFor(ev.date);
+          const calDup = findCalendarDuplicate(existingCalEvents, ev.title, ev.date, startTime);
+          if (calDup) {
+            const dupId = randomUUID();
+            await eventsStore.set(dupId, {
+              id: dupId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
+              time: startTime, end_time: endTime, location: ev.location || '',
+              is_all_day: !!ev.is_all_day, attendees: [],
+              notes: ev.notes || null,
+              conflict_note: `Already on your calendar as "${calDup.title}" — not added again`,
+              duplicate_of_calendar: true,
+              source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null,
+              source: 'gmail', gmail_message_id: messageId,
+              sender_name: senderName, sender_email: senderEmail, subject,
+              status: 'duplicate', reviewed: false, calEventId: null,
+              type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),
+            });
+            knownEvents.push({ title: ev.title, date: ev.date, time: startTime, status: 'duplicate' });
+            continue;
+          }
+
+          // Conflicts against Criba's own events and against everything else on
+          // the calendar are both worth surfacing; prefer whichever we find.
+          const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime)
+            || findCalendarConflict(existingCalEvents, ev.date, startTime, endTime);
           const combinedNotes = [ev.notes, conflictNote].filter(Boolean).join('\n') || null;
           const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : []);
           let calEventId = null;

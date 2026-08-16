@@ -1715,25 +1715,30 @@ function renderPostWriteReviewCard(ev) {
     ev.time ? formatTime(ev.time) + (ev.end_time ? ` – ${formatTime(ev.end_time)}` : '') : '',
     ev.location ? ev.location : '',
   ].filter(Boolean).join(' · ');
+  // Nothing was written for a duplicate, so Delete and Edit have nothing to act
+  // on — the card is a notice, and OK just clears it.
+  const isDup = ev.status === 'duplicate';
   const sourceTag = ev.source === 'gmail' ? `<span class="pill" style="font-size:9.5px">Gmail</span>` : ev.source ? `<span class="pill" style="font-size:9.5px">${escHtml(ev.source)}</span>` : '';
+  const dupTag = isDup ? `<span class="pill" style="font-size:9.5px;border-color:#c5221f;color:#c5221f">Already on calendar</span>` : '';
   const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem;font-style:italic">${escHtml(ev.notes)}</div>` : '';
   return `
   <div class="review-card" id="rcard-${id}" style="transition:opacity 0.3s">
     <div class="review-card-row" id="rrow-${id}">
       <div class="review-card-content">
-        <div class="review-card-title">${escHtml(ev.title)} ${sourceTag}</div>
+        <div class="review-card-title">${escHtml(ev.title)} ${sourceTag} ${dupTag}</div>
         <div class="review-card-meta">${meta}</div>
         ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong></div>` : ''}
         ${notesHtml}
+        ${ev.conflict_note ? `<div class="review-conflict">${escHtml(ev.conflict_note)}</div>` : ''}
       </div>
       <div class="review-card-tags">
         <!-- "Dismiss" used to be the only exit from this queue, and it deleted
              the event from Google Calendar — a name that reads like "hide this"
              doing something destructive. The common case is the opposite: the
              event is already on the calendar and is fine. OK is now that path. -->
-        <button class="btn-outlined btn-sm" onclick="deleteFromReview('${id}')" title="Remove this event from your Google Calendar">Delete</button>
-        <button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')" title="Change the details, then save to your calendar">Edit</button>
-        <button class="btn-filled btn-sm" onclick="markReviewedAndDismiss('${id}')" title="Keep on your calendar and move to Edit Calendar Events">OK</button>
+        ${isDup ? '' : `<button class="btn-outlined btn-sm" onclick="deleteFromReview('${id}')" title="Remove this event from your Google Calendar">Delete</button>`}
+        ${isDup ? '' : `<button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')" title="Change the details, then save to your calendar">Edit</button>`}
+        <button class="btn-filled btn-sm" onclick="markReviewedAndDismiss('${id}')" title="${isDup ? 'Clear this notice' : 'Keep on your calendar and move to Edit Calendar Events'}">OK</button>
       </div>
     </div>
     <div class="review-card-editor" id="reditor-${id}" style="display:none">

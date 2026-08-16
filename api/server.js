@@ -3090,9 +3090,14 @@ app.post('/api/calendar/reset', requireAuth, async (req, res) => {
         fields: 'items(id,summary,description,start,recurringEventId)',
       });
       const items = resp.data.items || [];
-      seen.push({ calendar: cal.name, id: cal.id, events: items.length });
+      seen.push({
+        calendar: cal.name, id: cal.id, events: items.length,
+        withDescription: items.filter(i => i.description).length,
+      });
       for (const it of items) {
-        if (sample.length < 8) {
+        // Prefer events that actually carry a description. A sample of eight
+        // untitled birthdays tells us nothing about why the stamp didn't match.
+        if (sample.length < 8 && it.description) {
           sample.push({
             calendar: cal.name, title: it.summary || '(no title)',
             date: it.start?.date || (it.start?.dateTime || '').slice(0, 10),
@@ -3304,6 +3309,34 @@ app.get('/api/debug/extract', requireAuth, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/debug/writes — for every event Criba holds, report whether it made
+// it onto the calendar (calEventId), or was skipped by the duplicate check
+// (duplicate_of), or never got as far as a write attempt.
+//
+// The reset scan can only see events that exist. When it finds nothing, this
+// says whether that is because nothing was ever written.
+app.get('/api/debug/writes', requireAuth, async (req, res) => {
+  try {
+    const all = await getUserEvents(req.user.email).values();
+    const rows = all.map(ev => ({
+      id: ev.id, title: ev.title, date: ev.date, status: ev.status,
+      calEventId: ev.calEventId || null,
+      skippedAsDuplicate: ev.duplicate_of
+        ? `${ev.duplicate_of.title} on ${ev.duplicate_of.calendarName || '?'}`
+        : null,
+    }));
+    const counts = rows.reduce((acc, r) => {
+      const bucket = r.calEventId ? 'written' : r.skippedAsDuplicate ? 'skippedAsDuplicate' : 'noWriteAttempt';
+      acc[bucket] = (acc[bucket] || 0) + 1;
+      acc[`status:${r.status}`] = (acc[`status:${r.status}`] || 0) + 1;
+      return acc;
+    }, {});
+    res.json({ total: rows.length, counts, events: rows });
+  } catch (err) {
+    res.status(500).json({ error: 'debug writes failed', detail: err.message });
   }
 });
 

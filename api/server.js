@@ -2499,6 +2499,50 @@ app.get('/api/scan/trace', requireAuth, async (req, res) => {
   res.json(raw.map(r => JSON.parse(r)));
 });
 
+// GET /api/debug/duplicates — group stored events by title and report clusters.
+//
+// The point is to tell apart two very different causes that look identical on
+// Google Calendar: Criba writing the same event twice (two records here), and
+// Criba writing once while a subscribed feed like a club's iCal supplies the
+// other copy (one record here). Only the first is a bug in this codebase.
+// GET so it opens in a browser with the session cookie.
+app.get('/api/debug/duplicates', requireAuth, async (req, res) => {
+  const all = await getUserEvents(req.user.email).values();
+  const groups = new Map();
+  for (const ev of all) {
+    if (ev.status === 'dismissed') continue;
+    const key = (ev.title || '').toLowerCase().trim();
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ev);
+  }
+  const clusters = [];
+  for (const [title, evs] of groups) {
+    if (evs.length < 2) continue;
+    clusters.push({
+      title,
+      count: evs.length,
+      // Same title on the same date is a straight duplicate. Same title on
+      // different dates is usually just a legitimately repeating fixture.
+      distinctDates: [...new Set(evs.map(e => e.date))].length,
+      copies: evs.map(e => ({
+        id: e.id, date: e.date, time: e.time || '', status: e.status,
+        source: e.source || '', calEventId: e.calEventId || null,
+        recurrence_rule: e.recurrence_rule || null,
+        created_at: e.created_at || null,
+      })).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))),
+    });
+  }
+  clusters.sort((a, b) => b.count - a.count);
+  res.json({
+    totalEvents: all.length,
+    duplicateTitles: clusters.length,
+    // Same title AND same date — the ones dedup should have caught.
+    sameDateClusters: clusters.filter(c => c.distinctDates < c.count).length,
+    clusters: clusters.slice(0, 40),
+  });
+});
+
 // DELETE /api/scan/trace — clear the trace log for the logged-in user
 app.delete('/api/scan/trace', requireAuth, async (req, res) => {
   await redis.del(`scanTrace:${req.user.email}`);

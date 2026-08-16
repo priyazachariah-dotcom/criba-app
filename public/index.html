@@ -1720,7 +1720,24 @@ async function startFresh() {
   }
 
   if (!plan.wouldDelete) {
-    say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Nothing to remove — Criba has no events on your calendar.</div>');
+    // "Nothing to remove" and "every calendar read failed" look identical from
+    // here, and reporting the reassuring one when it was actually the other is
+    // how a broken reset gets mistaken for a clean calendar. Show what it saw.
+    const errs = plan.calendarErrors || [];
+    const scanned = plan.calendarsScanned || [];
+    say(`<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">
+      Nothing matched — no events stamped “Added via Criba” were found.
+      <div style="margin-top:4px;font-size:11px">
+        Looked at ${scanned.length} calendar${scanned.length === 1 ? '' : 's'}
+        (${scanned.map(escHtml).join(', ') || 'none'}) from ${escHtml(plan.windowFrom || '?')} to ${escHtml(plan.windowTo || '?')}
+        and read ${plan.totalEventsSeen ?? '?'} events in total.
+        ${errs.length ? `<span style="color:var(--red)">${errs.length} could not be read: ${errs.map(e => escHtml(e.calendar + ' — ' + e.error)).join('; ')}</span>` : ''}
+      </div>
+      ${(plan.sampleOfWhatWasSeen || []).length ? `<div style="margin-top:6px;font-size:11px;opacity:.8">
+        Sample of what it did see:<br>${plan.sampleOfWhatWasSeen.map(s =>
+          escHtml(`• ${s.date || '?'} ${s.title} [${s.calendar}] — ${s.hasDescription ? 'desc: ' + s.descriptionStart : 'no description'}`)
+        ).join('<br>')}</div>` : ''}
+      </div>`);
     return;
   }
 

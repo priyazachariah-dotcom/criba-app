@@ -3077,6 +3077,11 @@ app.post('/api/calendar/reset', requireAuth, async (req, res) => {
 
   const found = new Map();   // series/event id -> record
   const errors = [];
+  // What each calendar actually returned. Without this, "no event carries the
+  // Criba stamp" and "every read came back empty" look identical from outside,
+  // and we report the reassuring one when it may well have been the other.
+  const seen = [];
+  const sample = [];
   for (const cal of cals) {
     try {
       const resp = await calendar.events.list({
@@ -3084,7 +3089,17 @@ app.post('/api/calendar/reset', requireAuth, async (req, res) => {
         singleEvents: true, maxResults: 2500,
         fields: 'items(id,summary,description,start,recurringEventId)',
       });
-      for (const it of resp.data.items || []) {
+      const items = resp.data.items || [];
+      seen.push({ calendar: cal.name, id: cal.id, events: items.length });
+      for (const it of items) {
+        if (sample.length < 8) {
+          sample.push({
+            calendar: cal.name, title: it.summary || '(no title)',
+            date: it.start?.date || (it.start?.dateTime || '').slice(0, 10),
+            hasDescription: !!it.description,
+            descriptionStart: (it.description || '').slice(0, 60),
+          });
+        }
         if (!/Added via Criba/i.test(it.description || '')) continue;
         const id = it.recurringEventId || it.id;
         if (found.has(id)) { found.get(id).instances++; continue; }
@@ -3104,6 +3119,9 @@ app.post('/api/calendar/reset', requireAuth, async (req, res) => {
     return res.json({
       dryRun: true, windowFrom: timeMin.toISOString().slice(0, 10), windowTo: timeMax.toISOString().slice(0, 10),
       calendarsScanned: cals.map(c => c.name), calendarErrors: errors,
+      calendarsRead: seen,
+      totalEventsSeen: seen.reduce((n, s) => n + s.events, 0),
+      sampleOfWhatWasSeen: sample,
       wouldDelete: plan.length,
       totalInstances: plan.reduce((n, p) => n + p.instances, 0),
       plan,

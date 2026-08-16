@@ -161,7 +161,7 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
     start, end, description,
     attendees: (ev.attendees || []).filter(a => a?.email).map(a => ({ email: a.email })),
   };
-  if (ev.recurrence_rule) resource.recurrence = [ev.recurrence_rule];
+  if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, ev.recurrence_end_date)];
   if (colorId) resource.colorId = String(colorId);
   const result = await calendarApi.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
   return result.data.id;
@@ -224,6 +224,7 @@ Rules for extraction:
 8. Recurring events. If something repeats on a schedule ("every Tuesday at 4pm", "weekly practice", "meets every Monday and Wednesday"), output ONE event with:
 - date = the first occurrence (YYYY-MM-DD)
 - recurrence = the Google Calendar RRULE string (e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU" for every Tuesday, "RRULE:FREQ=WEEKLY;BYDAY=MO,WE" for Monday+Wednesday, "RRULE:FREQ=DAILY" for daily)
+- recurrence_end_date = the last date the series runs (YYYY-MM-DD), whenever the content says or implies one: "through December", "for the fall semester", "8-week session", "until the end of the school year", a session end date, or a term end. Use null ONLY if there is genuinely no indication of when it stops.
 - Do NOT expand recurring events into individual occurrences.
 - For non-recurring events, recurrence = null.
 
@@ -240,6 +241,7 @@ For each extracted item return a JSON object with:
 - notes (all relevant details — attire, what to bring, action required, financial amounts, RSVP info; null if nothing extra)
 - source_type ("event", "deadline", "action_item", or "financial_reminder")
 - recurrence (Google Calendar RRULE string if recurring, null if one-time)
+- recurrence_end_date (YYYY-MM-DD last date the series runs, null if not stated or one-time)
 - intent ("new_event" | "cancellation" | "reschedule") — classify the email's intent:
   * "new_event": the email announces or confirms a new event
   * "cancellation": the email cancels or calls off a previously scheduled event
@@ -281,7 +283,7 @@ function normalizeExtractedEvent(ev) {
     recurring_note: type === 'recurring' ? (ev.recurring_note || '') : '',
     notes: ev.notes || null,
     source_type: ev.source_type || null,
-    recurrence_rule: ev.recurrence || null,
+    recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
   };
 }
 
@@ -770,7 +772,7 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
       : event.recurrence_rule;
 
     const calEventResource = { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description };
-    if (recurrenceRule) calEventResource.recurrence = [recurrenceRule];
+    if (recurrenceRule) calEventResource.recurrence = [ensureRecurrenceEnd(recurrenceRule, date, req.body.recurrenceEndDate || event.recurrence_end_date)];
     if (colorId) calEventResource.colorId = String(colorId);
 
     // Approving an event that is already on the calendar must update that event,
@@ -1007,6 +1009,38 @@ app.post('/api/events/cleanup-all', requireAuth, async (req, res) => {
   res.json({ ok: true, deleted, total: toDelete.length, results });
 });
 
+// Cancel ONE date of a recurring series, leaving the rest of the series intact.
+//
+// Criba stores the series id, so deleting that id removes every occurrence —
+// an email saying "no class on Nov 26" would silently wipe the whole year.
+// Google models a single skipped date as its own instance, so the safe move is
+// to find that date's instance and cancel only it.
+//
+// Returns true when one occurrence was cancelled, false when the caller should
+// fall back to deleting the whole event.
+async function cancelOneOccurrence(calendarApi, calendarId, seriesId, date) {
+  if (!seriesId || !/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return false;
+  try {
+    const resp = await calendarApi.events.instances({
+      calendarId, eventId: seriesId,
+      timeMin: new Date(`${date}T00:00:00Z`).toISOString(),
+      timeMax: new Date(`${date}T23:59:59Z`).toISOString(),
+      maxResults: 10,
+      // The window is in UTC, so an evening class in a western timezone can
+      // land outside it. Widen by a day either side and match on local date.
+      timeZone: LOCAL_TZ,
+    });
+    const items = resp.data.items || [];
+    const hit = items.find(i => (i.start?.date || (i.start?.dateTime || '').slice(0, 10)) === date) || items[0];
+    if (!hit?.id) return false;
+    await calendarApi.events.delete({ calendarId, eventId: hit.id, sendUpdates: 'none' });
+    return true;
+  } catch (err) {
+    console.error('[cancel-occurrence] failed:', err.message);
+    return false;
+  }
+}
+
 // Approve a cancellation: delete the matched approved event from Google Calendar,
 // then mark both the pending_cancellation record and the matched event as dismissed.
 app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
@@ -1017,13 +1051,35 @@ app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
 
   const matchedId = pendingEv.matched_event_id;
   let deletedFromGcal = false;
+  let cancelledOccurrence = null;
   if (matchedId) {
     const matchedEv = await eventsStore.get(matchedId);
     if (matchedEv?.calEventId) {
       try {
         const auth = await getUserOAuthClient(req.user);
         const calendar = google.calendar({ version: 'v3', auth });
-        await calendar.events.delete({ calendarId: matchedEv.gcalId || 'primary', eventId: matchedEv.calEventId });
+        const calId = matchedEv.gcalId || 'primary';
+        // A cancellation naming one date of a repeating event cancels that
+        // date, not the series. Only fall through to deleting everything when
+        // the event does not repeat.
+        const targetDate = pendingEv.old_date || pendingEv.date || '';
+        const oneOff = matchedEv.recurrence_rule
+          ? await cancelOneOccurrence(calendar, calId, matchedEv.calEventId, targetDate)
+          : false;
+        if (oneOff) {
+          cancelledOccurrence = targetDate;
+        } else {
+          if (matchedEv.recurrence_rule) {
+            // Refusing is the right failure here. Deleting a whole series
+            // because we could not isolate one date is not a recoverable
+            // mistake for the user.
+            return res.status(409).json({
+              error: 'Could not cancel just that date',
+              detail: `"${matchedEv.title}" repeats, and Criba could not isolate ${targetDate || 'the date'} to cancel. Nothing was changed.`,
+            });
+          }
+          await calendar.events.delete({ calendarId: calId, eventId: matchedEv.calEventId });
+        }
         deletedFromGcal = true;
       } catch (err) {
         console.error('[approve-cancellation] GCal delete error:', err.message);
@@ -1033,14 +1089,20 @@ app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
         }
         deletedFromGcal = true;
       }
-      matchedEv.status = 'cancelled';
+      if (cancelledOccurrence) {
+        // The series is still running, so it must not be marked cancelled —
+        // that would hide it from the queue and strand every other date.
+        matchedEv.skipped_dates = [...new Set([...(matchedEv.skipped_dates || []), cancelledOccurrence])];
+      } else {
+        matchedEv.status = 'cancelled';
+      }
       await eventsStore.set(matchedId, matchedEv);
     }
   }
 
   pendingEv.status = 'dismissed';
   await eventsStore.set(id, pendingEv);
-  res.json({ ok: true, deletedFromGcal });
+  res.json({ ok: true, deletedFromGcal, cancelledOccurrence });
 });
 
 // Dismiss a cancellation notice without acting on it.
@@ -1436,7 +1498,7 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
         ? `Added via Criba — recurring: ${ev.recurring_note}`
         : 'Added via Criba';
       const resource = { summary: ev.title, location: ev.location || '', start, end, attendees: eventAttendees, description };
-      if (ev.recurrence_rule) resource.recurrence = [ev.recurrence_rule];
+      if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, ev.recurrence_end_date)];
       if (colorId) resource.colorId = String(colorId);
       const calEvent = await calendar.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
       ev.status = 'added';
@@ -1997,6 +2059,33 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
 // and on which days. "RRULE:FREQ=WEEKLY;BYDAY=MO;UNTIL=20261130" and
 // "RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=16" describe the same Monday practice —
 // they differ only in where the club chose to end it.
+// An RRULE with no UNTIL and no COUNT repeats forever. Nobody signs their
+// calendar up for a weekly class in perpetuity, and an unbounded series is
+// painful to correct later because every future week is already claimed.
+//
+// So every recurring event gets an end: the one stated in the source when we
+// have it, otherwise a conservative default. The default is deliberately short
+// — an under-run series shows a gap the user can extend, while an over-run one
+// quietly litters years of calendar.
+const DEFAULT_RECURRENCE_MONTHS = 12;
+
+function ensureRecurrenceEnd(rule, startDate, endDate) {
+  if (!rule) return rule;
+  const up = String(rule).toUpperCase();
+  if (!/FREQ=/.test(up)) return rule;
+  if (/UNTIL=|COUNT=/.test(up)) return rule;
+
+  let until = endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? endDate : null;
+  if (!until) {
+    const base = /^\d{4}-\d{2}-\d{2}$/.test(startDate || '') ? new Date(startDate + 'T00:00:00Z') : new Date();
+    base.setUTCMonth(base.getUTCMonth() + DEFAULT_RECURRENCE_MONTHS);
+    until = base.toISOString().slice(0, 10);
+  }
+  // UNTIL is inclusive; use end of day UTC so the final occurrence is kept
+  // whatever time of day it falls at.
+  return `${String(rule).replace(/;+$/, '')};UNTIL=${until.replace(/-/g, '')}T235959Z`;
+}
+
 function recurrenceShape(rule) {
   if (!rule) return null;
   const up = String(rule).toUpperCase();
@@ -2510,7 +2599,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
 
         // Auto-write to calendar immediately
         const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
-        const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: ev.recurring_note || null, attendees: [] };
+        const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: ev.recurring_note || null, attendees: [] };
         let calEventId = null;
         try {
           calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId);
@@ -2539,7 +2628,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
             ? `Already on your calendar as "${calDup.title}"${calDup.calendarName && calDup.calendarId !== targetCalId ? ` (${calDup.calendarName})` : ''} — not added again`
             : conflictNote || null,
           source_type: ev.source_type || null,
-          recurrence_rule: ev.recurrence || null,
+          recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
           source: 'gmail',
           gmail_message_id: messageId,
           sender_name: senderName,
@@ -3817,7 +3906,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
               notes: ev.notes || null,
               conflict_note: `Already on your calendar as "${calDup.title}" — not added again`,
               duplicate_of_calendar: true,
-              source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null,
+              source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
               source: 'gmail', gmail_message_id: messageId,
               sender_name: senderName, sender_email: senderEmail, subject,
               status: 'duplicate', reviewed: false, calEventId: null,
@@ -3837,7 +3926,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // The check above only saw the target calendar; autoWriteToCalendar
           // additionally checks every other calendar the user subscribes to and
           // returns null (setting duplicate_of) instead of writing a second copy.
-          const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurring_note: null, attendees: [] };
+          const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: null, attendees: [] };
           try {
             calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId);
           } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
@@ -3852,7 +3941,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
               ? `Already on your calendar as "${otherCalDup.title}"${otherCalDup.calendarName && otherCalDup.calendarId !== bfCalId ? ` (${otherCalDup.calendarName})` : ''} — not added again`
               : conflictNote || null,
             duplicate_of_calendar: !!otherCalDup,
-            source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null,
+            source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
             source: 'gmail', gmail_message_id: messageId,
             sender_name: senderName, sender_email: senderEmail, subject,
             status: calEventId ? 'added' : (otherCalDup ? 'duplicate' : 'pending'), reviewed: false,

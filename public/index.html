@@ -795,6 +795,10 @@
               <div id="drop-zone-text">Click to upload PDF or drag and drop</div>
             </div>
             <input type="file" id="pdf-input" accept=".pdf" style="display:none" onchange="handleFileSelect(this)" />
+            <div style="font-size:0.8rem;opacity:0.7;margin-top:0.5rem">
+              Schedules, holiday lists or closure notices all work. Criba proposes
+              what to add and what to remove — nothing changes until you approve.
+            </div>
           </div>
         </div>
         <div id="extract-status"></div>
@@ -929,7 +933,7 @@ let selectedFile = null;
 let showingAll = false;
 
 // Category page state
-let groupsState = { calendarId: null, calName: '', categories: [] };
+let groupsState = { calendarId: null, calName: '', categories: [], removals: [] };
 let cedPeople = {};           // key `${ci}-${ei}` → [{name, email}]
 let cedSearchTimers = {};     // debounce timers for inline editor people-search
 
@@ -3142,10 +3146,10 @@ async function doImport(name, isUrl, memberId, btn, status) {
     try {
       const res = await fetch('/api/calendars/add-pdf', { method: 'POST', body: formData });
       const data = await res.json();
-      if (res.ok && data.categories) {
+      if (res.ok && (data.categories || (data.removals && data.removals.length))) {
         hideCalForm();
         await loadCalendars();
-        await loadCategoryGroups(data.calendarId, name, data.totalEvents, memberId);
+        await loadCategoryGroups(data.calendarId, name, data.totalEvents, memberId, data.removals);
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
         btn.disabled = false;
@@ -3162,32 +3166,42 @@ async function doImport(name, isUrl, memberId, btn, status) {
 // Fetches draft events for a calendar, groups by category, and opens the
 // category review page. Calendar/iCal events live entirely on this page —
 // they never route through the Review queue tab.
-async function loadCategoryGroups(calendarId, calName, totalEvents, memberId) {
+async function loadCategoryGroups(calendarId, calName, totalEvents, memberId, removals) {
+  const base = {
+    calendarId,
+    calName: calName || 'Review Events',
+    memberId: memberId || null,
+    categories: [],
+    // Proposed occurrence skips found in the upload. They are independent of
+    // the additions — an upload can produce only these and nothing else.
+    removals: Array.isArray(removals) ? removals : [],
+  };
   try {
-    const res = await fetch(`/api/calendars/${calendarId}/draft-events`);
-    const events = await res.json();
-    const map = new Map();
-    for (const ev of events) {
-      if (!map.has(ev.category)) map.set(ev.category, []);
-      map.get(ev.category).push(ev);
+    // A closure-only upload creates no calendar, so there is nothing to fetch.
+    if (calendarId) {
+      const res = await fetch(`/api/calendars/${calendarId}/draft-events`);
+      const events = await res.json();
+      const map = new Map();
+      for (const ev of events) {
+        if (!map.has(ev.category)) map.set(ev.category, []);
+        map.get(ev.category).push(ev);
+      }
+      base.categories = [...map.entries()].map(([name, evs]) => ({ name, events: evs }));
     }
-    groupsState = {
-      calendarId,
-      calName: calName || 'Review Events',
-      memberId: memberId || null,
-      categories: [...map.entries()].map(([name, evs]) => ({ name, events: evs })),
-    };
-  } catch {
-    groupsState = { calendarId, calName: calName || 'Review Events', memberId: memberId || null, categories: [] };
-  }
+  } catch { /* keep the removals; the additions just failed to load */ }
+  groupsState = base;
   cedPeople = {};
   document.getElementById('cat-page-title').textContent = groupsState.calName;
   const member = memberId && familyMembers.find(m => m.id === memberId);
   const memberBadge = member
     ? ` <span style="display:inline-flex;align-items:center;gap:5px;font-size:0.8rem;background:white;border:1px solid var(--border);border-radius:20px;padding:2px 9px;vertical-align:middle"><span style="width:9px;height:9px;border-radius:50%;background:${memberColor(member.color)};display:inline-block"></span>${member.name}</span>`
     : '';
+  const removalCount = base.removals.reduce((n, r) => n + (r.dates ? r.dates.length : 0), 0);
+  const parts = [];
+  if (totalEvents) parts.push(`${totalEvents} event${totalEvents === 1 ? '' : 's'} to add`);
+  if (removalCount) parts.push(`${removalCount} date${removalCount === 1 ? '' : 's'} to remove`);
   document.getElementById('cat-page-sub').innerHTML =
-    `${totalEvents || 0} events found — review by group below${memberBadge}`;
+    `${parts.length ? parts.join(' · ') + ' — nothing changes until you approve' : 'Nothing found in this upload'}${memberBadge}`;
   // Highlight Calendars in nav (category page is a sub-flow of Calendars)
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('nav-calendars-btn').classList.add('active');
@@ -3197,20 +3211,111 @@ async function loadCategoryGroups(calendarId, calName, totalEvents, memberId) {
 }
 
 function leaveCategoryPage() {
-  groupsState = { calendarId: null, calName: '', categories: [] };
+  groupsState = { calendarId: null, calName: '', categories: [], removals: [] };
   cedPeople = {};
   showPage('calendars', document.getElementById('nav-calendars-btn'));
 }
 
 function renderCategoryPage() {
   const container = document.getElementById('category-groups-container');
-  if (!groupsState.categories.length) {
+  const removalsHtml = renderRemovalsCard();
+  if (!groupsState.categories.length && !removalsHtml) {
     container.innerHTML = groupsState.calendarId
       ? `<div class="empty-state"><div class="empty-icon">✓</div><h3>All done</h3><p>All events have been handled. You can close this page.</p><br><button class="btn-primary" onclick="leaveCategoryPage()">Back to Calendars</button></div>`
       : '';
     return;
   }
-  container.innerHTML = groupsState.categories.map((cat, ci) => renderCatCard(cat, ci)).join('');
+  container.innerHTML = removalsHtml + groupsState.categories.map((cat, ci) => renderCatCard(cat, ci)).join('');
+}
+
+// The REMOVE group. Uploading a holiday/closure list proposes skipping the
+// specific dates it collides with on events that are already on the calendar.
+// Nothing is deleted until the user presses the button here.
+function renderRemovalsCard() {
+  const removals = groupsState.removals || [];
+  if (!removals.length) return '';
+  const total = removals.reduce((n, r) => n + (r.dates ? r.dates.length : 0), 0);
+  if (!total) return '';
+  const rows = removals.map(r => {
+    const dates = (r.dates || []).map(d => `
+      <div class="cat-event-row" style="cursor:default">
+        <div class="cer-info">
+          <span class="cer-title">${shortDate(d.date)}</span>
+          <span class="cer-date">${escHtml(d.reason || 'Closed')}</span>
+        </div>
+      </div>`).join('');
+    return `
+    <div class="cat-event-item">
+      <div style="padding:0.5rem 0.75rem;font-weight:600">${escHtml(r.title)}${r.isSeries ? ' <span style="font-weight:400;opacity:0.6">🔁 series</span>' : ''}</div>
+      ${dates}
+    </div>`;
+  }).join('');
+  return `
+  <div class="cat-card" id="cat-card-removals">
+    <div class="cat-card-header">
+      <div class="cat-header-left" onclick="toggleRemovals()">
+        <span class="material-icons cat-chevron" id="removals-chevron">expand_more</span>
+        <span class="cat-name">Remove from calendar (${total})</span>
+      </div>
+      <div class="cat-header-actions">
+        <span class="cat-header-status" id="removals-status"></span>
+        <button class="btn-cat-dismiss" id="removals-btn" onclick="event.stopPropagation(); applyRemovals()">Remove all</button>
+      </div>
+    </div>
+    <div class="cat-card-body" id="removals-body" style="display:none">
+      ${rows}
+      <div class="cat-body-footer">
+        <button class="btn-cat-dismiss" onclick="applyRemovals()">Remove these dates</button>
+        <button class="btn-secondary" onclick="skipRemovals()">Keep them</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function toggleRemovals() {
+  const body = document.getElementById('removals-body');
+  const chev = document.getElementById('removals-chevron');
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (chev) chev.style.transform = open ? '' : 'rotate(180deg)';
+}
+
+function skipRemovals() {
+  groupsState.removals = [];
+  renderCategoryPage();
+}
+
+async function applyRemovals() {
+  const btn = document.getElementById('removals-btn');
+  const status = document.getElementById('removals-status');
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = 'Removing…';
+  try {
+    const res = await fetch('/api/calendars/apply-removals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        removals: (groupsState.removals || []).map(r => ({
+          eventId: r.eventId,
+          dates: (r.dates || []).map(d => d.date),
+        })),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Failed');
+    groupsState.removals = [];
+    renderCategoryPage();
+    // Failures are reported, not swallowed — a date Criba could not isolate is
+    // still on the user's calendar and they need to know that.
+    if (data.failures && data.failures.length) {
+      alert(`Removed ${data.skipped || 0} date(s). Could not remove ${data.failures.length}: ${data.failures.map(f => f.date || f).join(', ')}`);
+    }
+  } catch (err) {
+    if (status) status.textContent = '';
+    if (btn) btn.disabled = false;
+    alert('Could not remove those dates: ' + (err.message || 'network error'));
+  }
 }
 
 function renderCatCard(cat, ci) {

@@ -287,6 +287,111 @@ function normalizeExtractedEvent(ev) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Closures: applying an uploaded "we are shut on these dates" list to events
+// that are already on the calendar.
+//
+// A closure list is not a set of events to add. Its effect depends entirely on
+// what the user already has scheduled: the same RSM holiday table means five
+// skipped Thursdays for a Thursday class and a different set for a Tuesday one.
+// So the unit of work is "closure range ∩ existing series", which is pure
+// logic and therefore testable without touching Google.
+// ---------------------------------------------------------------------------
+
+const RRULE_DAY_TO_INDEX = { SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 };
+
+// Every date a series lands on, between two bounds. Deliberately supports only
+// the shapes extraction actually produces — weekly (optionally on named days)
+// and daily. An unrecognised rule returns no dates, so a closure simply
+// proposes nothing rather than guessing wrong about someone's calendar.
+function expandSeriesDates(rule, startDate, rangeStart, rangeEnd, hardLimit = 400) {
+  if (!rule || !/^\d{4}-\d{2}-\d{2}$/.test(startDate || '')) return [];
+  const up = String(rule).toUpperCase();
+  const freq = up.match(/FREQ=([A-Z]+)/)?.[1];
+  if (freq !== 'WEEKLY' && freq !== 'DAILY') return [];
+
+  const interval = parseInt(up.match(/INTERVAL=(\d+)/)?.[1] || '1', 10) || 1;
+  const untilRaw = up.match(/UNTIL=(\d{8})/)?.[1];
+  const until = untilRaw ? `${untilRaw.slice(0, 4)}-${untilRaw.slice(4, 6)}-${untilRaw.slice(6, 8)}` : null;
+  const count = parseInt(up.match(/COUNT=(\d+)/)?.[1] || '0', 10) || 0;
+
+  const byday = (up.match(/BYDAY=([A-Z,]+)/)?.[1] || '')
+    .split(',').map(d => RRULE_DAY_TO_INDEX[d.trim()]).filter(d => d !== undefined);
+  // "Weekly" with no BYDAY repeats on the start date's own weekday.
+  const days = freq === 'WEEKLY'
+    ? (byday.length ? byday : [new Date(startDate + 'T00:00:00Z').getUTCDay()])
+    : null;
+
+  const out = [];
+  let emitted = 0;
+  let cursor = startDate;
+  const stop = until && until < rangeEnd ? until : rangeEnd;
+  for (let guard = 0; guard < hardLimit && cursor <= stop; guard++) {
+    const dow = new Date(cursor + 'T00:00:00Z').getUTCDay();
+    const hits = freq === 'DAILY' ? true : days.includes(dow);
+    if (hits) {
+      emitted++;
+      if (count && emitted > count) break;
+      if (cursor >= rangeStart) out.push(cursor);
+    }
+    // INTERVAL on a weekly rule counts weeks, not days; stepping a day at a
+    // time and filtering by weekday would silently ignore it.
+    cursor = freq === 'WEEKLY' && interval > 1 && dow === 6
+      ? addDaysToDateStr(cursor, 1 + 7 * (interval - 1))
+      : addDaysToDateStr(cursor, 1);
+  }
+  return out;
+}
+
+// Which dates of which existing events fall inside the uploaded closures.
+// Returns one proposal per affected event, never a bare list of dates, so the
+// user approves "skip these 5 Thursdays of RSM Math" rather than "apply this
+// holiday list" — a claim they can actually check.
+function matchClosuresToEvents(closures, events) {
+  const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+  const ranges = (closures || [])
+    .map(c => ({
+      label: String(c.title || c.label || 'Closure').trim(),
+      from: c.start_date || c.date,
+      to: c.end_date || c.start_date || c.date,
+    }))
+    .filter(c => isDate(c.from) && isDate(c.to) && c.to >= c.from);
+  if (!ranges.length) return [];
+
+  const rangeStart = ranges.reduce((m, r) => (r.from < m ? r.from : m), ranges[0].from);
+  const rangeEnd = ranges.reduce((m, r) => (r.to > m ? r.to : m), ranges[0].to);
+  const labelFor = date => ranges.find(r => date >= r.from && date <= r.to)?.label || null;
+
+  const proposals = [];
+  for (const ev of events) {
+    if (!isDate(ev.date)) continue;
+    const already = new Set(ev.skipped_dates || []);
+
+    if (ev.recurrence_rule) {
+      const hits = expandSeriesDates(ev.recurrence_rule, ev.date, rangeStart, rangeEnd)
+        .filter(d => labelFor(d) && !already.has(d));
+      if (hits.length) {
+        proposals.push({
+          eventId: ev.id, title: ev.title, isSeries: true,
+          dates: hits.map(d => ({ date: d, reason: labelFor(d) })),
+        });
+      }
+      continue;
+    }
+
+    // A one-off event inside a closure is affected too — a single class on a
+    // day the school turns out to be shut.
+    const label = labelFor(ev.date);
+    if (label && !already.has(ev.date)) {
+      proposals.push({
+        eventId: ev.id, title: ev.title, isSeries: false,
+        dates: [{ date: ev.date, reason: label }],
+      });
+    }
+  }
+  return proposals;
+}
+
 // The prompt says a break is ONE event spanning first day to last, but the
 // model routinely ignores it and emits one event per day — "Christmas Break"
 // arrived as 13 separate records. Collapse runs of the same title on
@@ -1319,6 +1424,46 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
   }
 });
 
+// Pull closure/no-activity date ranges out of an uploaded document.
+//
+// Run as its own call rather than folded into the event extraction: the two
+// answer different questions ("what should I add" vs "when is nothing on"),
+// and keeping them apart means a document with no closures cannot destabilise
+// the extraction that already works. Best-effort by design — on any failure
+// the upload behaves exactly as it does today.
+const CLOSURES_PROMPT = `List every date or date range in this document on which regular scheduled activities do NOT take place — holidays, breaks, closures, no-class days, days off, cancelled sessions.
+
+Return JSON only, in this shape:
+{"closures":[{"title":"Winter Break","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD"}]}
+
+Rules:
+- A single day has start_date === end_date.
+- Ranges written like "Dec 21 - Jan 3" cross the year boundary; infer the correct years from context.
+- Include the closure's own name as "title".
+- Do NOT include events that simply happen on a date. Only dates when the regular activity is NOT running.
+- If the document lists no closures at all, return {"closures":[]}.`;
+
+async function extractClosures(contentBlock, todayStr) {
+  try {
+    const resp = await anthropic.messages.create({
+      model: 'claude-fable-5',
+      max_tokens: 2048,
+      messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: `Today is ${todayStr}.\n\n${CLOSURES_PROMPT}` }] }],
+    });
+    const raw = JSON.parse(getResponseText(resp).replace(/```json\n?/g, '').replace(/```\n?/g, '').trim());
+    return Array.isArray(raw?.closures) ? raw.closures : [];
+  } catch (err) {
+    console.error('[closures] extraction failed, continuing without:', err.message);
+    return [];
+  }
+}
+
+// Events already on the user's calendar that a closure list could affect.
+async function liveCalendarEvents(email) {
+  const all = await getUserEvents(email).values();
+  return all.filter(e => e.calEventId && e.status !== 'cancelled' && e.status !== 'dismissed');
+}
+
 app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req, res) => {
   const { name, memberId } = req.body;
   if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
@@ -1338,13 +1483,27 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
         ]
       }]
     });
+    const pdfBlock = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } };
+    const closures = await extractClosures(pdfBlock, new Date().toISOString().split('T')[0]);
+    const removals = closures.length
+      ? matchClosuresToEvents(closures, await liveCalendarEvents(req.user.email))
+      : [];
+
     const text = getResponseText(response);
     let flatEvents;
     try {
       const raw = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim());
       flatEvents = Array.isArray(raw) ? raw : [];
     } catch { return res.status(500).json({ error: 'AI could not parse this PDF.' }); }
-    if (!flatEvents.length) return res.status(400).json({ error: 'No events found in this PDF' });
+    // A closure list produces no additions and that is a success, not a
+    // failure — it is the whole point of uploading one. Only error when the
+    // document had no effect on the calendar at all.
+    if (!flatEvents.length && !removals.length) {
+      return res.status(400).json({ error: 'No events found in this PDF' });
+    }
+    if (!flatEvents.length) {
+      return res.json({ ok: true, calendarId: null, totalEvents: 0, categories: [], removals });
+    }
     flatEvents = collapseMultiDayRuns(flatEvents);
 
     // Group flat events into categories by source_type for the category-selection screen
@@ -1378,12 +1537,59 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     }
     await events.setMany(eventPairs);
     try { fs.unlinkSync(pdfPath); } catch {}
-    res.json({ ok: true, calendarId: calId, totalEvents, categories: parsed.categories.map(c => ({ name: c.name, count: c.events?.length || 0 })) });
+    res.json({ ok: true, calendarId: calId, totalEvents, categories: parsed.categories.map(c => ({ name: c.name, count: c.events?.length || 0 })), removals });
   } catch (err) {
     console.error('PDF error:', err);
     try { fs.unlinkSync(pdfPath); } catch {}
     res.status(500).json({ error: 'Failed to process PDF: ' + err.message });
   }
+});
+
+// POST /api/calendars/apply-removals — skip the dates the user approved.
+// Body: { removals: [{ eventId, dates: ["YYYY-MM-DD", ...] }] }
+//
+// Nothing is removed until this is called, and only the dates listed here are
+// touched. A series keeps running; a one-off event is deleted outright.
+app.post('/api/calendars/apply-removals', requireAuth, async (req, res) => {
+  const removals = Array.isArray(req.body?.removals) ? req.body.removals : [];
+  if (!removals.length) return res.status(400).json({ error: 'Nothing to apply' });
+
+  const store = getUserEvents(req.user.email);
+  const auth = await getUserOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+
+  let skipped = 0;
+  const failures = [];
+  for (const r of removals) {
+    const ev = await store.get(r.eventId);
+    if (!ev?.calEventId) { failures.push({ eventId: r.eventId, error: 'not on calendar' }); continue; }
+    const calId = ev.gcalId || 'primary';
+    const dates = (r.dates || []).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d));
+
+    for (const date of dates) {
+      try {
+        if (ev.recurrence_rule) {
+          const ok = await cancelOneOccurrence(calendar, calId, ev.calEventId, date);
+          if (!ok) { failures.push({ title: ev.title, date, error: 'could not isolate that date' }); continue; }
+        } else {
+          await calendar.events.delete({ calendarId: calId, eventId: ev.calEventId, sendUpdates: 'none' });
+          ev.status = 'cancelled';
+        }
+        ev.skipped_dates = [...new Set([...(ev.skipped_dates || []), date])];
+        skipped++;
+      } catch (err) {
+        // 410 means it is already gone, which is the state we wanted anyway.
+        if (err.code === 410 || err.code === 404) {
+          ev.skipped_dates = [...new Set([...(ev.skipped_dates || []), date])];
+          skipped++;
+        } else {
+          failures.push({ title: ev.title, date, error: err.message });
+        }
+      }
+    }
+    await store.set(r.eventId, ev);
+  }
+  res.json({ ok: true, skipped, failures });
 });
 
 app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {

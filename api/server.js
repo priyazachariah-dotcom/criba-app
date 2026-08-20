@@ -1051,23 +1051,44 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
   try {
     const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    const finalEndDate = endDate || event.end_date || '';
-    const finalEndTime = endTime || event.end_time || '';
+    // A field the client sent must win even when blank — that is how the user
+    // clears an end date or turns a timed event into an all-day one. Falling
+    // back to the stored value on every falsy input, which is what this did,
+    // made those edits impossible: the old value simply came back.
+    const has = k => Object.prototype.hasOwnProperty.call(req.body, k);
+    const finalEndDate = has('endDate') ? (endDate || '') : (event.end_date || '');
+    const finalEndTime = has('endTime') ? (endTime || '') : (event.end_time || '');
     const userTz = await getUserTimezone(req.user.email);
+
+    const recurrenceRule = has('recurrenceRule') ? req.body.recurrenceRule : event.recurrence_rule;
     // Patching start/end on a recurring event would otherwise restore the
     // multi-day block the span fix exists to prevent.
-    const span = resolveRecurringSpan(event.recurrence_rule, date, finalEndDate, event.recurrence_end_date);
+    const span = resolveRecurringSpan(recurrenceRule, date, finalEndDate, event.recurrence_end_date);
     const { start, end } = buildCalendarTimes(date, time, span.endDate, finalEndTime, userTz);
     const eventAttendees = (attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
+
+    const resource = { summary: title, location: location || '', start, end, attendees: eventAttendees };
+    // Google only changes recurrence when the field is present, and an empty
+    // array is how a series is turned back into a single event. Send it either
+    // way, or "does not repeat" would silently do nothing.
+    if (has('recurrenceRule')) {
+      resource.recurrence = recurrenceRule
+        ? [ensureRecurrenceEnd(recurrenceRule, date, span.recurrenceEndDate)]
+        : [];
+    }
     await calendar.events.patch({
       calendarId: event.gcalId || 'primary',
       eventId: event.calEventId,
       sendUpdates: 'all',
-      resource: { summary: title, location: location || '', start, end, attendees: eventAttendees }
+      resource,
     });
     event.title = title; event.date = date; event.time = time || '';
     event.end_date = finalEndDate; event.end_time = finalEndTime;
     event.location = location || '';
+    if (has('recurrenceRule')) {
+      event.recurrence_rule = recurrenceRule || null;
+      event.recurrence_end_date = recurrenceRule ? span.recurrenceEndDate : null;
+    }
     await events.set(id, event);
     res.json({ ok: true });
   } catch (err) {

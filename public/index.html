@@ -1924,7 +1924,7 @@ async function deleteReminder(id) {
 async function deleteApproved(id) {
   const title = (recentEvents.find(e => e.id === id) || {}).title || 'this event';
   if (!confirm(`Delete "${title}" from your Google Calendar?`)) return;
-  const status = document.getElementById(`edit-status-${id}`);
+  const status = document.getElementById(`rv-status-${id}`);
   if (status) { status.textContent = 'Deleting…'; status.style.color = ''; }
   try {
     const res = await fetch('/api/events/delete-from-calendar', {
@@ -2625,7 +2625,11 @@ function removeRecurrence(id) {
   if (sel) sel.value = '';
 }
 
-function renderReviewEditor(ev) {
+// Shared by the review queue and the already-synced list. They used to have
+// separate editors, and the synced one offered only date, time, end time and
+// location — so a recurring event that came out wrong could be deleted but
+// never corrected. One editor now, with a different action row on each screen.
+function renderReviewEditor(ev, opts = {}) {
   const id = ev.id;
   const allDay = ev.is_all_day || !ev.time;
   const memberSelect = familyMembers.length
@@ -2645,7 +2649,8 @@ function renderReviewEditor(ev) {
       <span class="material-icons gcal-icon">calendar_today</span>
       <div class="gcal-fields">
         <input type="date" class="gcal-input gcal-input-date" id="rv-date-${id}" value="${ev.date || ''}" />
-        ${ev.end_date ? `<span class="gcal-sep">→</span><input type="date" class="gcal-input gcal-input-date" id="rv-enddate-${id}" value="${ev.end_date || ''}" />` : ''}
+        <span class="gcal-sep">→</span>
+        <input type="date" class="gcal-input gcal-input-date" id="rv-enddate-${id}" value="${ev.end_date || ''}" title="End date — leave blank for a single-day event" />
       </div>
     </div>
     <div class="gcal-row">
@@ -2684,10 +2689,11 @@ function renderReviewEditor(ev) {
         ${renderRecurrenceDropdown(id, ev.recurrence_rule || null, ev.date || '')}
       </div>
     </div>
-    ${memberSelect}
+    ${opts.hideMember ? '' : memberSelect}
     <div class="gcal-actions">
+      ${opts.actions || `
       <button class="btn-gcal-add" id="rv-addbtn-${id}" onclick="approveReviewEvent('${id}')">Add to Calendar</button>
-      <button class="btn-gcal-dismiss" onclick="dismissReviewEvent('${id}')">Dismiss</button>
+      <button class="btn-gcal-dismiss" onclick="dismissReviewEvent('${id}')">Dismiss</button>`}
       <span id="rv-status-${id}"></span>
     </div>
   </div>`;
@@ -2918,27 +2924,14 @@ function renderRecent() {
         </div>
       </div>
       <div id="edit-${ev.id}" style="display:none;padding:0 0 1.5rem">
-        <div class="event-fields" style="margin-bottom:0.75rem">
-          <div class="event-field">
-            <label>${ev.type === 'break' ? 'Start date' : 'Date'}</label>
-            <input type="date" id="redate-${ev.id}" value="${ev.date||''}" />
-          </div>
-          ${ev.type === 'break'
-            ? `<div class="event-field"><label>End date</label><input type="date" id="reenddate-${ev.id}" value="${ev.end_date||''}" /></div>`
-            : `<div class="event-field"><label>Time (blank = all-day)</label><input type="time" id="retime-${ev.id}" value="${ev.time||''}" /></div>
-               <div class="event-field"><label>End time</label><input type="time" id="reendtime-${ev.id}" value="${ev.end_time||''}" /></div>`}
-          <div class="event-field full">
-            <label>Location</label>
-            <input type="text" id="reloc-${ev.id}" value="${(ev.location||'').replace(/"/g,'&quot;')}" placeholder="Add location" />
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn-filled btn-sm" onclick="saveEdit('${ev.id}', '${(ev.title||'').replace(/'/g,"\\'")}')">Save changes</button>
-          <button class="btn-outlined btn-sm" onclick="toggleEdit('${ev.id}')">Cancel</button>
-          <button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red);margin-left:auto"
-            onclick="deleteApproved('${ev.id}')">Delete</button>
-          <span id="edit-status-${ev.id}"></span>
-        </div>
+        ${renderReviewEditor(ev, {
+          hideMember: true,
+          actions: `
+      <button class="btn-gcal-add" id="rv-addbtn-${ev.id}" onclick="saveEdit('${ev.id}')">Save changes</button>
+      <button class="btn-gcal-dismiss" onclick="toggleEdit('${ev.id}')">Cancel</button>
+      <button class="btn-gcal-dismiss" style="color:var(--red);border-color:var(--red);margin-left:auto"
+        onclick="deleteApproved('${ev.id}')">Delete</button>`,
+        })}
       </div>
     </div>`).join('') + (!showingAll && recentEvents.length > 20
       ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${recentEvents.length - 20} older events)</button>` : '');
@@ -2950,22 +2943,54 @@ function toggleEdit(id) {
   const el = document.getElementById(`edit-${id}`);
   const opening = el.style.display === 'none';
   el.style.display = opening ? 'block' : 'none';
-  if (opening) initLocationAutocomplete(`reloc-${id}`);
+  if (!opening) return;
+  initLocationAutocomplete(`rv-loc-${id}`);
+  // Seed the guest chips from the stored event, the same way the review queue
+  // does. Without this, saving an edit would silently strip every attendee.
+  const ev = recentEvents.find(e => e.id === id);
+  if (ev?.attendees?.length && !rvPeople[id]) {
+    rvPeople[id] = [...ev.attendees];
+    renderRvPeople(id);
+  }
 }
 
-async function saveEdit(id, title) {
-  const date = document.getElementById(`redate-${id}`)?.value;
-  const time = document.getElementById(`retime-${id}`)?.value || '';
-  const endDate = document.getElementById(`reenddate-${id}`)?.value || '';
-  const endTime = document.getElementById(`reendtime-${id}`)?.value || '';
-  const location = document.getElementById(`reloc-${id}`)?.value || '';
-  const status = document.getElementById(`edit-status-${id}`);
-  status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Saving...</span>';
+async function saveEdit(id) {
+  const ev = recentEvents.find(e => e.id === id);
+  if (!ev) return;
+  const status = document.getElementById(`rv-status-${id}`);
+  const btn = document.getElementById(`rv-addbtn-${id}`);
+  if (btn) btn.disabled = true;
+  if (status) status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Saving…</span>';
+  const allDay = document.getElementById(`rv-allday-${id}`)?.checked;
+  const payload = {
+    id,
+    title: document.getElementById(`rv-title-${id}`)?.value || ev.title,
+    date: document.getElementById(`rv-date-${id}`)?.value || ev.date,
+    endDate: document.getElementById(`rv-enddate-${id}`)?.value || '',
+    time: allDay ? '' : (document.getElementById(`rv-time-${id}`)?.value || ''),
+    endTime: allDay ? '' : (document.getElementById(`rv-endtime-${id}`)?.value || ''),
+    location: document.getElementById(`rv-loc-${id}`)?.value || '',
+    attendees: rvPeople[id] || [],
+    // Same resolution the review queue uses: the dropdown/custom-modal state
+    // wins when the user touched it, otherwise keep what is stored.
+    recurrenceRule: Object.prototype.hasOwnProperty.call(rvRecurrenceState, id)
+      ? (rvRecurrenceState[id] || null)
+      : (rvRecurrenceRemoved[id] ? null : (ev.recurrence_rule || null)),
+  };
   try {
-    const res = await fetch('/api/events/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({id, title, date, time, endDate, endTime, location, attendees: []}) });
-    if (res.ok) { status.innerHTML = '<span class="success-msg">✓ Updated</span>'; await loadRecentEvents(); }
-    else { const err = await res.json(); status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`; }
-  } catch { status.innerHTML = '<span class="error-msg">Network error</span>'; }
+    const res = await fetch('/api/events/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if (res.ok) {
+      if (status) status.innerHTML = '<span class="success-msg">✓ Updated</span>';
+      await loadRecentEvents();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+      if (btn) btn.disabled = false;
+    }
+  } catch {
+    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

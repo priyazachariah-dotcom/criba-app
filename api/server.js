@@ -148,7 +148,8 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
       return null;
     }
   }
-  const { start, end } = buildCalendarTimes(ev.date, ev.time || '', ev.end_date || '', ev.end_time || '', opts.timezone);
+  const span = resolveRecurringSpan(ev.recurrence_rule, ev.date, ev.end_date || '', ev.recurrence_end_date);
+  const { start, end } = buildCalendarTimes(ev.date, ev.time || '', span.endDate, ev.end_time || '', opts.timezone);
   // Only append the suffix when there is actually a note to append. The backfill
   // always passes recurring_note: null, which produced the dangling
   // "Added via Criba — recurring:" on every recurring event.
@@ -161,7 +162,7 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
     start, end, description,
     attendees: (ev.attendees || []).filter(a => a?.email).map(a => ({ email: a.email })),
   };
-  if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, ev.recurrence_end_date)];
+  if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, span.recurrenceEndDate)];
   if (colorId) resource.colorId = String(colorId);
   const result = await calendarApi.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
   return result.data.id;
@@ -593,6 +594,29 @@ function buildCalendarTimes(date, time, endDate, endTime, localTz = DEFAULT_TZ) 
   return { start: { date }, end: { date } };
 }
 
+// A repeating event whose end_date lands on a later day is saying two different
+// things at once: how long one occurrence runs, and when the whole series stops.
+// Google only hears the first. So "HIVE Summer Camp, 8:15am-3:30pm, weekdays
+// Aug 20-24" became a single five-day block that then repeated — every copy
+// running five days from its own start, smearing camp across the following week.
+//
+// The span nearly always describes the series, so move it to recurrence_end_date
+// and clamp the occurrence back to its own day. When both are present the later
+// date wins: a span lifted from the text is better evidence than a
+// recurrence_end_date the extractor guessed, and erring long leaves spare
+// occurrences to delete rather than missing ones nobody notices.
+function resolveRecurringSpan(recurrenceRule, date, endDate, recurrenceEndDate) {
+  const span = String(endDate || '').trim();
+  const current = String(recurrenceEndDate || '').trim();
+  // Not recurring, no span, or a span ending on the start day: nothing to
+  // reinterpret. Multi-day one-off events (school breaks) fall through here
+  // untouched — their end_date genuinely is the occurrence length.
+  if (!recurrenceRule || !span || !date || span <= date) {
+    return { endDate: span, recurrenceEndDate: current || null };
+  }
+  return { endDate: '', recurrenceEndDate: current && current > span ? current : span };
+}
+
 function signData(data) {
   const str = JSON.stringify(data);
   const encoded = Buffer.from(str).toString('base64');
@@ -887,7 +911,16 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const finalEndDate = endDate || event.end_date || '';
     const finalEndTime = endTime || event.end_time || '';
     const userTz = await getUserTimezone(req.user.email);
-    const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime, userTz);
+
+    // Use the RRULE from body if the user kept it, or fall back to the stored rule.
+    // The frontend sends recurrenceRule: null to remove recurrence before adding.
+    // Resolved here rather than further down because the span fix below needs it.
+    const recurrenceRule = Object.prototype.hasOwnProperty.call(req.body, 'recurrenceRule')
+      ? req.body.recurrenceRule
+      : event.recurrence_rule;
+
+    const span = resolveRecurringSpan(recurrenceRule, date, finalEndDate, req.body.recurrenceEndDate || event.recurrence_end_date);
+    const { start, end } = buildCalendarTimes(date, time, span.endDate, finalEndTime, userTz);
     const eventAttendees = [];
     // Was a hardcoded personal address behind a "share to Bharat" flag. Fine
     // when the only user was its author; a privacy problem the moment anyone
@@ -904,14 +937,8 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
       ? `Added via Criba — recurring: ${event.recurring_note}`
       : 'Added via Criba';
 
-    // Use the RRULE from body if the user kept it, or fall back to the stored rule.
-    // The frontend sends recurrenceRule: null to remove recurrence before adding.
-    const recurrenceRule = Object.prototype.hasOwnProperty.call(req.body, 'recurrenceRule')
-      ? req.body.recurrenceRule
-      : event.recurrence_rule;
-
     const calEventResource = { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description };
-    if (recurrenceRule) calEventResource.recurrence = [ensureRecurrenceEnd(recurrenceRule, date, req.body.recurrenceEndDate || event.recurrence_end_date)];
+    if (recurrenceRule) calEventResource.recurrence = [ensureRecurrenceEnd(recurrenceRule, date, span.recurrenceEndDate)];
     if (colorId) calEventResource.colorId = String(colorId);
 
     // Approving an event that is already on the calendar must update that event,
@@ -1017,7 +1044,10 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     const finalEndDate = endDate || event.end_date || '';
     const finalEndTime = endTime || event.end_time || '';
     const userTz = await getUserTimezone(req.user.email);
-    const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime, userTz);
+    // Patching start/end on a recurring event would otherwise restore the
+    // multi-day block the span fix exists to prevent.
+    const span = resolveRecurringSpan(event.recurrence_rule, date, finalEndDate, event.recurrence_end_date);
+    const { start, end } = buildCalendarTimes(date, time, span.endDate, finalEndTime, userTz);
     const eventAttendees = (attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
     await calendar.events.patch({
       calendarId: event.gcalId || 'primary',
@@ -1277,7 +1307,8 @@ app.post('/api/events/approve-reschedule', requireAuth, async (req, res) => {
   try {
     const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    const { start, end } = buildCalendarTimes(pendingEv.date, pendingEv.time, pendingEv.end_date || '', pendingEv.end_time || '', await getUserTimezone(req.user.email));
+    const reschedSpan = resolveRecurringSpan(matchedEv.recurrence_rule, pendingEv.date, pendingEv.end_date || '', matchedEv.recurrence_end_date);
+    const { start, end } = buildCalendarTimes(pendingEv.date, pendingEv.time, reschedSpan.endDate, pendingEv.end_time || '', await getUserTimezone(req.user.email));
     await calendar.events.patch({
       calendarId: matchedEv.gcalId || 'primary',
       eventId: matchedEv.calEventId,
@@ -1744,13 +1775,14 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   for (const [id, ev] of groupEvents) {
     try {
       if (!ev.date) throw new Error('Missing date');
-      const { start, end } = buildCalendarTimes(ev.date, ev.time, ev.end_date, ev.end_time, groupTz);
+      const catSpan = resolveRecurringSpan(ev.recurrence_rule, ev.date, ev.end_date, ev.recurrence_end_date);
+      const { start, end } = buildCalendarTimes(ev.date, ev.time, catSpan.endDate, ev.end_time, groupTz);
       const eventAttendees = (ev.attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
       const description = ev.type === 'recurring' && ev.recurring_note
         ? `Added via Criba — recurring: ${ev.recurring_note}`
         : 'Added via Criba';
       const resource = { summary: ev.title, location: ev.location || '', start, end, attendees: eventAttendees, description };
-      if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, ev.recurrence_end_date)];
+      if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, catSpan.recurrenceEndDate)];
       if (colorId) resource.colorId = String(colorId);
       const calEvent = await calendar.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
       ev.status = 'added';

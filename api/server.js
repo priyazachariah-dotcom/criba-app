@@ -2085,18 +2085,22 @@ function _extractEmailBodyInner(payload, htmlParts) {
     return text;
   }
 
-  // First pass: usable plain-text part at this level
+  // Collect HTML parts at this level FIRST. The plain-text loop below returns
+  // as soon as it finds a candidate, so collecting afterwards meant the caller
+  // was handed an empty htmlParts and had no alternative to compare against —
+  // exactly the case where the plain part is boilerplate and the HTML holds
+  // the event.
+  for (const part of (payload.parts || [])) {
+    if (part.mimeType === 'text/html' && part.body?.data) {
+      htmlParts.push(Buffer.from(part.body.data, 'base64url').toString('utf-8'));
+    }
+  }
+
+  // Usable plain-text part at this level
   for (const part of (payload.parts || [])) {
     if (part.mimeType === 'text/plain' && part.body?.data) {
       const text = Buffer.from(part.body.data, 'base64url').toString('utf-8');
       if (text.trim().length > 50) return text;
-    }
-  }
-
-  // Collect HTML parts at this level for later fallback
-  for (const part of (payload.parts || [])) {
-    if (part.mimeType === 'text/html' && part.body?.data) {
-      htmlParts.push(Buffer.from(part.body.data, 'base64url').toString('utf-8'));
     }
   }
 
@@ -2119,15 +2123,33 @@ function _extractEmailBodyInner(payload, htmlParts) {
   return '';
 }
 
+// Picking between the plain-text and HTML alternatives of the same email is
+// not a matter of preference — it decides whether the event details reach
+// Claude at all.
+//
+// Transactional senders (clinics, ticketing, schools using a mail service)
+// routinely ship a plain-text part that is pure boilerplate — "view this in a
+// browser", an unsubscribe block, a privacy notice — while the appointment
+// itself exists only in the HTML. That stub clears any length threshold, so
+// taking the first plain-text part meant confidently handing Claude a body
+// with no date in it and recording "no events found".
+//
+// So: take the plain text only when it actually carries date content, or when
+// the HTML has none either. Otherwise fall through to the HTML.
 function extractEmailBody(payload) {
   const htmlParts = [];
   const plainText = _extractEmailBodyInner(payload, htmlParts);
-  if (plainText) return plainText;
-  // HTML fallback: strip tags so Claude can read the content
-  if (htmlParts.length > 0) {
-    return stripHtmlTags(htmlParts.join('\n'));
+  const html = htmlParts.length ? stripHtmlTags(htmlParts.join('\n')) : '';
+
+  if (plainText && html) {
+    const plainHasDate = scanForDateContent(plainText).pass;
+    if (plainHasDate) return plainText;
+    // The plain part looks like boilerplate. Use the HTML if it does better;
+    // if neither has a date, the plain text is still the cleaner input.
+    if (scanForDateContent(html).pass) return html;
+    return plainText;
   }
-  return '';
+  return plainText || html || '';
 }
 
 // Image MIME types Claude's vision API accepts

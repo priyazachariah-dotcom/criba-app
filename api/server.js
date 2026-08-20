@@ -889,6 +889,23 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
     if (e.status === 'duplicate' && !e.reviewed && !isPast(e)) return true;
     return false;
   }).sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
+
+  // Tag each event with the family member it appears to belong to, so the review
+  // card can show which colour it is heading for before anything is written.
+  // Resolved on read rather than stored at extraction time: members and their
+  // colours change, and a guess frozen weeks ago would be shown as fact.
+  const members = await getUserFamily(req.user.email).values();
+  if (members.length) {
+    for (const ev of pending) {
+      const text = [ev.title, ev.location, ev.notes].filter(Boolean).join(' ');
+      const names = Array.isArray(ev.attendees) ? ev.attendees.map(a => a?.name || a?.email || '') : [];
+      const match = matchFamilyMember(members, names, text);
+      if (match) {
+        ev.suggested_member_id = match.id;
+        ev.suggested_color = match.eventColor || match.color || null;
+      }
+    }
+  }
   res.json(pending);
 });
 

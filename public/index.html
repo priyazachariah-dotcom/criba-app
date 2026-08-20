@@ -312,6 +312,17 @@
   .reschedule-arrow { display: flex; align-items: center; gap: 0.5rem; font-size: 0.825rem; margin-bottom: 1rem; flex-wrap: wrap; }
   .reschedule-old { color: var(--text2); text-decoration: line-through; }
   .reschedule-new { color: var(--ink); font-weight: 500; }
+  .quick-adds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; }
+  .quick-add-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .quick-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; font-size: 12px;
+    font-family: inherit; color: var(--ink); background: transparent; border: 1px solid rgba(0,0,0,0.22);
+    border-radius: 999px; cursor: pointer; line-height: 1.6; }
+  .quick-chip:hover { border-color: var(--ink); }
+  /* Selected state has to survive on a pale pink page, so it inverts rather
+     than tinting — a light background change is invisible here. */
+  .quick-chip.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .quick-chip input { margin: 0; cursor: pointer; }
+  .quick-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
   .recipient-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid rgba(0,0,0,0.08); }
   .recipient-row:last-child { border-bottom: none; }
   .btn-delete { padding: 0.5rem 1.25rem; background: #c5221f; color: white; border: none; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
@@ -968,6 +979,63 @@ const GCAL_COLORS = {
 function memberColor(colorId) { return GCAL_COLORS[colorId] || GCAL_COLORS['7']; }
 function memberDotHtml(colorId, size) {
   return `<span class="${size === 'sm' ? 'member-dot' : 'picker-member-dot'}" style="background:${memberColor(colorId)}"></span>`;
+}
+
+// Whose event is this — id → memberId, '' meaning explicitly nobody. Only holds
+// entries the user actually clicked, so an untouched card falls back to the
+// server's guess rather than to a stale local value.
+const rvMemberState = {};
+
+function rvChosenMember(ev) {
+  return Object.prototype.hasOwnProperty.call(rvMemberState, ev.id)
+    ? rvMemberState[ev.id]
+    : (ev.suggested_member_id || '');
+}
+
+// The two decisions that get made on nearly every card: who it belongs to, and
+// who else should be invited. Both sit on the collapsed row — burying them
+// behind Edit meant expanding a card just to tick one box.
+function renderQuickAdds(ev) {
+  const id = ev.id;
+  if (!familyMembers.length && !savedRecipients.length) return '';
+  const chosen = rvChosenMember(ev);
+  const guessed = ev.suggested_member_id || '';
+  const people = familyMembers.length ? `
+    <div class="quick-add-group">
+      ${familyMembers.map(m => `
+        <button class="quick-chip ${chosen === m.id ? 'on' : ''}" id="qm-${id}-${m.id}"
+                onclick="setQuickMember('${id}','${m.id}')"
+                title="${chosen === m.id && guessed === m.id ? 'Criba matched this to ' + escHtml(m.name) : 'Colour this event for ' + escHtml(m.name)}">
+          <span class="quick-dot" style="background:${memberColor(m.eventColor || m.color)}"></span>${escHtml(m.name)}
+        </button>`).join('')}
+      <button class="quick-chip ${chosen === '' ? 'on' : ''}" id="qm-${id}-none"
+              onclick="setQuickMember('${id}','')" title="No colour — use the calendar default">None</button>
+    </div>` : '';
+  const recips = savedRecipients.length ? `
+    <div class="quick-add-group">
+      ${savedRecipients.map(r => `
+        <label class="quick-chip" title="Invite ${escHtml(r.email)}">
+          <input type="checkbox" class="rv-recip-${id}" value="${escHtml(r.email)}"
+                 onchange="this.closest('.quick-chip').classList.toggle('on', this.checked)">
+          ${escHtml(r.name)}
+        </label>`).join('')}
+    </div>` : '';
+  return `<div class="quick-adds">${people}${recips}</div>`;
+}
+
+function setQuickMember(id, memberId) {
+  rvMemberState[id] = memberId;
+  const ev = pendingEvents.find(e => e.id === id);
+  if (!ev) return;
+  // Repaint just this card's chips. A full renderReview() here would collapse
+  // an editor the user has open below.
+  for (const m of familyMembers) {
+    document.getElementById(`qm-${id}-${m.id}`)?.classList.toggle('on', memberId === m.id);
+  }
+  document.getElementById(`qm-${id}-none`)?.classList.toggle('on', memberId === '');
+  // Keep the editor's dropdown in step when it happens to be open.
+  const sel = document.getElementById(`rv-member-${id}`);
+  if (sel) sel.value = memberId;
 }
 
 const CAL_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0891b2'];
@@ -2302,6 +2370,7 @@ function renderReviewCard(ev) {
         <div class="review-card-meta">${meta}</div>
         ${ev.conflict_note ? `<div class="review-conflict">${escHtml(ev.conflict_note)}</div>` : ''}
         ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong></div>` : ''}
+        ${renderQuickAdds(ev)}
       </div>
       <div class="review-card-tags">
         <button class="btn-outlined btn-sm" onclick="dismissReviewEvent('${id}')">Dismiss</button>
@@ -2660,9 +2729,10 @@ function renderReviewEditor(ev, opts = {}) {
     ? `<div class="gcal-row">
         <span class="material-icons gcal-icon">group</span>
         <div class="gcal-fields">
-          <select class="gcal-input" id="rv-member-${id}" style="cursor:pointer;min-width:180px">
-            <option value="">Primary calendar</option>
-            ${familyMembers.map(m => `<option value="${m.id}">${escHtml(m.name)}</option>`).join('')}
+          <select class="gcal-input" id="rv-member-${id}" style="cursor:pointer;min-width:180px"
+                  onchange="setQuickMember('${id}', this.value)">
+            <option value="">No colour</option>
+            ${familyMembers.map(m => `<option value="${m.id}" ${rvChosenMember(ev) === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`).join('')}
           </select>
         </div>
       </div>` : '';
@@ -2713,17 +2783,6 @@ function renderReviewEditor(ev, opts = {}) {
         ${renderRecurrenceDropdown(id, ev.recurrence_rule || null, ev.date || '')}
       </div>
     </div>
-    ${savedRecipients.length ? `
-    <div class="gcal-row">
-      <span class="material-icons gcal-icon">forward_to_inbox</span>
-      <div class="gcal-fields" style="flex-wrap:wrap;gap:0.5rem">
-        ${savedRecipients.map(r => `
-          <label class="gcal-checkbox-label" title="${escHtml(r.email)}">
-            <input type="checkbox" class="rv-recip-${id}" value="${escHtml(r.email)}">
-            ${escHtml(r.name)}
-          </label>`).join('')}
-      </div>
-    </div>` : ''}
     ${opts.hideMember ? '' : memberSelect}
     <div class="gcal-actions">
       ${opts.actions || `
@@ -2829,7 +2888,9 @@ async function approveReviewEvent(id) {
     location: document.getElementById(`rv-loc-${id}`)?.value || ev.location || '',
     attendees: rvPeople[id] || [],
     recipientEmails: [...document.querySelectorAll(`.rv-recip-${id}:checked`)].map(c => c.value),
-    targetMemberId: document.getElementById(`rv-member-${id}`)?.value || '',
+    // The chips on the collapsed row are the source of truth. The editor's
+    // dropdown mirrors them, so reading it here would just risk disagreeing.
+    targetMemberId: rvChosenMember(ev),
     // Send recurrenceRule: use in-memory state if set by dropdown/custom modal, else fall back to stored value
     recurrenceRule: Object.prototype.hasOwnProperty.call(rvRecurrenceState, id)
       ? (rvRecurrenceState[id] || null)

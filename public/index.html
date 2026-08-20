@@ -312,6 +312,8 @@
   .reschedule-arrow { display: flex; align-items: center; gap: 0.5rem; font-size: 0.825rem; margin-bottom: 1rem; flex-wrap: wrap; }
   .reschedule-old { color: var(--text2); text-decoration: line-through; }
   .reschedule-new { color: var(--ink); font-weight: 500; }
+  .recipient-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid rgba(0,0,0,0.08); }
+  .recipient-row:last-child { border-bottom: none; }
   .btn-delete { padding: 0.5rem 1.25rem; background: #c5221f; color: white; border: none; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
   .btn-delete:hover { background: #a01a18; }
   .btn-delete:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -737,19 +739,21 @@
       </div>
     </div>
 
-    <!-- Partner sharing — the address offered as an extra invitee on approval -->
+    <!-- People routinely invited to events. Each becomes a tick box on every
+         review card, so a co-parent never needs finding in contact search. -->
     <div class="test-mode-panel">
       <div class="test-mode-panel-header">
-        <span class="test-mode-panel-title">Share with partner</span>
+        <span class="test-mode-panel-title">Who else gets invited</span>
       </div>
       <div class="test-mode-body">
-        <div class="test-mode-desc">Add someone who should be invited to family events. When set, each event gets an optional "invite them too" checkbox before you add it to your calendar.</div>
+        <div class="test-mode-desc">Save the people you invite again and again — a co-parent, a grandparent. Each one appears as a tick box on every event, so you can add them with one click instead of searching contacts each time. They receive a normal Google Calendar invitation and can accept or decline.</div>
+        <div id="recipient-list" style="margin-bottom:10px"></div>
         <div class="test-mode-field">
-          <input type="text" id="partner-email-input" placeholder="partner@example.com" />
-          <button class="btn-filled btn-sm" onclick="savePartnerEmail()">Save</button>
-          <button class="btn-outlined btn-sm" onclick="clearPartnerEmail()">Clear</button>
+          <input type="text" id="recipient-name-input" placeholder="Name" style="max-width:140px" />
+          <input type="text" id="recipient-email-input" placeholder="them@example.com" />
+          <button class="btn-filled btn-sm" onclick="addRecipient()">Add</button>
         </div>
-        <div id="partner-email-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
+        <div id="recipient-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
       </div>
     </div>
 
@@ -943,6 +947,10 @@ let searchTimers = {};
 // New id-keyed people state for redesigned review cards
 let rvPeople = {};
 let rvSearchTimers = {};
+
+// People routinely invited to events (co-parent, grandparent). Rendered as
+// tick boxes on every review card so they never need finding in contact search.
+let savedRecipients = [];
 
 // Family members state
 let familyMembers = [];        // loaded from /api/family on boot
@@ -1214,12 +1222,59 @@ async function loadTestModeSettings() {
   try {
     const res = await fetch('/api/settings');
     if (!res.ok) return;
-    const { testCalendarId, partnerEmail } = await res.json();
+    const { testCalendarId, recipients } = await res.json();
     applyTestModeUI(testCalendarId || '');
-    partnerShareEmail = partnerEmail || '';
-    const partnerInput = document.getElementById('partner-email-input');
-    if (partnerInput) partnerInput.value = partnerShareEmail;
+    savedRecipients = Array.isArray(recipients) ? recipients : [];
+    renderRecipients();
+    // Cards built before this resolved have no tick boxes on them yet.
+    if (pendingEvents.length) renderReview();
   } catch {}
+}
+
+function renderRecipients() {
+  const box = document.getElementById('recipient-list');
+  if (!box) return;
+  box.innerHTML = savedRecipients.length
+    ? savedRecipients.map(r => `
+      <div class="recipient-row">
+        <span><strong>${escHtml(r.name)}</strong> · ${escHtml(r.email)}</span>
+        <button class="btn-outlined btn-sm" onclick="removeRecipient('${escHtml(r.email)}')">Remove</button>
+      </div>`).join('')
+    : `<div style="font-size:12px;color:var(--text2);font-style:italic">Nobody saved yet.</div>`;
+}
+
+async function addRecipient() {
+  const nameEl = document.getElementById('recipient-name-input');
+  const emailEl = document.getElementById('recipient-email-input');
+  const status = document.getElementById('recipient-status');
+  const email = emailEl?.value.trim();
+  if (!email) { if (status) status.textContent = 'Enter an email address.'; return; }
+  try {
+    const res = await fetch('/api/recipients', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: nameEl?.value.trim() || '', email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { if (status) status.textContent = data.error || 'Failed to save.'; return; }
+    savedRecipients = data;
+    if (nameEl) nameEl.value = '';
+    if (emailEl) emailEl.value = '';
+    if (status) status.textContent = '✓ Saved — they can now be ticked on any event.';
+    renderRecipients();
+    renderReview();
+  } catch { if (status) status.textContent = 'Network error.'; }
+}
+
+async function removeRecipient(email) {
+  const status = document.getElementById('recipient-status');
+  try {
+    const res = await fetch(`/api/recipients/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    if (!res.ok) { if (status) status.textContent = 'Failed to remove.'; return; }
+    savedRecipients = await res.json();
+    if (status) status.textContent = 'Removed.';
+    renderRecipients();
+    renderReview();
+  } catch { if (status) status.textContent = 'Network error.'; }
 }
 
 function applyTestModeUI(calId) {
@@ -1247,36 +1302,6 @@ async function toggleTestMode(on) {
     // Just open the panel — user still needs to enter and save a calendar ID
     document.getElementById('test-cal-status').textContent = 'Enter a Google Calendar ID below and click Save.';
   }
-}
-
-async function savePartnerEmail() {
-  const input = document.getElementById('partner-email-input');
-  const status = document.getElementById('partner-email-status');
-  const val = input?.value.trim();
-  if (!val) { if (status) status.textContent = 'Please enter an email address.'; return; }
-  try {
-    const res = await fetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ partnerEmail: val }) });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      partnerShareEmail = val;
-      if (status) status.textContent = `✓ Saved — ${val} can be invited to events.`;
-    } else {
-      if (status) status.textContent = data.error || 'Failed to save. Try again.';
-    }
-  } catch { if (status) status.textContent = 'Network error.'; }
-}
-
-async function clearPartnerEmail() {
-  const status = document.getElementById('partner-email-status');
-  try {
-    const res = await fetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ partnerEmail: '' }) });
-    if (res.ok) {
-      partnerShareEmail = '';
-      const input = document.getElementById('partner-email-input');
-      if (input) input.value = '';
-      if (status) status.textContent = 'Cleared — no partner will be invited.';
-    } else if (status) status.textContent = 'Failed to clear. Try again.';
-  } catch { if (status) status.textContent = 'Network error.'; }
 }
 
 async function saveTestCalendar() {
@@ -1537,7 +1562,6 @@ let liveRefreshTimer = null;
 let onboardingScanRunning = false;
 // The user's nominated partner address, loaded from settings. Empty means the
 // "invite partner too" checkbox is not offered at all.
-let partnerShareEmail = '';
 const LIVE_REFRESH_MS = 30000;
 
 async function updateLiveStatus() {
@@ -2689,6 +2713,17 @@ function renderReviewEditor(ev, opts = {}) {
         ${renderRecurrenceDropdown(id, ev.recurrence_rule || null, ev.date || '')}
       </div>
     </div>
+    ${savedRecipients.length ? `
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">forward_to_inbox</span>
+      <div class="gcal-fields" style="flex-wrap:wrap;gap:0.5rem">
+        ${savedRecipients.map(r => `
+          <label class="gcal-checkbox-label" title="${escHtml(r.email)}">
+            <input type="checkbox" class="rv-recip-${id}" value="${escHtml(r.email)}">
+            ${escHtml(r.name)}
+          </label>`).join('')}
+      </div>
+    </div>` : ''}
     ${opts.hideMember ? '' : memberSelect}
     <div class="gcal-actions">
       ${opts.actions || `
@@ -2793,6 +2828,7 @@ async function approveReviewEvent(id) {
     endTime: allDay ? '' : (document.getElementById(`rv-endtime-${id}`)?.value || ev.end_time || ''),
     location: document.getElementById(`rv-loc-${id}`)?.value || ev.location || '',
     attendees: rvPeople[id] || [],
+    recipientEmails: [...document.querySelectorAll(`.rv-recip-${id}:checked`)].map(c => c.value),
     targetMemberId: document.getElementById(`rv-member-${id}`)?.value || '',
     // Send recurrenceRule: use in-memory state if set by dropdown/custom modal, else fall back to stored value
     recurrenceRule: Object.prototype.hasOwnProperty.call(rvRecurrenceState, id)
@@ -3467,13 +3503,16 @@ function renderInlineEditor(ev, ci, ei) {
       </div>
     </div>
 
-    ${partnerShareEmail ? `
+    ${savedRecipients.length ? `
     <div class="gcal-row">
-      <span class="material-icons gcal-icon">check_box_outline_blank</span>
-      <label class="gcal-checkbox-label">
-        <input type="checkbox" id="ced-partner-${key}" />
-        Invite ${escHtml(partnerShareEmail)} too
-      </label>
+      <span class="material-icons gcal-icon">forward_to_inbox</span>
+      <div class="gcal-fields" style="flex-wrap:wrap;gap:0.5rem">
+        ${savedRecipients.map(r => `
+          <label class="gcal-checkbox-label" title="${escHtml(r.email)}">
+            <input type="checkbox" class="ced-recip-${key}" value="${escHtml(r.email)}">
+            ${escHtml(r.name)}
+          </label>`).join('')}
+      </div>
     </div>` : ''}
 
     <div class="gcal-actions">
@@ -3648,7 +3687,7 @@ async function cedApprove(evId, key, ci, ei) {
     endTime:  document.getElementById(`ced-endtime-${key}`)?.value || '',
     location: document.getElementById(`ced-loc-${key}`)?.value || '',
     attendees: cedPeople[key] || [],
-    sharePartner: document.getElementById(`ced-partner-${key}`)?.checked || false,
+    recipientEmails: [...document.querySelectorAll(`.ced-recip-${key}:checked`)].map(c => c.value),
   };
   try {
     const res = await fetch('/api/events/approve', {

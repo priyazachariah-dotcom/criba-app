@@ -72,6 +72,21 @@ function getUserSettings(email) {
   return new RedisHashMap(`settings:${email}`);
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// People who are routinely invited to events — a co-parent, a grandparent, an
+// ex. Started life as a single `partnerEmail` string, which meant re-finding
+// the same person in contact search on every card. Any address saved here is
+// read back as an existing record, so a stored one is migrated in place rather
+// than stranded when the setting became a list.
+async function getSavedRecipients(email) {
+  const settings = getUserSettings(email);
+  const list = await settings.get('recipients');
+  if (Array.isArray(list)) return list;
+  const legacy = await settings.get('partnerEmail');
+  return legacy ? [{ name: legacy.split('@')[0], email: legacy }] : [];
+}
+
 // Returns the target calendarId — always 'primary' (single-calendar model),
 // unless test mode is active, in which case the test calendar is returned.
 async function resolveTargetCalendar(email) {
@@ -892,7 +907,7 @@ app.get('/api/events/recent', requireAuth, async (req, res) => {
 });
 
 app.post('/api/events/approve', requireAuth, async (req, res) => {
-  const { id, title, date, time, endDate, endTime, location, attendees, sharePartner } = req.body;
+  const { id, title, date, time, endDate, endTime, location, attendees } = req.body;
   const events = getUserEvents(req.user.email);
   const event = await events.get(id);
   if (!event) return res.status(404).json({ error: 'Event not found' });
@@ -922,13 +937,17 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const span = resolveRecurringSpan(recurrenceRule, date, finalEndDate, req.body.recurrenceEndDate || event.recurrence_end_date);
     const { start, end } = buildCalendarTimes(date, time, span.endDate, finalEndTime, userTz);
     const eventAttendees = [];
-    // Was a hardcoded personal address behind a "share to Bharat" flag. Fine
-    // when the only user was its author; a privacy problem the moment anyone
-    // else signs in. Now each user nominates their own partner in settings, and
-    // the checkbox only appears once they have.
-    if (sharePartner) {
-      const partnerEmail = await getUserSettings(req.user.email).get('partnerEmail');
-      if (partnerEmail) eventAttendees.push({ email: partnerEmail });
+    // Recipients ticked on the review card. Only addresses the user has already
+    // saved are honoured — the request body is not a place to accept an
+    // arbitrary invitee list, since these turn into real emails to real people.
+    if (Array.isArray(req.body.recipientEmails) && req.body.recipientEmails.length) {
+      const saved = new Set((await getSavedRecipients(req.user.email)).map(r => r.email));
+      for (const raw of req.body.recipientEmails) {
+        const addr = String(raw || '').trim().toLowerCase();
+        if (saved.has(addr) && !eventAttendees.some(a => a.email === addr)) {
+          eventAttendees.push({ email: addr });
+        }
+      }
     }
     if (attendees && Array.isArray(attendees)) {
       attendees.forEach(a => { if (a.email) eventAttendees.push({ email: a.email }); });
@@ -1944,7 +1963,37 @@ app.get('/api/settings', requireAuth, async (req, res) => {
   const settings = getUserSettings(req.user.email);
   const testCalendarId = (await settings.get('testCalendarId')) || null;
   const partnerEmail = (await settings.get('partnerEmail')) || null;
-  res.json({ testCalendarId, partnerEmail });
+  res.json({ testCalendarId, partnerEmail, recipients: await getSavedRecipients(req.user.email) });
+});
+
+// ── Saved recipients ──────────────────────────────────────────────────────
+
+app.get('/api/recipients', requireAuth, async (req, res) => {
+  res.json(await getSavedRecipients(req.user.email));
+});
+
+app.post('/api/recipients', requireAuth, async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const name = String(req.body?.name || '').trim();
+  // These addresses become attendees on real invitations, so a typo mails a
+  // stranger. Same guard the single partnerEmail had.
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'Not a valid email address' });
+  const list = await getSavedRecipients(req.user.email);
+  if (list.some(r => r.email === email)) return res.status(409).json({ error: 'Already saved' });
+  list.push({ name: name || email.split('@')[0], email });
+  await getUserSettings(req.user.email).set('recipients', list);
+  res.json(list);
+});
+
+app.delete('/api/recipients/:email', requireAuth, async (req, res) => {
+  const target = String(req.params.email || '').trim().toLowerCase();
+  const list = (await getSavedRecipients(req.user.email)).filter(r => r.email !== target);
+  await getUserSettings(req.user.email).set('recipients', list);
+  // Clear the legacy single setting too. getSavedRecipients falls back to it
+  // when no list exists, so leaving it behind could resurrect the very person
+  // just removed.
+  await getUserSettings(req.user.email).delete('partnerEmail');
+  res.json(list);
 });
 
 app.patch('/api/settings', requireAuth, async (req, res) => {

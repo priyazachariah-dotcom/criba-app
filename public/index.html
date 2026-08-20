@@ -1445,7 +1445,24 @@ async function runMigration() {
   if (btn) btn.disabled = false;
 }
 
+// Tell the server which timezone this browser is in. Criba writes wall-clock
+// times to Google Calendar, so it has to know which wall clock the user reads —
+// otherwise a 4pm practice lands at 4pm Pacific for everybody.
+// Runs before the status check so the very first scan already has the zone.
+async function reportTimezone() {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!timezone) return;
+    await fetch('/api/user/timezone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timezone }),
+    });
+  } catch { /* never block the page on this */ }
+}
+
 async function checkGmailStatus() {
+  await reportTimezone();
   try {
     const res = await fetch('/api/user/status');
     if (!res.ok) return;

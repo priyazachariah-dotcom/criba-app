@@ -148,7 +148,7 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
       return null;
     }
   }
-  const { start, end } = buildCalendarTimes(ev.date, ev.time || '', ev.end_date || '', ev.end_time || '');
+  const { start, end } = buildCalendarTimes(ev.date, ev.time || '', ev.end_date || '', ev.end_time || '', opts.timezone);
   // Only append the suffix when there is actually a note to append. The backfill
   // always passes recurring_note: null, which produced the dangling
   // "Added via Criba — recurring:" on every recurring event.
@@ -476,7 +476,40 @@ function shiftMidnightToMorning(ev) {
   return ev;
 }
 
-const LOCAL_TZ = 'America/Los_Angeles';
+// Every user used to be assumed to live in Pacific time. For anyone else that
+// is not a cosmetic problem: a 4pm practice is written to their calendar at the
+// wrong hour, and an emailed "10pm ET" is converted into the wrong zone twice.
+//
+// The zone now comes from the user's own browser, captured at sign-in and
+// stored per account. This deliberately avoids reading it from the Google
+// Calendar API: that would need another OAuth scope, and adding a scope forces
+// every existing user back through the consent screen.
+//
+// DEFAULT_TZ is only the fallback for an account we have not heard from yet.
+const DEFAULT_TZ = 'America/Los_Angeles';
+const LOCAL_TZ = DEFAULT_TZ;
+
+// An unknown zone name throws inside Intl and would take the whole write down,
+// so anything we store is validated first.
+function isValidTimezone(tz) {
+  if (!tz || typeof tz !== 'string' || tz.length > 64) return false;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getUserTimezone(email) {
+  if (!email) return DEFAULT_TZ;
+  try {
+    const tz = await redis.get(`userTz:${email}`);
+    return isValidTimezone(tz) ? tz : DEFAULT_TZ;
+  } catch {
+    return DEFAULT_TZ;
+  }
+}
 
 // What UTC instant is "2026-08-18 22:00" in the given timezone?
 //
@@ -499,13 +532,13 @@ function zonedWallClockToUtc(dateStr, timeStr, tz) {
 // Rewrite a date/time stated in another timezone into local wall-clock time.
 // A 10pm Eastern webinar has to land at 7pm on a Pacific calendar; storing 22:00
 // and labelling it Pacific — which is what we did — is simply the wrong time.
-function convertToLocalTime(date, time, fromTz) {
-  if (!date || !time || !fromTz || fromTz === LOCAL_TZ) return { date, time };
+function convertToLocalTime(date, time, fromTz, localTz = DEFAULT_TZ) {
+  if (!date || !time || !fromTz || fromTz === localTz) return { date, time };
   try {
     const instant = new Date(zonedWallClockToUtc(date, time, fromTz));
     if (isNaN(instant)) return { date, time };
     const p = new Intl.DateTimeFormat('en-CA', {
-      timeZone: LOCAL_TZ, hour12: false,
+      timeZone: localTz, hour12: false,
       year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
     }).formatToParts(instant).reduce((acc, x) => (acc[x.type] = x.value, acc), {});
     return { date: `${p.year}-${p.month}-${p.day}`, time: `${String(+p.hour % 24).padStart(2, '0')}:${p.minute}` };
@@ -518,16 +551,16 @@ function convertToLocalTime(date, time, fromTz) {
 // Applies the conversion across whichever field names the caller uses (Gmail
 // extraction emits start_time, the PDF path emits time) and returns a note
 // describing what changed, or null if nothing did.
-function normalizeEventTimezone(ev) {
+function normalizeEventTimezone(ev, localTz = DEFAULT_TZ) {
   const tz = ev.timezone || ev.time_zone || null;
-  if (!tz || tz === LOCAL_TZ || !ev.date) return null;
+  if (!tz || tz === localTz || !ev.date) return null;
   const startKey = ev.start_time !== undefined && ev.start_time !== null ? 'start_time' : 'time';
   const startVal = ev[startKey];
   if (!startVal) return null;
-  const start = convertToLocalTime(ev.date, startVal, tz);
+  const start = convertToLocalTime(ev.date, startVal, tz, localTz);
   if (start.time === startVal && start.date === ev.date) return null;
   if (ev.end_time) {
-    const end = convertToLocalTime(ev.end_date || ev.date, ev.end_time, tz);
+    const end = convertToLocalTime(ev.end_date || ev.date, ev.end_time, tz, localTz);
     ev.end_time = end.time;
     if (ev.end_date) ev.end_date = end.date;
   }
@@ -536,8 +569,8 @@ function normalizeEventTimezone(ev) {
   return `Stated as ${startVal} ${tz.split('/').pop().replace(/_/g, ' ')} time.`;
 }
 
-function buildCalendarTimes(date, time, endDate, endTime) {
-  const tz = LOCAL_TZ;
+function buildCalendarTimes(date, time, endDate, endTime, localTz = DEFAULT_TZ) {
+  const tz = isValidTimezone(localTz) ? localTz : DEFAULT_TZ;
   if (time === '00:00' || time === '0:00') time = MIDNIGHT_REMINDER_TIME;
   if (time && time.trim() !== '') {
     const start = { dateTime: `${date}T${time}:00`, timeZone: tz };
@@ -853,7 +886,8 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
 
     const finalEndDate = endDate || event.end_date || '';
     const finalEndTime = endTime || event.end_time || '';
-    const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime);
+    const userTz = await getUserTimezone(req.user.email);
+    const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime, userTz);
     const eventAttendees = [];
     // Was a hardcoded personal address behind a "share to Bharat" flag. Fine
     // when the only user was its author; a privacy problem the moment anyone
@@ -982,7 +1016,8 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     const calendar = google.calendar({ version: 'v3', auth });
     const finalEndDate = endDate || event.end_date || '';
     const finalEndTime = endTime || event.end_time || '';
-    const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime);
+    const userTz = await getUserTimezone(req.user.email);
+    const { start, end } = buildCalendarTimes(date, time, finalEndDate, finalEndTime, userTz);
     const eventAttendees = (attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
     await calendar.events.patch({
       calendarId: event.gcalId || 'primary',
@@ -1123,20 +1158,28 @@ app.post('/api/events/cleanup-all', requireAuth, async (req, res) => {
 //
 // Returns true when one occurrence was cancelled, false when the caller should
 // fall back to deleting the whole event.
-async function cancelOneOccurrence(calendarApi, calendarId, seriesId, date) {
+async function cancelOneOccurrence(calendarApi, calendarId, seriesId, date, localTz = DEFAULT_TZ) {
   if (!seriesId || !/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return false;
   try {
     const resp = await calendarApi.events.instances({
       calendarId, eventId: seriesId,
-      timeMin: new Date(`${date}T00:00:00Z`).toISOString(),
-      timeMax: new Date(`${date}T23:59:59Z`).toISOString(),
+      // The window is expressed in UTC while `date` is a local calendar day, so
+      // the two disagree by up to a day in either direction — a Tokyo evening
+      // class sits in the previous UTC day, a Los Angeles one in the next. The
+      // comment here used to claim the window was widened to cover that; it was
+      // not, so those instances were simply never found. Widen it for real and
+      // let the local-date match below pick the right instance out.
+      timeMin: new Date(`${addDaysToDateStr(date, -1)}T00:00:00Z`).toISOString(),
+      timeMax: new Date(`${addDaysToDateStr(date, 1)}T23:59:59Z`).toISOString(),
       maxResults: 10,
-      // The window is in UTC, so an evening class in a western timezone can
-      // land outside it. Widen by a day either side and match on local date.
-      timeZone: LOCAL_TZ,
+      timeZone: isValidTimezone(localTz) ? localTz : DEFAULT_TZ,
     });
     const items = resp.data.items || [];
-    const hit = items.find(i => (i.start?.date || (i.start?.dateTime || '').slice(0, 10)) === date) || items[0];
+    // Match the local date exactly. There used to be an `|| items[0]` fallback
+    // here, which was survivable only while the window was a single day — now
+    // that it spans three, falling back would delete a neighbouring week's
+    // class. No confident match means we report failure and touch nothing.
+    const hit = items.find(i => (i.start?.date || (i.start?.dateTime || '').slice(0, 10)) === date);
     if (!hit?.id) return false;
     await calendarApi.events.delete({ calendarId, eventId: hit.id, sendUpdates: 'none' });
     return true;
@@ -1169,7 +1212,7 @@ app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
         // the event does not repeat.
         const targetDate = pendingEv.old_date || pendingEv.date || '';
         const oneOff = matchedEv.recurrence_rule
-          ? await cancelOneOccurrence(calendar, calId, matchedEv.calEventId, targetDate)
+          ? await cancelOneOccurrence(calendar, calId, matchedEv.calEventId, targetDate, await getUserTimezone(req.user.email))
           : false;
         if (oneOff) {
           cancelledOccurrence = targetDate;
@@ -1234,7 +1277,7 @@ app.post('/api/events/approve-reschedule', requireAuth, async (req, res) => {
   try {
     const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    const { start, end } = buildCalendarTimes(pendingEv.date, pendingEv.time, pendingEv.end_date || '', pendingEv.end_time || '');
+    const { start, end } = buildCalendarTimes(pendingEv.date, pendingEv.time, pendingEv.end_date || '', pendingEv.end_time || '', await getUserTimezone(req.user.email));
     await calendar.events.patch({
       calendarId: matchedEv.gcalId || 'primary',
       eventId: matchedEv.calEventId,
@@ -1557,6 +1600,7 @@ app.post('/api/calendars/apply-removals', requireAuth, async (req, res) => {
   const store = getUserEvents(req.user.email);
   const auth = await getUserOAuthClient(req.user);
   const calendar = google.calendar({ version: 'v3', auth });
+  const removalTz = await getUserTimezone(req.user.email);
 
   let skipped = 0;
   const failures = [];
@@ -1569,7 +1613,7 @@ app.post('/api/calendars/apply-removals', requireAuth, async (req, res) => {
     for (const date of dates) {
       try {
         if (ev.recurrence_rule) {
-          const ok = await cancelOneOccurrence(calendar, calId, ev.calEventId, date);
+          const ok = await cancelOneOccurrence(calendar, calId, ev.calEventId, date, removalTz);
           if (!ok) { failures.push({ title: ev.title, date, error: 'could not isolate that date' }); continue; }
         } else {
           await calendar.events.delete({ calendarId: calId, eventId: ev.calEventId, sendUpdates: 'none' });
@@ -1602,13 +1646,14 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
   const cals = getUserCalendars(req.user.email);
   const calSrc = await cals.get(calendarId);
   const colorId = await resolveEventColor(req.user.email, null, calSrc);
+  const catTz = await getUserTimezone(req.user.email);
   let addedCount = 0;
   const updates = [];
   for (const [id, ev] of await events.entries()) {
     if (ev.calendar_id === calendarId && ev.status === 'draft') {
       if (selectedCategories.includes(ev.category)) {
         try {
-          const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId);
+          const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId, { timezone: catTz });
           if (!calEventId) {
             // Already on a calendar — nothing written, so don't claim it was.
             ev.status = 'duplicate'; ev.reviewed = false;
@@ -1691,6 +1736,7 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   const calSrc = await cals.get(calendarId);
   const targetCalId = await resolveTargetCalendar(req.user.email);
   const colorId = await resolveEventColor(req.user.email, null, calSrc);
+  const groupTz = await getUserTimezone(req.user.email);
 
   let addedCount = 0;
   const failed = [];
@@ -1698,7 +1744,7 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   for (const [id, ev] of groupEvents) {
     try {
       if (!ev.date) throw new Error('Missing date');
-      const { start, end } = buildCalendarTimes(ev.date, ev.time, ev.end_date, ev.end_time);
+      const { start, end } = buildCalendarTimes(ev.date, ev.time, ev.end_date, ev.end_time, groupTz);
       const eventAttendees = (ev.attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
       const description = ev.type === 'recurring' && ev.recurring_note
         ? `Added via Criba — recurring: ${ev.recurring_note}`
@@ -1748,7 +1794,7 @@ app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
   for (const [id, ev] of groupEvents) {
     try {
       if (!ev.date) throw new Error('Missing date');
-      const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId);
+      const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId, { timezone: groupTz });
       if (!calEventId) {
         ev.status = 'duplicate'; ev.reviewed = false;
         ev.duplicate_of_calendar = true;
@@ -2689,6 +2735,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
   const targetCalId = await resolveTargetCalendar(email);
   // Needed by the extraction prompt so Claude can tag which child an event is
   // for — that tag is what drives the per-person event colour.
+  const userTz = await getUserTimezone(email);
   const gpFamily = await getUserFamily(email).values();
   const gpFamilyNames = gpFamily.map(m => m.name).filter(Boolean);
 
@@ -2801,7 +2848,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         shiftMidnightToMorning(ev);
         // Convert before anything else reads the time: dedup, conflict checks
         // and the calendar write all have to agree on when this actually is.
-        const tzNote = normalizeEventTimezone(ev);
+        const tzNote = normalizeEventTimezone(ev, userTz);
         if (tzNote) ev.notes = [ev.notes, tzNote].filter(Boolean).join(' ');
 
         const intent = ev.intent || 'new_event';
@@ -2847,7 +2894,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: ev.recurring_note || null, attendees: [] };
         let calEventId = null;
         try {
-          calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId);
+          calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz });
           console.log(`[gmail-process] GCal WRITE "${ev.title}" on ${ev.date} calEventId=${calEventId}`);
         } catch (calErr) {
           console.error(`[gmail-process] GCal write failed for "${ev.title}":`, calErr.message);
@@ -2936,6 +2983,20 @@ app.post('/api/gmail/watch', requireAuth, async (req, res) => {
 
 // GET /api/user/status — returns per-user flags the frontend checks on load
 // (currently: gmailDisconnected flag set by cron when watch renewal fails)
+// POST /api/user/timezone — record the zone the user's browser reports.
+// Called on every page load, so a user who moves is followed automatically and
+// an account created before this existed gets a real zone on next visit.
+app.post('/api/user/timezone', requireAuth, async (req, res) => {
+  const tz = req.body?.timezone;
+  if (!isValidTimezone(tz)) return res.status(400).json({ error: 'Unrecognised timezone' });
+  const previous = await redis.get(`userTz:${req.user.email}`);
+  if (previous !== tz) {
+    await redis.set(`userTz:${req.user.email}`, tz);
+    console.log(`[timezone] ${req.user.email}: ${previous || '(unset)'} → ${tz}`);
+  }
+  res.json({ ok: true, timezone: tz });
+});
+
 app.get('/api/user/status', requireAuth, async (req, res) => {
   const disconnectedAt = await redis.get(`gmailDisconnected:${req.user.email}`);
   // The Gmail watch only delivers mail arriving after it is registered, so a
@@ -3881,6 +3942,7 @@ app.delete('/api/gmail/fingerprints', requireAuth, async (req, res) => {
 //   not listed individually (Part 1 display rule).
 app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const email = req.user.email;
+  const userTz = await getUserTimezone(email);
   const days = Math.min(parseInt(req.body?.days || '2'), 14);
   const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;
 
@@ -4110,7 +4172,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // buildCalendarTimes so the stored record and the UI agree with the
           // calendar rather than showing "12:00 AM".
           shiftMidnightToMorning(ev);
-          const bfTzNote = normalizeEventTimezone(ev);
+          const bfTzNote = normalizeEventTimezone(ev, userTz);
           if (bfTzNote) ev.notes = [ev.notes, bfTzNote].filter(Boolean).join(' ');
 
           const intent = ev.intent || 'new_event';
@@ -4173,7 +4235,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // returns null (setting duplicate_of) instead of writing a second copy.
           const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: null, attendees: [] };
           try {
-            calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId);
+            calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz });
           } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
           const otherCalDup = bfWriteObj.duplicate_of || null;
           const evId = randomUUID();

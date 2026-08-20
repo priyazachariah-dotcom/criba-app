@@ -2330,14 +2330,49 @@ function recurrenceShape(rule) {
 // practices produced two weekly series with different start dates, so nothing
 // matched and both were written. On any given Monday you then saw the same
 // practice twice.
+// Two extractions of the same real-world event rarely produce byte-identical
+// titles. Claude may write "New Patient Visit with Vincent Mason, MD" once and
+// "New Patient Visit with Vincent Mason, MD (Sutter Pediatrics)" the next time,
+// and a reminder email describes the same appointment in its own words. An
+// exact title comparison treats those as different events and the user gets the
+// same appointment twice in the review queue.
+//
+// So titles are compared on their significant words: identical after
+// normalisation, one containing the other, or ≥60% word overlap. The threshold
+// is deliberately high and only ever consulted alongside an exact date/time
+// match, so "Soccer practice" and "Soccer game" at different times stay
+// distinct.
+const TITLE_MATCH_THRESHOLD = 0.6;
+
+function titlesLikelySameEvent(a, b) {
+  const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const x = normalize(a);
+  const y = normalize(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.includes(y) || y.includes(x)) return true;
+  const wx = new Set(x.split(' ').filter(w => w.length > 2));
+  const wy = new Set(y.split(' ').filter(w => w.length > 2));
+  if (!wx.size || !wy.size) return false;
+  const intersection = [...wx].filter(w => wy.has(w)).length;
+  const union = new Set([...wx, ...wy]).size;
+  return union > 0 && intersection / union >= TITLE_MATCH_THRESHOLD;
+}
+
 function isDuplicateEventIn(all, title, date, opts = {}) {
-  const norm = (s) => (s || '').toLowerCase().trim();
   const shape = recurrenceShape(opts.recurrence);
   const time = opts.time || '';
   return all.some(ev => {
     if (ev.status === 'dismissed') return false;
-    if (norm(ev.title) !== norm(title)) return false;
-    if (ev.date === date) return true;
+    if (!titlesLikelySameEvent(ev.title, title)) return false;
+    // Same day counts when the clock time agrees, or when either side has no
+    // time at all — one extraction saying "9:00" and another saying all-day is
+    // still one event. Two different times on one day stay distinct, so a class
+    // that genuinely meets twice in a day survives as two entries.
+    if (ev.date === date) {
+      const evTime = ev.time || '';
+      if (!evTime || !time || evTime === time) return true;
+    }
     if (!shape) return false;
     return recurrenceShape(ev.recurrence_rule) === shape && (ev.time || '') === time;
   });

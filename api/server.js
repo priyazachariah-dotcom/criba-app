@@ -1021,7 +1021,17 @@ app.post('/api/events/undo', requireAuth, async (req, res) => {
   try {
     const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
+    // An event the user already deleted by hand in Google Calendar makes this
+    // call return 404/410. That is the goal state, not a failure — treating it
+    // as one used to abort before the status reset below, stranding the event
+    // as "added" with no route back to the review queue.
+    try {
+      await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
+    } catch (delErr) {
+      const code = delErr?.code || delErr?.response?.status;
+      if (code !== 404 && code !== 410) throw delErr;
+      console.log(`[undo] "${event.title}" already gone from Google (${code}) — resetting anyway`);
+    }
     event.status = 'pending';
     event.calEventId = null;
     event.approved_at = null;

@@ -1,0 +1,19 @@
+# The repo is public, so anything secret that lands here is published the
+# moment it is committed. These entries exist to make that mistake impossible
+# rather than merely unlikely — every credential Criba uses is read from
+# process.env and belongs in the Vercel dashboard, never in a file.
+.env
+.env.*
+!.env.example
+
+node_modules/
+.vercel/
+.DS_Store
+*.log
+npm-debug.log*
+
+# Service-account keys and certificates
+*.pem
+*.key
+*-credentials.json
+service-account*.json

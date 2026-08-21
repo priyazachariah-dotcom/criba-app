@@ -1663,6 +1663,28 @@ async function syncIcalCalendar(userEmail, cal) {
   const ours = all.filter(([, ev]) => ev.calendar_id === cal.id);
   const oursByUid = new Map(ours.filter(([, ev]) => ev.ical_uid).map(([id, ev]) => [ev.ical_uid, { id, ev }]));
 
+  // Adoption pass for feeds imported before uids were stored. Without this the
+  // first sync sees zero known uids, calls every event new, and duplicates the
+  // entire calendar. Match those older events to the feed on title+when+where
+  // and stamp the uid onto them so they are recognised from here on.
+  const orphans = ours.filter(([, ev]) => !ev.ical_uid);
+  if (orphans.length) {
+    const byPrint = new Map();
+    for (const [id, ev] of orphans) byPrint.set(icalFingerprint(ev), { id, ev });
+    const adopted = [];
+    for (const f of feed) {
+      if (!f.uid || oursByUid.has(f.uid)) continue;
+      const match = byPrint.get(icalFingerprint(f));
+      if (!match) continue;
+      byPrint.delete(icalFingerprint(f));
+      match.ev.ical_uid = f.uid;
+      match.ev.ical_fingerprint = icalFingerprint(f);
+      oursByUid.set(f.uid, match);
+      adopted.push([match.id, match.ev]);
+    }
+    if (adopted.length) await events.setMany(adopted);
+  }
+
   const { today, end } = icalWindow();
   const feedUids = new Set(feed.map(f => f.uid).filter(Boolean));
   const targetCalId = await resolveTargetCalendar(userEmail);

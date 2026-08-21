@@ -314,6 +314,10 @@
   .reschedule-new { color: var(--ink); font-weight: 500; }
   .quick-adds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; }
   .quick-add-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .quick-add-label { font-size: 12px; color: var(--text2); }
+  /* Sits between the group header and the collapsed body, so it stays readable
+     without expanding a single event. */
+  .cat-recipients { margin: 0; padding: 8px 16px 10px; border-top: 1px solid rgba(0,0,0,0.07); }
   .quick-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; font-size: 12px;
     font-family: inherit; color: var(--ink); background: transparent; border: 1px solid rgba(0,0,0,0.22);
     border-radius: 999px; cursor: pointer; line-height: 1.6; }
@@ -3496,6 +3500,48 @@ async function applyRemovals() {
   }
 }
 
+// Who gets invited to a whole group of events. The per-event editor already had
+// these ticks, but they were buried one expand-click deep per event — importing
+// a season of games meant ticking the same person a dozen times. Ticked here
+// once, the invite rides along with every event the group adds.
+// Keyed by category NAME, not index: catAddAll splices the approved group out
+// of the array, so every index after it shifts down and index-keyed ticks would
+// silently land on the wrong group.
+const catRecipientState = {};   // category name -> Set of email
+
+function catRecipientKey(ci) {
+  return groupsState.categories[ci]?.name || '';
+}
+
+function renderCatRecipients(ci) {
+  if (!savedRecipients.length) return '';
+  const on = catRecipientState[catRecipientKey(ci)] || new Set();
+  return `
+    <div class="quick-adds cat-recipients" id="cat-recip-${ci}">
+      <div class="quick-add-group">
+        <span class="quick-add-label">Also invite</span>
+        ${savedRecipients.map(r => `
+          <button type="button" class="quick-chip ${on.has(r.email) ? 'on' : ''}"
+                  title="${escHtml(r.email)}"
+                  onclick="event.stopPropagation(); toggleCatRecipient(${ci}, '${escHtml(r.email)}')">
+            ${escHtml(r.name)}
+          </button>`).join('')}
+      </div>
+    </div>`;
+}
+
+function toggleCatRecipient(ci, email) {
+  const key = catRecipientKey(ci);
+  const set = catRecipientState[key] || (catRecipientState[key] = new Set());
+  if (set.has(email)) set.delete(email); else set.add(email);
+  const el = document.getElementById(`cat-recip-${ci}`);
+  if (el) el.outerHTML = renderCatRecipients(ci);
+}
+
+function catRecipientEmails(ci) {
+  return [...(catRecipientState[catRecipientKey(ci)] || [])];
+}
+
 function renderCatCard(cat, ci) {
   const rows = cat.events.map((ev, ei) => renderCatEventRow(ev, ei, ci)).join('');
   return `
@@ -3511,6 +3557,7 @@ function renderCatCard(cat, ci) {
         <button class="btn-cat-dismiss" id="cat-dis-btn-${ci}" onclick="event.stopPropagation(); catDismiss(${ci})">Dismiss</button>
       </div>
     </div>
+    ${renderCatRecipients(ci)}
     <div class="cat-card-body" id="cat-body-${ci}" style="display:none">
       <div id="cat-event-list-${ci}">${rows}</div>
       <div class="cat-body-footer">
@@ -3682,7 +3729,7 @@ async function catAddAllGroups() {
     try {
       const res = await fetch('/api/calendars/group-approve', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }),
+        body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name, recipientEmails: catRecipientEmails(ci) }),
       });
       const data = await res.json();
       if (res.ok) totalAdded += data.addedCount || 0;
@@ -3707,7 +3754,7 @@ async function catAddAll(ci) {
   try {
     const res = await fetch('/api/calendars/group-approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name }),
+      body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name, recipientEmails: catRecipientEmails(ci) }),
     });
     const data = await res.json();
     if (res.ok) {

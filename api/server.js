@@ -1831,6 +1831,20 @@ app.post('/api/calendars/group-add-people', requireAuth, async (req, res) => {
 app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   const { calendarId, category } = req.body;
   if (!calendarId || !category) return res.status(400).json({ error: 'Missing data' });
+
+  // Invitees ticked once at the group level, applied to every event in the
+  // group. Same rule as the single-event path: only addresses the user has
+  // already saved are honoured, because these become real emails to real
+  // people and the request body is not a trustworthy invitee list.
+  const groupRecipients = [];
+  if (Array.isArray(req.body.recipientEmails) && req.body.recipientEmails.length) {
+    const saved = new Set((await getSavedRecipients(req.user.email)).map(r => r.email));
+    for (const raw of req.body.recipientEmails) {
+      const addr = String(raw || '').trim().toLowerCase();
+      if (saved.has(addr) && !groupRecipients.includes(addr)) groupRecipients.push(addr);
+    }
+  }
+
   const events = getUserEvents(req.user.email);
   const all = await events.entries();
   const groupEvents = all.filter(([, ev]) => ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft');
@@ -1855,13 +1869,19 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
       const catSpan = resolveRecurringSpan(ev.recurrence_rule, ev.date, ev.end_date, ev.recurrence_end_date);
       const { start, end } = buildCalendarTimes(ev.date, ev.time, catSpan.endDate, ev.end_time, groupTz);
       const eventAttendees = (ev.attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
+      for (const addr of groupRecipients) {
+        if (!eventAttendees.some(a => String(a.email).toLowerCase() === addr)) eventAttendees.push({ email: addr });
+      }
       const description = ev.type === 'recurring' && ev.recurring_note
         ? `Added via Criba — recurring: ${ev.recurring_note}`
         : 'Added via Criba';
       const resource = { summary: ev.title, location: ev.location || '', start, end, attendees: eventAttendees, description };
       if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, catSpan.recurrenceEndDate)];
       if (colorId) resource.colorId = String(colorId);
-      const calEvent = await calendar.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
+      // Ticking an invitee is a request to notify them — silent invites defeat
+      // the point. Without invitees, stay quiet as before.
+      const sendUpdates = groupRecipients.length ? 'all' : 'none';
+      const calEvent = await calendar.events.insert({ calendarId: targetCalId, sendUpdates, resource });
       ev.status = 'added';
       ev.reviewed = false;
       ev.calEventId = calEvent.data.id;

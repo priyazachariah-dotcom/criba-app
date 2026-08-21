@@ -1325,7 +1325,11 @@ async function loadPlacesScript() {
   try {
     const res = await fetch('/api/config');
     if (!res.ok) return;
-    const { placesApiKey } = await res.json();
+    const raw = (await res.json()).placesApiKey;
+    // Trimmed here too: a key with surrounding whitespace produces
+    // "key=%20AIza..." and Google rejects it without throwing, so the
+    // location field silently never suggests anything.
+    const placesApiKey = String(raw || '').trim();
     if (!placesApiKey) return;
 
     // Resolve immediately if a previous call already loaded the API.
@@ -1346,7 +1350,7 @@ async function loadPlacesScript() {
       // Do NOT add loading=async here — that mode requires importLibrary() and
       // makes the callback fire before google.maps.places is available.
       // The old callback= + libraries= pattern loads everything synchronously.
-      s.src = `https://maps.googleapis.com/maps/api/js?key=${placesApiKey}&libraries=places&callback=${callbackName}`;
+      s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(placesApiKey)}&libraries=places&callback=${callbackName}`;
       s.onerror = reject;
       document.head.appendChild(s);
     });

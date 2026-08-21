@@ -3426,7 +3426,11 @@ app.get('/api/cron/gmail', async (req, res) => {
 // publishable (it's restricted by HTTP referrer in Google Cloud Console)
 // so returning it here is safe — it never exposes server secrets.
 app.get('/api/config', (req, res) => {
-  res.json({ placesApiKey: process.env.GOOGLE_PLACES_API_KEY || '' });
+  // Trimmed: a key pasted into the dashboard with a leading space goes into
+  // the Maps script URL as "key=%20AIza...", which Google rejects. Nothing
+  // throws — Autocomplete constructs fine and then silently returns no
+  // predictions, so the location field just quietly stops suggesting.
+  res.json({ placesApiKey: String(process.env.GOOGLE_PLACES_API_KEY || '').trim() });
 });
 
 // Noise labels used by the live webhook path only. The backfill uses a positive

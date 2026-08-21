@@ -3623,9 +3623,13 @@ function renderInlineEditor(ev, ci, ei) {
        <input type="date" class="gcal-input gcal-input-date" id="ced-enddate-${key}" value="${ev.end_date || ''}" />`
     : `<input type="date" class="gcal-input gcal-input-date" id="ced-date-${key}" value="${ev.date || ''}" />`;
 
+  // The end time used to render only for type 'timed'/'minimum_day', so an
+  // event that had a start time but came back under any other type offered no
+  // way to say when it finished. Anything with a start time can have an end.
   const timeFields = `
     <input type="time" class="gcal-input gcal-input-time" id="ced-time-${key}" value="${ev.time || ''}" />
-    ${isTimed ? `<span class="gcal-sep">–</span><input type="time" class="gcal-input gcal-input-time" id="ced-endtime-${key}" value="${ev.end_time || ''}" />` : ''}
+    <span class="gcal-sep">–</span>
+    <input type="time" class="gcal-input gcal-input-time" id="ced-endtime-${key}" value="${ev.end_time || ''}" />
     <span class="gcal-hint">blank = all-day</span>`;
 
   return `

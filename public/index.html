@@ -351,6 +351,13 @@
   .quick-adds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; }
   .quick-add-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .quick-add-label { font-size: 12px; color: var(--text2); }
+  /* Sits inline with the field it copies, so it reads as an action on that
+     value rather than a form-level control. */
+  .group-apply-btn { margin-left: 10px; padding: 2px 9px; font-size: 11px; font-family: inherit;
+    color: var(--ink); background: transparent; border: 1px solid rgba(0,0,0,0.25);
+    border-radius: 999px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+  .group-apply-btn:hover:not(:disabled) { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .group-apply-btn:disabled { opacity: 0.5; cursor: default; }
   /* Sits between the group header and the collapsed body, so it stays readable
      without expanding a single event. */
   .cat-recipients { margin: 0; padding: 8px 16px 10px; border-top: 1px solid rgba(0,0,0,0.07); }
@@ -3666,7 +3673,8 @@ function renderInlineEditor(ev, ci, ei) {
     <input type="time" class="gcal-input gcal-input-time" id="ced-time-${key}" value="${ev.time || ''}" />
     <span class="gcal-sep">–</span>
     <input type="time" class="gcal-input gcal-input-time" id="ced-endtime-${key}" value="${ev.end_time || ''}" />
-    <span class="gcal-hint">blank = all-day</span>`;
+    <span class="gcal-hint">blank = all-day</span>
+    ${groupApplyBtn(ci, key, 'time')}`;
 
   return `
   <div class="gcal-editor">
@@ -3687,6 +3695,7 @@ function renderInlineEditor(ev, ci, ei) {
       <span class="material-icons gcal-icon">place</span>
       <input type="text" class="gcal-input gcal-input-wide" id="ced-loc-${key}"
              value="${(ev.location || '').replace(/"/g,'&quot;')}" placeholder="Add location" />
+      ${groupApplyBtn(ci, key, 'location')}
     </div>
 
     <div class="gcal-row">
@@ -3720,6 +3729,71 @@ function renderInlineEditor(ev, ci, ei) {
       <span id="ced-status-${key}" style="font-size:0.8rem"></span>
     </div>
   </div>`;
+}
+
+// ── Apply one field across a whole imported group ──────────────────────────
+//
+// Imported schedules carry dates but rarely times — those live on a different
+// page of the same site. Retyping the same time into nine editors is slower
+// than using Google Calendar directly, so the first edit offers to become the
+// answer for the whole group.
+//
+// This persists server-side rather than just filling the other forms, because
+// "Add all" approves the STORED drafts and never reads the DOM.
+const GROUP_APPLY_LABEL = { time: 'time', end_time: 'end time', location: 'location', title: 'title' };
+
+function groupApplyBtn(ci, key, field) {
+  const count = groupsState.categories[ci]?.events.length || 0;
+  if (count < 2) return '';   // nothing to apply it to
+  return `<button type="button" class="group-apply-btn" id="ga-${field}-${key}"
+            onclick="applyFieldToGroup(${ci}, '${key}', '${field}')"
+            title="Use this ${GROUP_APPLY_LABEL[field]} for all ${count} events in this group">
+            Apply to all ${count}</button>`;
+}
+
+async function applyFieldToGroup(ci, key, field) {
+  const cat = groupsState.categories[ci];
+  if (!cat) return;
+  const srcId = field === 'location' ? `ced-loc-${key}`
+              : field === 'end_time' ? `ced-endtime-${key}`
+              : field === 'title' ? `ced-title-${key}`
+              : `ced-time-${key}`;
+  const value = document.getElementById(srcId)?.value || '';
+  const btn = document.getElementById(`ga-${field}-${key}`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Applying…'; }
+
+  // The end time is meaningless without its start, so a single click on the
+  // time row carries both rather than making the user click twice.
+  const pairs = [[field, value]];
+  if (field === 'time') {
+    const endVal = document.getElementById(`ced-endtime-${key}`)?.value || '';
+    if (endVal) pairs.push(['end_time', endVal]);
+  }
+
+  try {
+    for (const [f, v] of pairs) {
+      const res = await fetch('/api/calendars/group-apply', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name, field: f, value: v }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed');
+      }
+      // Mirror into local state so the re-render shows it without a refetch.
+      cat.events.forEach(ev => {
+        ev[f] = v || null;
+        if (f === 'time') ev.type = v ? 'timed' : 'all_day';
+      });
+    }
+    renderCategoryPage();
+    // Re-open the editor the user was working in — a silent collapse reads as
+    // the click having failed.
+    toggleEventEditor(ci, Number(String(key).split('-')[1]));
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Apply to all'; }
+    alert(`Could not apply to the group: ${e.message}`);
+  }
 }
 
 // ── Category page interactions ────────────────────────────────────────────

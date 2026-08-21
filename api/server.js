@@ -1853,6 +1853,45 @@ app.post('/api/calendars/group-add-people', requireAuth, async (req, res) => {
 // skipping the individual review queue. Continues past per-event failures
 // (e.g. a single bad date) so one bad event doesn't block the rest of the
 // group — failures are reported back for the user to review individually.
+// Apply one field to every draft event in a group.
+//
+// An imported schedule usually carries dates but no times — the times live on
+// a different page of the same site. Without this the user retypes the same
+// 1:00 PM into nine editors, which is slower than adding the events to Google
+// Calendar by hand and destroys the reason to use Criba at all.
+//
+// This writes through to storage rather than just filling the forms, because
+// group-approve reads the stored drafts and never sees the DOM.
+const GROUP_APPLY_FIELDS = new Set(['time', 'end_time', 'location', 'title']);
+
+app.post('/api/calendars/group-apply', requireAuth, async (req, res) => {
+  const { calendarId, category, field, value } = req.body;
+  if (!calendarId || !category) return res.status(400).json({ error: 'Missing data' });
+  if (!GROUP_APPLY_FIELDS.has(field)) return res.status(400).json({ error: `Cannot apply "${field}" to a whole group` });
+
+  const events = getUserEvents(req.user.email);
+  const all = await events.entries();
+  const groupEvents = all.filter(([, ev]) =>
+    ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft');
+  if (!groupEvents.length) return res.status(404).json({ error: 'No draft events found for this category' });
+
+  const clean = String(value ?? '').trim();
+  const updates = [];
+  for (const [id, ev] of groupEvents) {
+    ev[field] = clean || null;
+    // A start time turns an all-day entry into a timed one; clearing it turns
+    // it back. Leaving the type stale would render the wrong editor fields and
+    // write the wrong kind of calendar entry.
+    if (field === 'time') {
+      if (clean && (ev.type === 'all_day' || !ev.type)) ev.type = 'timed';
+      if (!clean && ev.type === 'timed') { ev.type = 'all_day'; ev.end_time = null; }
+    }
+    updates.push([id, ev]);
+  }
+  await events.setMany(updates);
+  res.json({ ok: true, updatedCount: updates.length, field, value: clean });
+});
+
 app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
   const { calendarId, category } = req.body;
   if (!calendarId || !category) return res.status(400).json({ error: 'Missing data' });

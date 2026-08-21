@@ -26,6 +26,32 @@
     --radius: 0px;
   }
   body { background: var(--bg); color: var(--ink); font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+
+  /* Google appends .pac-container to <body>, outside every container in this
+     file, so it inherited none of the app's layout and rendered as a collapsed
+     row of icons with unreadable suggestions. Google ships no stylesheet of its
+     own here — these rules are the whole appearance of the dropdown. */
+  .pac-container {
+    background: #fff; border: 1px solid rgba(0,0,0,0.15); border-radius: 8px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.18); font-family: 'Inter', -apple-system, sans-serif;
+    /* Above the category editor and any overlay, or the list renders behind
+       the panel and cannot be clicked. */
+    z-index: 100000; display: block; overflow: hidden; margin-top: 2px;
+  }
+  .pac-item {
+    display: block; padding: 8px 12px; font-size: 13px; line-height: 1.5;
+    color: var(--ink); cursor: pointer; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; border-top: 1px solid rgba(0,0,0,0.06);
+  }
+  .pac-item:first-child { border-top: none; }
+  .pac-item:hover, .pac-item-selected { background: rgba(0,0,0,0.05); }
+  .pac-item-query { font-size: 13px; color: var(--ink); padding-right: 4px; }
+  .pac-matched { font-weight: 600; }
+  /* The sprite icon is what rendered as a row of dark pins. It adds nothing
+     next to the address text, so it is dropped rather than restyled. */
+  .pac-icon { display: none; }
+  .hdpi .pac-icon { display: none; }
+  .pac-logo:after { display: none; height: 0; margin: 0; padding: 0; }
   #app-screen { background: var(--bg); }
 
   /* ── Auth ─────────────────────────────────────────────────────────── */

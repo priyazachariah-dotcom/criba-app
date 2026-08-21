@@ -351,6 +351,10 @@
   .quick-adds { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 8px; }
   .quick-add-group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
   .quick-add-label { font-size: 12px; color: var(--text2); }
+  /* The dot doubles as the colour control, so it needs to look pressable. */
+  .member-dot-btn { cursor: pointer; box-shadow: 0 0 0 2px rgba(0,0,0,0.10); }
+  .member-dot-btn:hover { box-shadow: 0 0 0 3px rgba(0,0,0,0.30); }
+  .member-colors { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0 12px 26px; }
   /* Sits inline with the field it copies, so it reads as an action on that
      value rather than a form-level control. */
   .group-apply-btn { margin-left: 10px; padding: 2px 9px; font-size: 11px; font-family: inherit;
@@ -1122,14 +1126,55 @@ function renderSettingsPage() {
     el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">No family members yet — add one below.</div>';
     return;
   }
+  // The colour was settable only while adding someone, so the sole way to
+  // correct it was to delete the person and recreate them. The dot is now the
+  // control that changes it.
   el.innerHTML = familyMembers.map(m => `
     <div class="member-row">
-      <span class="member-dot" style="background:${memberColor(m.color)}"></span>
-      <span class="member-name">${m.name}</span>
+      <span class="member-dot member-dot-btn" style="background:${memberColor(m.color)}"
+            title="Change ${escHtml(m.name)}'s colour" onclick="toggleMemberColors('${m.id}')"></span>
+      <span class="member-name">${escHtml(m.name)}</span>
       ${m.googleCalendarId ? '<span class="member-cal-badge">Calendar created</span>' : ''}
       <button class="member-delete" title="Remove" onclick="deleteMember('${m.id}')">✕</button>
     </div>
+    <div class="member-colors" id="member-colors-${m.id}" style="display:none"></div>
   `).join('');
+}
+
+function toggleMemberColors(id) {
+  const box = document.getElementById(`member-colors-${id}`);
+  if (!box) return;
+  const opening = box.style.display === 'none';
+  // Only one open at a time — two open swatch rows make it ambiguous which
+  // person a click is about to recolour.
+  document.querySelectorAll('.member-colors').forEach(b => { b.style.display = 'none'; });
+  if (!opening) return;
+  box.style.display = 'block';
+  const current = familyMembers.find(m => m.id === id)?.color;
+  box.innerHTML = Object.entries(GCAL_COLORS).map(([cid, hex]) =>
+    `<span class="color-swatch${current === cid ? ' selected' : ''}" style="background:${hex}"
+       title="Colour ${cid}" onclick="setMemberColor('${id}', '${cid}')"></span>`).join('');
+}
+
+async function setMemberColor(id, colorId) {
+  const member = familyMembers.find(m => m.id === id);
+  if (!member) return;
+  const previous = member.color;
+  member.color = colorId;          // optimistic — the swatch should feel instant
+  renderSettingsPage();
+  try {
+    const res = await fetch(`/api/family/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ color: colorId, eventColor: colorId }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed');
+    const saved = await res.json();
+    Object.assign(member, saved);
+  } catch (e) {
+    member.color = previous;       // never leave a colour showing that did not save
+    renderSettingsPage();
+    alert(`Could not change the colour: ${e.message}`);
+  }
 }
 
 function toggleAddMemberForm() {

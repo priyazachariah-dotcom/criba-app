@@ -753,23 +753,6 @@
       </div>
     </div>
 
-    <!-- People routinely invited to events. Each becomes a tick box on every
-         review card, so a co-parent never needs finding in contact search. -->
-    <div class="test-mode-panel">
-      <div class="test-mode-panel-header">
-        <span class="test-mode-panel-title">Who else gets invited</span>
-      </div>
-      <div class="test-mode-body">
-        <div class="test-mode-desc">Save the people you invite again and again — a co-parent, a grandparent. Each one appears as a tick box on every event, so you can add them with one click instead of searching contacts each time. They receive a normal Google Calendar invitation and can accept or decline.</div>
-        <div id="recipient-list" style="margin-bottom:10px"></div>
-        <div class="test-mode-field">
-          <input type="text" id="recipient-name-input" placeholder="Name" style="max-width:140px" />
-          <input type="text" id="recipient-email-input" placeholder="them@example.com" />
-          <button class="btn-filled btn-sm" onclick="addRecipient()">Add</button>
-        </div>
-        <div id="recipient-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
-      </div>
-    </div>
 
     <!-- Migration: move per-person calendars to single primary calendar -->
     <div class="test-mode-panel" style="margin-top:0">
@@ -856,6 +839,20 @@
           <button class="btn-secondary" onclick="toggleAddMemberForm()">Cancel</button>
         </div>
       </div>
+    </div>
+    <!-- Moved here from the Tools panel. Setting up who events go to belongs
+         next to setting up whose events they are — both are things a new user
+         does once, and neither is a debugging tool. -->
+    <div class="settings-section">
+      <div class="settings-section-title">Who else gets invited</div>
+      <div class="page-desc" style="margin:0 0 0.75rem">Save the people you invite again and again — a co-parent, a grandparent. Each one becomes a tick box on every event, so you add them with one click instead of searching contacts. They get a normal Google Calendar invitation and can accept or decline.</div>
+      <div id="recipient-list" style="margin-bottom:10px"></div>
+      <div class="test-mode-field">
+        <input type="text" id="recipient-name-input" placeholder="Name" style="max-width:140px" />
+        <input type="text" id="recipient-email-input" placeholder="them@example.com" />
+        <button class="btn-filled btn-sm" onclick="addRecipient()">Add</button>
+      </div>
+      <div id="recipient-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
     </div>
   </div>
 
@@ -1785,7 +1782,9 @@ function showPage(page, btn) {
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(`page-${page}`).classList.add('active');
   if (btn) btn.classList.add('active');
-  if (page === 'settings') renderSettingsPage();
+  // renderSettingsPage returns early when there are no members, so the
+  // recipient list is painted separately rather than chained onto it.
+  if (page === 'settings') { renderSettingsPage(); renderRecipients(); }
 }
 
 let lastScanDays = null; // set after a successful backfill so the header reflects the window

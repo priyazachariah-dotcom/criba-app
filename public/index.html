@@ -735,7 +735,7 @@
   <div class="page" id="page-calendars">
     <div class="page-title-block">
       <div class="page-headline page-headline-sm">UPLOAD</div>
-      <div class="page-desc">Connect calendar sources via URL or PDF. Add all events at once or review each group first.</div>
+      <div class="page-desc">Connect calendar sources via URL, PDF or screenshot. Add all events at once or review each group first.</div>
     </div>
     <!-- Test mode panel -->
     <div class="test-mode-panel">
@@ -792,14 +792,14 @@
           <label>Source</label>
           <div class="source-tabs">
             <button class="source-tab active" onclick="switchSource('url', this)">URL subscription</button>
-            <button class="source-tab" onclick="switchSource('pdf', this)">Upload PDF</button>
+            <button class="source-tab" onclick="switchSource('pdf', this)">Upload file</button>
           </div>
           <div id="source-url"><input type="url" id="cal-url" placeholder="https://calendar.google.com/calendar/ical/..." /></div>
           <div id="source-pdf" style="display:none">
             <div class="drop-zone" id="drop-zone" onclick="document.getElementById('pdf-input').click()">
-              <div id="drop-zone-text">Click to upload PDF or drag and drop</div>
+              <div id="drop-zone-text">Click to upload a PDF or screenshot, or drag and drop</div>
             </div>
-            <input type="file" id="pdf-input" accept=".pdf" style="display:none" onchange="handleFileSelect(this)" />
+            <input type="file" id="pdf-input" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" style="display:none" onchange="handleFileSelect(this)" />
             <div style="font-size:0.8rem;opacity:0.7;margin-top:0.5rem">
               Schedules, holiday lists or closure notices all work. Criba proposes
               what to add and what to remove — nothing changes until you approve.
@@ -3210,7 +3210,7 @@ function showCalForm() {
   selectedFile = null;
   calMemberId = '';
   renderCalMemberChips();
-  document.getElementById('drop-zone-text').textContent = 'Click to upload PDF or drag and drop';
+  document.getElementById('drop-zone-text').textContent = 'Click to upload a PDF or screenshot, or drag and drop';
   document.getElementById('drop-zone').classList.remove('has-file');
 }
 
@@ -3254,12 +3254,29 @@ function switchSource(type, btn) {
   document.getElementById('source-pdf').style.display = type === 'pdf' ? 'block' : 'none';
 }
 
-function handleFileSelect(input) {
-  if (input.files[0]) {
-    selectedFile = input.files[0];
-    document.getElementById('drop-zone-text').textContent = `📄 ${selectedFile.name}`;
-    document.getElementById('drop-zone').classList.add('has-file');
+// League and school sites publish schedules as web tables with no feed and no
+// download, so a screenshot is often the only way to capture one.
+const UPLOAD_OK = /^(application\/pdf|image\/(png|jpe?g|gif|webp))$/i;
+function uploadFileOk(file) {
+  return UPLOAD_OK.test(file.type || '') || /\.(pdf|png|jpe?g|gif|webp)$/i.test(file.name || '');
+}
+
+function acceptUploadFile(file) {
+  // Silently dropping an unsupported file taught the user the button was
+  // broken rather than that the file was wrong. Always say something.
+  if (!file) return;
+  if (!uploadFileOk(file)) {
+    alert(`"${file.name}" is not a PDF or an image.\n\nUpload a PDF or a screenshot (PNG, JPG, GIF or WEBP).`);
+    return;
   }
+  selectedFile = file;
+  const icon = /^image\//i.test(file.type || '') || /\.(png|jpe?g|gif|webp)$/i.test(file.name) ? '🖼️' : '📄';
+  document.getElementById('drop-zone-text').textContent = `${icon} ${file.name}`;
+  document.getElementById('drop-zone').classList.add('has-file');
+}
+
+function handleFileSelect(input) {
+  acceptUploadFile(input.files[0]);
 }
 
 const dropZone = document.getElementById('drop-zone');
@@ -3267,12 +3284,7 @@ dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classL
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
 dropZone.addEventListener('drop', e => {
   e.preventDefault(); dropZone.classList.remove('dragover');
-  const file = e.dataTransfer.files[0];
-  if (file && file.type === 'application/pdf') {
-    selectedFile = file;
-    document.getElementById('drop-zone-text').textContent = `📄 ${file.name}`;
-    dropZone.classList.add('has-file');
-  }
+  acceptUploadFile(e.dataTransfer.files[0]);
 });
 
 async function submitCalendar() {
@@ -3287,7 +3299,7 @@ async function submitCalendar() {
     const url = document.getElementById('cal-url').value.trim();
     if (!url) { alert('Please enter a URL'); return; }
   } else {
-    if (!selectedFile) { alert('Please select a PDF'); return; }
+    if (!selectedFile) { alert('Please select a PDF or screenshot'); return; }
   }
 
   // Colours are assigned once at setup, so the owner is already ticked on the
@@ -3320,7 +3332,7 @@ async function doImport(name, isUrl, memberId, btn, status) {
       btn.disabled = false;
     }
   } else {
-    status.innerHTML = '<div class="loading"><div class="spinner"></div>Reading PDF with AI — takes about 30 seconds...</div>';
+    status.innerHTML = '<div class="loading"><div class="spinner"></div>Reading your file with AI — takes about 30 seconds...</div>';
     const formData = new FormData();
     formData.append('pdf', selectedFile);
     formData.append('name', name);

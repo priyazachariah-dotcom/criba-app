@@ -1615,26 +1615,51 @@ async function liveCalendarEvents(email) {
   return all.filter(e => e.calEventId && e.status !== 'cancelled' && e.status !== 'dismissed');
 }
 
+// A schedule is just as often a screenshot as a PDF — school and league sites
+// publish them as web tables with no feed and no download. Claude reads images
+// natively, so the only thing that ever blocked this was the hardcoded PDF
+// media type. Images use an "image" block; PDFs use a "document" block.
+const UPLOAD_IMAGE_TYPES = {
+  'image/png': 'image/png',
+  'image/jpeg': 'image/jpeg',
+  'image/jpg': 'image/jpeg',
+  'image/gif': 'image/gif',
+  'image/webp': 'image/webp',
+};
+
+function buildUploadBlock(mimetype, filename, base64) {
+  const mime = String(mimetype || '').toLowerCase();
+  const imageType = UPLOAD_IMAGE_TYPES[mime]
+    || (/\.(png|jpe?g|gif|webp)$/i.test(filename || '')
+        ? UPLOAD_IMAGE_TYPES['image/' + String(filename).split('.').pop().toLowerCase().replace(/^jpg$/, 'jpeg')]
+        : null);
+  if (imageType) {
+    return { block: { type: 'image', source: { type: 'base64', media_type: imageType, data: base64 } }, kind: 'image' };
+  }
+  return { block: { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }, kind: 'pdf' };
+}
+
 app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req, res) => {
   const { name, memberId } = req.body;
-  if (!req.file) return res.status(400).json({ error: 'No PDF uploaded' });
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   if (!name) return res.status(400).json({ error: 'Calendar name is required' });
   const pdfPath = req.file.path;
   try {
     const pdfBuffer = fs.readFileSync(pdfPath);
     const pdfBase64 = pdfBuffer.toString('base64');
+    const { block: pdfBlock, kind } = buildUploadBlock(req.file.mimetype, req.file.originalname, pdfBase64);
+    const label = kind === 'image' ? 'screenshot of a school/family/league calendar' : 'school/family calendar PDF';
     const response = await anthropic.messages.create({
       model: 'claude-fable-5',
       max_tokens: 4096,
       messages: [{
         role: 'user',
         content: [
-          { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
-          { type: 'text', text: `This is a school/family calendar PDF. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward.\n\n${FULL_EXTRACTION_PROMPT}` }
+          pdfBlock,
+          { type: 'text', text: `This is a ${label}. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward.\n\nIf the source shows dates without a year, infer the year from the weekday when one is given (for example "Saturday, January 9th" only matches a year in which January 9th is a Saturday), and otherwise choose the next occurrence after today.\n\n${FULL_EXTRACTION_PROMPT}` }
         ]
       }]
     });
-    const pdfBlock = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } };
     const closures = await extractClosures(pdfBlock, new Date().toISOString().split('T')[0]);
     const removals = closures.length
       ? matchClosuresToEvents(closures, await liveCalendarEvents(req.user.email))
@@ -1645,12 +1670,12 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     try {
       const raw = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim());
       flatEvents = Array.isArray(raw) ? raw : [];
-    } catch { return res.status(500).json({ error: 'AI could not parse this PDF.' }); }
+    } catch { return res.status(500).json({ error: `AI could not parse this ${kind === 'image' ? 'image' : 'PDF'}.` }); }
     // A closure list produces no additions and that is a success, not a
     // failure — it is the whole point of uploading one. Only error when the
     // document had no effect on the calendar at all.
     if (!flatEvents.length && !removals.length) {
-      return res.status(400).json({ error: 'No events found in this PDF' });
+      return res.status(400).json({ error: `No events found in this ${kind === 'image' ? 'image' : 'PDF'}` });
     }
     if (!flatEvents.length) {
       return res.json({ ok: true, calendarId: null, totalEvents: 0, categories: [], removals });

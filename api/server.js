@@ -1410,7 +1410,12 @@ app.post('/api/events/dismiss-reschedule', requireAuth, async (req, res) => {
 });
 app.get('/api/calendars', requireAuth, async (req, res) => {
   const cals = getUserCalendars(req.user.email);
-  res.json((await cals.values()).sort((a,b) => b.created_at > a.created_at ? 1 : -1));
+  const list = (await cals.values()).sort((a,b) => b.created_at > a.created_at ? 1 : -1);
+  // Self-healing enrolment: feeds added before nightly sync existed are not in
+  // the subscriber set, so they would never be re-read. Loading the page is
+  // enough to enrol them rather than needing a one-off migration script.
+  if (list.some(c => c.source === 'ical' && c.url)) await redis.sadd('icalSubscribers', req.user.email);
+  res.json(list);
 });
 
 app.delete('/api/calendars/:id', requireAuth, async (req, res) => {
@@ -1511,44 +1516,245 @@ function normalizeIcalUrl(url) {
   return /^webcal:\/\//i.test(trimmed) ? trimmed.replace(/^webcal:\/\//i, 'https://') : trimmed;
 }
 
-app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
-  const { name, url, memberId } = req.body;
-  if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
-  try {
-    const icalEvents = await ical.async.fromURL(normalizeIcalUrl(url));
-    const today = new Date(); today.setHours(0,0,0,0);
-    const endDate = new Date('2027-08-31');
-    const futureEvents = Object.values(icalEvents).filter(ev => {
-      if (ev.type !== 'VEVENT') return false;
-      const start = ev.start ? new Date(ev.start) : null;
-      return start && start >= today && start <= endDate;
-    });
-    if (futureEvents.length === 0) return res.status(400).json({ error: 'No upcoming events found in this calendar' });
+// The Google event body for one stored Criba event. Extracted so the import
+// path, the approve path and the subscription re-sync all build events the
+// same way — three copies of this drifted apart is exactly how a synced event
+// ends up losing its colour or its recurrence rule.
+function buildGoogleResource(ev, { colorId, tz, extraAttendees = [] }) {
+  if (!ev.date) throw new Error('Missing date');
+  const span = resolveRecurringSpan(ev.recurrence_rule, ev.date, ev.end_date, ev.recurrence_end_date);
+  const { start, end } = buildCalendarTimes(ev.date, ev.time, span.endDate, ev.end_time, tz);
+  const attendees = (ev.attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
+  for (const addr of extraAttendees) {
+    if (!attendees.some(a => String(a.email).toLowerCase() === addr)) attendees.push({ email: addr });
+  }
+  const description = ev.type === 'recurring' && ev.recurring_note
+    ? `Added via Criba — recurring: ${ev.recurring_note}`
+    : 'Added via Criba';
+  const resource = { summary: ev.title, location: ev.location || '', start, end, attendees, description };
+  if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, span.recurrenceEndDate)];
+  if (colorId) resource.colorId = String(colorId);
+  return resource;
+}
 
-    const rawEvents = futureEvents.map(ev => ({
+// How far ahead a feed import or re-sync looks. A feed can carry years of
+// history; only the part of it that is still ahead of the user matters.
+function icalWindow() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const end = new Date(today); end.setFullYear(end.getFullYear() + 2);
+  return { today, end };
+}
+
+// Fetch a feed and reduce it to the upcoming VEVENTs we care about, keyed by
+// the feed's own UID. UID is what makes re-sync possible: it is stable across
+// fetches, so "the school moved Week 4" reads as a change to a known event
+// rather than as a brand new one plus an orphan.
+async function fetchIcalEvents(url) {
+  const parsed = await ical.async.fromURL(normalizeIcalUrl(url));
+  const { today, end } = icalWindow();
+  const out = [];
+  for (const ev of Object.values(parsed)) {
+    if (ev.type !== 'VEVENT') continue;
+    const start = ev.start ? new Date(ev.start) : null;
+    if (!start || start < today || start > end) continue;
+    // Cancelled entries stay in many feeds rather than disappearing; treating
+    // one as a live event would put a cancelled game back on the calendar.
+    if (String(ev.status || '').toUpperCase() === 'CANCELLED') continue;
+    out.push({
+      uid: String(ev.uid || '') || null,
       title: ev.summary || 'Untitled Event',
       location: ev.location || '',
       source_category: ev.categories?.[0] || 'School Events',
       ...parseIcalEventDates(ev),
-    }));
-
-    // AI classification is best-effort: if it fails, fall back to the
-    // previous behavior (group by the feed's own category, type "other")
-    // rather than failing the whole import.
-    let classifications;
-    try {
-      classifications = await classifyIcalEventsWithAI(rawEvents);
-    } catch (aiErr) {
-      console.error('iCal AI classification failed, falling back to raw categories:', aiErr.message);
-      classifications = rawEvents.map((r, index) => ({ index, type: 'other', category: r.source_category, recurring_note: null }));
-    }
-    const classByIndex = new Map(classifications.map(c => [c.index, c]));
-
-    const finalEvents = rawEvents.map((r, index) => {
-      const cls = classByIndex.get(index) || { type: 'other', category: r.source_category, recurring_note: null };
-      const norm = normalizeExtractedEvent({ ...r, type: cls.type, recurring_note: cls.recurring_note });
-      return { title: r.title, ...norm, category: cls.category || r.source_category };
     });
+  }
+  return out;
+}
+
+// The fields that decide whether an already-written event still matches the
+// feed. Title, when, and where — the things a parent would notice.
+function icalFingerprint(ev) {
+  return [ev.title || '', ev.date || '', ev.time || '', ev.end_date || '', ev.end_time || '', ev.location || '']
+    .map(s => String(s).trim()).join('|');
+}
+
+// Classification is best-effort. If Anthropic is down the import still
+// succeeds using the feed's own categories — a previously non-AI path should
+// not start failing just because it gained an AI step.
+async function classifyIcalEvents(rawEvents) {
+  let classifications;
+  try {
+    classifications = await classifyIcalEventsWithAI(rawEvents);
+  } catch (aiErr) {
+    console.error('iCal AI classification failed, falling back to raw categories:', aiErr.message);
+    classifications = rawEvents.map((r, index) => ({ index, type: 'other', category: r.source_category, recurring_note: null }));
+  }
+  const byIndex = new Map(classifications.map(c => [c.index, c]));
+  return rawEvents.map((r, index) => {
+    const cls = byIndex.get(index) || { type: 'other', category: r.source_category, recurring_note: null };
+    const norm = normalizeExtractedEvent({ ...r, type: cls.type, recurring_note: cls.recurring_note });
+    // uid is carried through deliberately: normalizeExtractedEvent drops
+    // anything it does not know about, and without the uid re-sync is blind.
+    return { title: r.title, uid: r.uid, ...norm, category: cls.category || r.source_category };
+  });
+}
+
+// Writes already-stored events to Google and marks them added. Used by the
+// feed import and the nightly sync; the interactive approve path keeps its own
+// copy because it also handles group invitees and per-request notification.
+async function writeCalendarEvents(user, calendarId, eventIds, { auth: presetAuth } = {}) {
+  const events = getUserEvents(user.email);
+  const cals = getUserCalendars(user.email);
+  const calSrc = await cals.get(calendarId);
+  const auth = presetAuth || await getUserOAuthClient(user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const targetCalId = await resolveTargetCalendar(user.email);
+  const colorId = await resolveEventColor(user.email, null, calSrc);
+  const tz = await getUserTimezone(user.email);
+
+  let addedCount = 0;
+  const failed = [];
+  const updates = [];
+  for (const id of eventIds) {
+    const ev = await events.get(id);
+    if (!ev || ev.status === 'added') continue;
+    try {
+      const resource = buildGoogleResource(ev, { colorId, tz });
+      const created = await calendar.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
+      ev.status = 'added';
+      ev.reviewed = false;
+      ev.calEventId = created.data.id;
+      ev.gcalId = targetCalId;
+      ev.approved_at = new Date().toISOString();
+      updates.push([id, ev]);
+      addedCount++;
+    } catch (err) {
+      console.error(`Calendar write failed for event ${id}:`, err.message);
+      failed.push({ id, title: ev.title, error: err.message });
+    }
+  }
+  if (updates.length) await events.setMany(updates);
+  return { addedCount, failed };
+}
+
+// Re-reads one subscribed feed and makes the user's calendar match it.
+// Deliberately silent: the user chose no notifications, on the reasoning that a
+// November game moving in August is noise. Three outcomes per event —
+//   in feed, not ours      -> add it
+//   in both, changed       -> patch the existing Google event in place
+//   ours, gone from feed   -> delete it (the source dropped it)
+// Patching rather than delete+insert keeps the Google event id stable, so
+// anything the user did to it by hand (a reminder, an invitee) survives.
+async function syncIcalCalendar(userEmail, cal) {
+  const refreshToken = await redis.get(`refreshToken:${userEmail}`);
+  if (!refreshToken) throw new Error('No stored refresh token');
+  const auth = getOAuthClientFromRefreshToken(refreshToken);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const user = { email: userEmail };
+
+  const feed = await fetchIcalEvents(cal.url);
+  // An empty parse is far more likely to be a server hiccup or a moved URL
+  // than a school deleting its whole year. Wiping the calendar on that guess
+  // is unrecoverable, so treat it as nothing-to-do.
+  if (!feed.length) return { added: 0, updated: 0, removed: 0, skipped: 'empty feed' };
+
+  const events = getUserEvents(userEmail);
+  const all = await events.entries();
+  const ours = all.filter(([, ev]) => ev.calendar_id === cal.id);
+  const oursByUid = new Map(ours.filter(([, ev]) => ev.ical_uid).map(([id, ev]) => [ev.ical_uid, { id, ev }]));
+
+  const { today, end } = icalWindow();
+  const feedUids = new Set(feed.map(f => f.uid).filter(Boolean));
+  const targetCalId = await resolveTargetCalendar(userEmail);
+  const colorId = await resolveEventColor(userEmail, null, cal);
+  const tz = await getUserTimezone(userEmail);
+
+  let added = 0, updated = 0, removed = 0;
+
+  // 1. Changed events — patch in place.
+  const changed = [];
+  for (const f of feed) {
+    if (!f.uid) continue;
+    const match = oursByUid.get(f.uid);
+    if (!match) continue;
+    if (icalFingerprint(f) === match.ev.ical_fingerprint) continue;
+    changed.push({ f, ...match });
+  }
+  if (changed.length) {
+    const reclassified = await classifyIcalEvents(changed.map(c => c.f));
+    const updates = [];
+    for (let i = 0; i < changed.length; i++) {
+      const { id, ev } = changed[i];
+      Object.assign(ev, reclassified[i], { ical_fingerprint: icalFingerprint(changed[i].f) });
+      try {
+        if (ev.calEventId) {
+          await calendar.events.patch({
+            calendarId: ev.gcalId || targetCalId, eventId: ev.calEventId,
+            sendUpdates: 'none', resource: buildGoogleResource(ev, { colorId, tz }),
+          });
+          updated++;
+        }
+        updates.push([id, ev]);
+      } catch (err) {
+        console.error(`[ical sync] patch failed for ${id}:`, err.message);
+      }
+    }
+    if (updates.length) await events.setMany(updates);
+  }
+
+  // 2. New events — classify, store, write.
+  const fresh = feed.filter(f => f.uid && !oursByUid.has(f.uid));
+  if (fresh.length) {
+    const classified = await classifyIcalEvents(fresh);
+    const pairs = classified.map(ev => {
+      const evId = randomUUID();
+      return [evId, {
+        id: evId, calendar_id: cal.id, ...ev, attendees: [], source: cal.name,
+        ical_uid: ev.uid || null, ical_fingerprint: icalFingerprint(ev),
+        status: 'draft', created_at: new Date().toISOString(),
+      }];
+    });
+    await events.setMany(pairs);
+    const res = await writeCalendarEvents(user, cal.id, pairs.map(([id]) => id), { auth });
+    added = res.addedCount;
+  }
+
+  // 3. Dropped events — the feed no longer has them. Only ever remove events
+  // Criba itself put there from this feed, still in the window we fetched, so
+  // a shrunken feed window can never delete a user's own entries.
+  const removals = [];
+  for (const [id, ev] of ours) {
+    if (!ev.ical_uid || feedUids.has(ev.ical_uid)) continue;
+    if (!ev.date) continue;
+    const when = new Date(`${ev.date}T00:00:00`);
+    if (when < today || when > end) continue;
+    removals.push([id, ev]);
+  }
+  for (const [id, ev] of removals) {
+    try {
+      if (ev.calEventId) {
+        await calendar.events.delete({ calendarId: ev.gcalId || targetCalId, eventId: ev.calEventId, sendUpdates: 'none' });
+      }
+      await events.delete(id);
+      removed++;
+    } catch (err) {
+      // A 404/410 means it is already gone from Google — drop our record too.
+      if ([404, 410].includes(err?.code)) { await events.delete(id); removed++; continue; }
+      console.error(`[ical sync] delete failed for ${id}:`, err.message);
+    }
+  }
+
+  return { added, updated, removed };
+}
+
+app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
+  const { name, url, memberId } = req.body;
+  if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
+  try {
+    const rawEvents = await fetchIcalEvents(url);
+    if (rawEvents.length === 0) return res.status(400).json({ error: 'No upcoming events found in this calendar' });
+
+    const finalEvents = await classifyIcalEvents(rawEvents);
 
     const categoryMap = new Map();
     for (const ev of finalEvents) {
@@ -1559,16 +1765,35 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
 
     const calId = randomUUID();
     const cals = getUserCalendars(req.user.email);
-    await cals.set(calId, { id: calId, name, source: 'ical', url, memberId: memberId || null, event_count: 0, created_at: new Date().toISOString() });
+    const cal = { id: calId, name, source: 'ical', url, memberId: memberId || null, event_count: 0, created_at: new Date().toISOString() };
+    await cals.set(calId, cal);
 
+    // A subscription is not a suggestion. Pasting the link is the approval, so
+    // these go straight onto the calendar — unlike PDF and image uploads, where
+    // AI read a picture and could be wrong. Feeds are the source's own data.
     const events = getUserEvents(req.user.email);
     const eventPairs = finalEvents.map(ev => {
       const evId = randomUUID();
-      return [evId, { id: evId, calendar_id: calId, ...ev, attendees: [], source: name, status: 'draft', created_at: new Date().toISOString() }];
+      return [evId, {
+        id: evId, calendar_id: calId, ...ev, attendees: [], source: name,
+        ical_uid: ev.uid || null, ical_fingerprint: icalFingerprint(ev),
+        status: 'draft', created_at: new Date().toISOString(),
+      }];
     });
     await events.setMany(eventPairs);
 
-    res.json({ ok: true, calendarId: calId, totalEvents: finalEvents.length, categories });
+    const written = await writeCalendarEvents(req.user, calId, eventPairs.map(([id]) => id));
+
+    // Remember this user has feeds so the nightly sync knows to visit them.
+    await redis.sadd('icalSubscribers', req.user.email);
+    cal.event_count = written.addedCount;
+    cal.last_synced_at = new Date().toISOString();
+    await cals.set(calId, cal);
+
+    res.json({
+      ok: true, calendarId: calId, totalEvents: finalEvents.length, categories,
+      autoAdded: true, addedCount: written.addedCount, failed: written.failed,
+    });
   } catch (err) {
     console.error('iCal error:', err);
     res.status(500).json({ error: 'Failed to fetch calendar: ' + err.message });
@@ -3363,6 +3588,49 @@ app.post('/api/gmail/webhook', async (req, res) => {
 
   console.log(`[webhook] DONE for ${emailAddress}`);
   res.status(200).json({ ok: true });
+});
+
+// GET /api/cron/ical — Vercel cron job. Re-reads every subscribed feed and
+// makes the calendar match it. Silent by design: no email, no review queue.
+// The user's point was that a parent adds a feed and forgets it, so a change
+// months out is noise rather than news.
+app.get('/api/cron/ical', async (req, res) => {
+  const isVercelCron = req.headers['x-vercel-cron'] === '1';
+  const hasCronSecret = process.env.CRON_SECRET && req.headers['x-cron-secret'] === process.env.CRON_SECRET;
+  if (!isVercelCron && !hasCronSecret) return res.status(401).json({ error: 'Unauthorized' });
+
+  const emails = await redis.smembers('icalSubscribers');
+  const totals = { calendars: 0, added: 0, updated: 0, removed: 0, errors: [] };
+
+  for (const email of emails) {
+    try {
+      const cals = getUserCalendars(email);
+      const feeds = (await cals.values()).filter(c => c.source === 'ical' && c.url);
+      // Nothing left to sync — stop visiting this user every night.
+      if (!feeds.length) { await redis.srem('icalSubscribers', email); continue; }
+      for (const cal of feeds) {
+        try {
+          const r = await syncIcalCalendar(email, cal);
+          totals.calendars++;
+          totals.added += r.added; totals.updated += r.updated; totals.removed += r.removed;
+          cal.last_synced_at = new Date().toISOString();
+          cal.last_sync_error = null;
+          await cals.set(cal.id, cal);
+        } catch (err) {
+          console.error(`[ical sync] ${email} / ${cal.name}:`, err.message);
+          totals.errors.push({ email, calendar: cal.name, error: err.message });
+          // Surfaced in the subscriptions list so a feed that quietly stopped
+          // working is visible rather than just silently stale.
+          cal.last_sync_error = err.message;
+          await cals.set(cal.id, cal);
+        }
+      }
+    } catch (err) {
+      console.error(`[ical sync] user ${email}:`, err.message);
+      totals.errors.push({ email, error: err.message });
+    }
+  }
+  res.json({ ok: true, ...totals });
 });
 
 // GET /api/cron/gmail — Vercel cron job (daily at 2am UTC).

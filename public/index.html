@@ -276,6 +276,17 @@
   .cal-list-name { font-weight: 700; font-size: 15px; }
   .cal-list-meta { font-size: 0.8rem; color: var(--text2); margin-top: 2px; }
   .cal-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; flex-shrink: 0; }
+  .cal-section { margin-bottom: 40px; }
+  .cal-section-head { margin-bottom: 4px; }
+  .cal-section-title { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .cal-section-sub { font-size: 0.8rem; color: var(--text2); margin-top: 4px; max-width: 60ch; }
+  .cal-member-group { margin-top: 18px; }
+  .cal-member-name { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; }
+  .cal-feed-link { color: var(--text2); text-decoration: underline; }
+  .cal-feed-link:hover { color: var(--ink); }
+  .cal-sync-bad { color: #b3261e; font-weight: 600; }
+  .cal-sub-done { font-size: 0.875rem; padding: 12px 0; line-height: 1.6; }
+  .cal-sub-note { font-size: 0.8rem; color: var(--text2); }
   .cal-delete { background: none; border: none; cursor: pointer; color: var(--text2); font-size: 1.1rem; padding: 4px 8px; }
   .cal-delete:hover { color: var(--red); }
   .loading { display: flex; align-items: center; gap: 8px; color: var(--text2); font-size: 0.875rem; padding: 1rem 0; }
@@ -3272,20 +3283,91 @@ document.addEventListener('click', e => {
 });
 
 // ── Calendars page ────────────────────────────────────────────────────────
+function memberNameFor(memberId) {
+  return familyMembers.find(m => String(m.id) === String(memberId))?.name || 'Everyone';
+}
+
+// A subscription URL is long and ugly, and the useful part is "which site is
+// this from" — enough to recognise a feed without wrapping across three lines.
+function shortFeedUrl(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); }
+  catch { return String(url || '').slice(0, 40); }
+}
+
+function syncedLabel(cal) {
+  if (cal.last_sync_error) return `<span class="cal-sync-bad">not updating — ${escHtml(cal.last_sync_error)}</span>`;
+  if (!cal.last_synced_at) return `checks daily`;
+  const d = new Date(cal.last_synced_at);
+  return `updated ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+
+function calRow(cal, i, meta) {
+  return `
+    <div class="cal-list-item">
+      <div style="display:flex;align-items:center;min-width:0">
+        <div class="cal-dot" style="background:${CAL_COLORS[i % CAL_COLORS.length]}"></div>
+        <div style="min-width:0">
+          <div class="cal-list-name">${escHtml(cal.name)}</div>
+          <div class="cal-list-meta">${meta}</div>
+        </div>
+      </div>
+      <button class="cal-delete" onclick="deleteCalendar('${cal.id}')">×</button>
+    </div>`;
+}
+
 function renderCalendars() {
   const container = document.getElementById('cal-list');
   if (!calendars.length) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">📅</div><h3>No calendars yet</h3><p>Add a school or sports calendar to get started.</p></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">📅</div><h3>No calendars yet</h3><p>Subscribe to a calendar link, or upload a PDF or screenshot.</p></div>`;
     return;
   }
-  container.innerHTML = calendars.map((cal, i) => `
-    <div class="cal-list-item">
-      <div style="display:flex;align-items:center">
-        <div class="cal-dot" style="background:${CAL_COLORS[i % CAL_COLORS.length]}"></div>
-        <div><div class="cal-list-name">${escHtml(cal.name)}</div><div class="cal-list-meta">${cal.event_count || 0} events · ${cal.source === 'ical' ? 'iCal' : 'PDF'}</div></div>
-      </div>
-      <button class="cal-delete" onclick="deleteCalendar('${cal.id}')">×</button>
-    </div>`).join('');
+
+  // Two genuinely different things, so they get two sections rather than one
+  // mixed list. Subscriptions are live links that keep themselves current;
+  // uploads are a one-time read of a document.
+  const subs = calendars.filter(c => c.source === 'ical');
+  const uploads = calendars.filter(c => c.source !== 'ical');
+  const out = [];
+
+  if (subs.length) {
+    // Grouped by kid, because that is how a parent thinks about them —
+    // "all of Aarav's calendars" — not by when they happened to be added.
+    const byMember = new Map();
+    for (const cal of subs) {
+      const who = memberNameFor(cal.memberId);
+      if (!byMember.has(who)) byMember.set(who, []);
+      byMember.get(who).push(cal);
+    }
+    const groups = [...byMember.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    out.push(`
+      <div class="cal-section">
+        <div class="cal-section-head">
+          <h3 class="cal-section-title">Calendars you're subscribed to</h3>
+          <p class="cal-section-sub">These add to your calendar automatically and stay up to date on their own.</p>
+        </div>
+        ${groups.map(([who, list]) => `
+          <div class="cal-member-group">
+            <div class="cal-member-name">${escHtml(who)}</div>
+            ${list.map((cal, i) => calRow(cal, i, `
+              <a class="cal-feed-link" href="${escHtml(cal.url)}" target="_blank" rel="noopener noreferrer"
+                 title="${escHtml(cal.url)}">${escHtml(shortFeedUrl(cal.url))}</a>
+              · ${cal.event_count || 0} events · ${syncedLabel(cal)}`)).join('')}
+          </div>`).join('')}
+      </div>`);
+  }
+
+  if (uploads.length) {
+    out.push(`
+      <div class="cal-section">
+        <div class="cal-section-head">
+          <h3 class="cal-section-title">Uploaded files</h3>
+          <p class="cal-section-sub">Read once from a PDF or screenshot. You approve these before they reach your calendar.</p>
+        </div>
+        ${uploads.map((cal, i) => calRow(cal, i, `${cal.event_count || 0} events · ${escHtml(memberNameFor(cal.memberId))}`)).join('')}
+      </div>`);
+  }
+
+  container.innerHTML = out.join('');
 }
 
 async function deleteCalendar(id) {
@@ -3406,7 +3488,7 @@ async function submitCalendar() {
 async function doImport(name, isUrl, memberId, btn, status) {
   if (isUrl) {
     const url = document.getElementById('cal-url').value.trim();
-    status.innerHTML = '<div class="loading"><div class="spinner"></div>Fetching calendar...</div>';
+    status.innerHTML = '<div class="loading"><div class="spinner"></div>Subscribing and adding events to your calendar...</div>';
     try {
       const res = await fetch('/api/calendars/add-ical', {
         method: 'POST', headers: {'Content-Type':'application/json'},
@@ -3414,10 +3496,20 @@ async function doImport(name, isUrl, memberId, btn, status) {
       });
       const data = await res.json();
       if (res.ok && data.categories) {
-        // Navigate straight to the category review page — do not route to the Review queue
+        // A subscription needs no review page: pasting the link was the
+        // approval, and the events are already on the calendar by the time
+        // this response arrives. Only uploads route to the category review.
         hideCalForm();
         await loadCalendars();
-        await loadCategoryGroups(data.calendarId, name, data.totalEvents, memberId);
+        const failed = (data.failed || []).length;
+        status.innerHTML = `<div class="cal-sub-done">
+          Subscribed to <strong>${escHtml(name)}</strong> — ${data.addedCount} events added to your calendar.
+          ${failed ? `<br><span class="cal-sync-bad">${failed} could not be added.</span>` : ''}
+          <br><span class="cal-sub-note">Criba re-checks this link daily and keeps your calendar matching it.</span>
+        </div>`;
+        // Re-enabled so a second calendar can be added without a page reload —
+        // the success path used to navigate away, so nobody noticed it stuck.
+        btn.disabled = false;
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
         btn.disabled = false;

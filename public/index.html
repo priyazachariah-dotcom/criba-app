@@ -672,6 +672,9 @@
       <button class="nav-btn active" id="nav-review-btn" onclick="showPage('review', this)">Review<span id="review-count-label"></span></button>
       <button class="nav-btn" id="nav-recent-btn" onclick="showPage('recent', this)">Edit Calendar Events</button>
       <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
+      <!-- The Family page was built but never linked, so members could never be
+           added — which silently disabled every colour feature downstream. -->
+      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">Family</button>
     </nav>
     <div class="header-user-section">
       <span class="live-pill" id="live-pill" title="Checking…">

@@ -1501,11 +1501,21 @@ Return ONLY valid JSON, no markdown, in this shape: {"results":[{"index":0,"type
   return parsed.results;
 }
 
+// "Subscribe to calendar" links hand out webcal:// URLs — it is the scheme that
+// makes a desktop calendar app open instead of a browser tab. Over the wire it
+// is plain HTTP, but fetch() refuses the scheme outright, so a user pasting the
+// link straight from a school or team site hit "Unsupported protocol webcal:".
+// Swap the scheme and the same URL works.
+function normalizeIcalUrl(url) {
+  const trimmed = String(url || '').trim();
+  return /^webcal:\/\//i.test(trimmed) ? trimmed.replace(/^webcal:\/\//i, 'https://') : trimmed;
+}
+
 app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
   const { name, url, memberId } = req.body;
   if (!name || !url) return res.status(400).json({ error: 'Name and URL are required' });
   try {
-    const icalEvents = await ical.async.fromURL(url);
+    const icalEvents = await ical.async.fromURL(normalizeIcalUrl(url));
     const today = new Date(); today.setHours(0,0,0,0);
     const endDate = new Date('2027-08-31');
     const futureEvents = Object.values(icalEvents).filter(ev => {

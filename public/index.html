@@ -819,6 +819,14 @@
             </div>
           </div>
         </div>
+        <!-- Whose calendar this is. Colours are chosen once during setup, so
+             here it is a single tick rather than a modal that blocks the
+             import — and skipping it is a valid answer for a calendar that
+             covers the whole family. -->
+        <div class="form-group" id="cal-member-group" style="display:none">
+          <label>Whose is this?</label>
+          <div class="quick-adds" id="cal-member-chips"></div>
+        </div>
         <div id="extract-status"></div>
         <div class="form-actions">
           <button class="btn-primary" id="cal-submit-btn" onclick="submitCalendar()">Add calendar</button>
@@ -3197,8 +3205,38 @@ function showCalForm() {
   document.getElementById('cal-submit-btn').disabled = false;
   document.getElementById('cal-submit-btn').onclick = submitCalendar;
   selectedFile = null;
+  calMemberId = '';
+  renderCalMemberChips();
   document.getElementById('drop-zone-text').textContent = 'Click to upload PDF or drag and drop';
   document.getElementById('drop-zone').classList.remove('has-file');
+}
+
+// Whose calendar is being imported — '' means everyone / nobody in particular.
+let calMemberId = '';
+
+// Hidden entirely when no members exist, so setup is the only place a person
+// gets created. An import is never blocked on it.
+function renderCalMemberChips() {
+  const group = document.getElementById('cal-member-group');
+  const el = document.getElementById('cal-member-chips');
+  if (!group || !el) return;
+  group.style.display = familyMembers.length ? 'block' : 'none';
+  if (!familyMembers.length) return;
+  el.innerHTML = `
+    <div class="quick-add-group">
+      ${familyMembers.map(m => `
+        <button type="button" class="quick-chip ${calMemberId === m.id ? 'on' : ''}" id="cm-${m.id}"
+                onclick="setCalMember('${m.id}')">
+          <span class="quick-dot" style="background:${memberColor(m.eventColor || m.color)}"></span>${escHtml(m.name)}
+        </button>`).join('')}
+      <button type="button" class="quick-chip ${calMemberId === '' ? 'on' : ''}" id="cm-none"
+              onclick="setCalMember('')">Everyone</button>
+    </div>`;
+}
+
+function setCalMember(id) {
+  calMemberId = id;
+  renderCalMemberChips();
 }
 
 function hideCalForm() {
@@ -3249,11 +3287,10 @@ async function submitCalendar() {
     if (!selectedFile) { alert('Please select a PDF'); return; }
   }
 
-  // Show "who is this for?" picker before submitting
-  showMemberPicker(async (memberId) => {
-    btn.disabled = true;
-    await doImport(name, isUrl, memberId, btn, status);
-  });
+  // Colours are assigned once at setup, so the owner is already ticked on the
+  // form. Import goes straight through — no modal standing in front of it.
+  btn.disabled = true;
+  await doImport(name, isUrl, calMemberId, btn, status);
 }
 
 async function doImport(name, isUrl, memberId, btn, status) {

@@ -4897,6 +4897,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         // genuinely had no dates, or that the body was cut at 8000 chars before
         // the schedule appeared, or that the content was in an unfetched image.
         bodyLen: c.body.length, truncated: c.body.length > 8000, imgs: imageCount,
+        // Without the titles, a count cannot distinguish "Claude never saw the
+        // reminder" from "Claude found it and a later stage dropped it" — the
+        // two have completely different fixes. Type included because the
+        // deadlines and financial reminders are what keep going missing while
+        // the plain events from the same email come through.
+        claudeTitles: extracted.map(e => `${e.source_type || 'event'}:${e.title || '(untitled)'}@${e.date || '(no date)'}`),
       });
 
       try {

@@ -4193,11 +4193,35 @@ const SNIPPET_DATE_PATTERNS = [
   { name: 'date-slash', re: /\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/ },
   // \d{1,2}(?:st|nd|rd|th)? covers plain numbers AND ordinal suffixes:
   // "July 15", "July 15th", "the 3rd", "August 22nd", "due on the 1st"
-  { name: 'month-day',  re: /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?/i },
+  // "sept" needs its own branch: sep(?:tember)? matches "sep" or "september"
+  // and nothing in between, so "Sept 3" — the way most people actually write a
+  // September date — did not register as a date at all.
+  { name: 'month-day',  re: /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?/i },
   // Also catch bare ordinals near common date prepositions: "due on the 15th", "by the 3rd"
   { name: 'ordinal',    re: /\b(?:on|by|the|due)\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b/i },
   { name: 'weekday',    re: /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun)\b/i },
   { name: 'relative',   re: /\b(today|tomorrow|this week|next week|this weekend)\b/i },
+  // Dotted dates: "Invoice 8.21.26". Kept tight — three dot-separated numbers
+  // is a date; anything looser starts matching version numbers and distances.
+  { name: 'date-dots',  re: /\b\d{1,2}\.\d{1,2}\.\d{2,4}\b/ },
+];
+
+// Things that need doing but name no date.
+//
+// The prefilter looked for dates and nothing else, while the extractor is built
+// to return deadlines, action items and financial reminders. The two disagreed,
+// and the gate won: "Past-Due Recreation Balance", "$219.00 payment to CLEAR was
+// unsuccessful again" and both Verdura invoices were dropped at SKIP-BODY
+// without ever reaching Claude. A past-due balance is the most actionable mail
+// in the inbox and it almost never carries a date — that is what "past due"
+// means.
+//
+// These only widen what gets read. Nothing here decides an event exists; Claude
+// still does that, and returns nothing for a genuine receipt.
+const ACTIONABLE_PATTERNS = [
+  { name: 'money',      re: /\$\s?\d/ },
+  { name: 'owing',      re: /\b(past[-\s]?due|overdue|balance|amount due|payment due|unpaid|outstanding|invoice|statement|autopay|declined|unsuccessful)\b/i },
+  { name: 'obligation', re: /\b(deadline|due date|rsvp|sign[-\s]?up|register|renew|expires?|last day|reminder|action required|respond by|submit)\b/i },
 ];
 // Returns { pass, matchName, matchValue } if a calendar signal was found in the
 // snippet, or { pass: false, escalate: true } in all no-match cases.
@@ -4212,7 +4236,7 @@ const SNIPPET_DATE_PATTERNS = [
 // snippetLen param is kept for API compatibility but no longer drives skip logic.
 function scanForDateContent(text, snippetLen) {
   if (!text || text.trim().length === 0) return { pass: false, escalate: true };
-  for (const { name, re } of SNIPPET_DATE_PATTERNS) {
+  for (const { name, re } of [...SNIPPET_DATE_PATTERNS, ...ACTIONABLE_PATTERNS]) {
     const m = text.match(re);
     if (m) return { pass: true, matchName: name, matchValue: m[0] };
   }

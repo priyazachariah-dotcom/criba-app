@@ -769,6 +769,11 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
   try {
     const auth = await getUserOAuthClient(req.user);
     const people = google.people({ version: 'v1', auth });
+    // Collected rather than swallowed. Every branch below used to fall back to
+    // an empty result list, which made "your token has no contacts scope" and
+    // "nobody matched" indistinguishable — the dropdown simply never appeared
+    // and the feature looked broken with nothing to go on.
+    const apiErrors = [];
 
     // The People API's searchContacts/otherContacts.search endpoints both use
     // a lazy, per-account cache: the first search after login (or after the
@@ -804,6 +809,7 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
       pageSize: 10,
     }).catch(err => {
       console.error('Contacts (My Contacts) search error:', JSON.stringify(err.response?.data || {}), err.message);
+      apiErrors.push({ source: 'myContacts', code: err?.code || err?.response?.status, message: err.message });
       return { data: { results: [] } };
     });
 
@@ -817,6 +823,7 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
       pageSize: 10,
     }).catch(err => {
       console.error('Contacts (Other Contacts) search error:', JSON.stringify(err.response?.data || {}), err.message);
+      apiErrors.push({ source: 'otherContacts', code: err?.code || err?.response?.status, message: err.message });
       return { data: { results: [] } };
     });
 
@@ -831,6 +838,7 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
       sources: ['DIRECTORY_SOURCE_TYPE_DOMAIN_PROFILE'],
     }).catch(err => {
       console.error('Contacts (Directory) search error:', JSON.stringify(err.response?.data || {}), err.message);
+      apiErrors.push({ source: 'directory', code: err?.code || err?.response?.status, message: err.message });
       return { data: { people: [] } };
     });
 
@@ -849,7 +857,17 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
       name: p.names?.[0]?.displayName || '',
       email: p.emailAddresses?.[0]?.value || '',
     });
+    // Saved people first, and matched locally. These are the two or three
+    // addresses that actually get used — a partner, a nanny — and making them
+    // depend on a Google API call that needs three extra scopes and a warmup
+    // cache is why "add guests" could stop working at all. This part cannot
+    // fail.
+    const ql = String(q).toLowerCase();
+    const savedMatches = (await getSavedRecipients(req.user.email)).filter(r =>
+      String(r.name || '').toLowerCase().includes(ql) || String(r.email || '').toLowerCase().includes(ql));
+
     const all = [
+      ...savedMatches.map(r => ({ name: r.name || r.email, email: r.email })),
       ...(myContactsRes.data.results || []).map(toContact),
       ...(otherContactsRes.data.results || []).map(toContact),
       ...(directoryRes.data.people || []).map(toDirContact),
@@ -863,9 +881,17 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
       seen.add(key);
       contacts.push(c);
     }
+    // Tell the frontend the difference between "nobody matched" and "Google
+    // wouldn't answer". Only the two personal-contact sources count: the
+    // directory call 403s routinely on personal @gmail.com accounts and that
+    // is normal, not a failure worth showing anyone.
+    const authFailed = apiErrors.some(e =>
+      e.source !== 'directory' && (e.code === 401 || e.code === 403));
+    if (!contacts.length && authFailed) res.set('X-Contacts-Api-Error', '1');
     res.json(contacts);
   } catch (err) {
     console.error('Contacts error:', JSON.stringify(err.response?.data || {}), err.message, err.stack);
+    res.set('X-Contacts-Api-Error', '1');
     res.json([]);
   }
 });

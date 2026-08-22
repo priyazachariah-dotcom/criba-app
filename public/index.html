@@ -2962,6 +2962,20 @@ function toggleReviewAllDay(id) {
 }
 
 // ── Review queue contacts search (id-keyed) ───────────────────────────────
+// Zero results has two very different causes. If Google refused the request —
+// usually a token issued before the contacts scopes were added — hiding the
+// dropdown makes "add guests" look like it does nothing at all, with nothing
+// on screen to act on. Say so instead.
+function showContactsEmpty(drop, res) {
+  if (!drop) return;
+  if (res && res.headers.get('X-Contacts-Api-Error')) {
+    drop.innerHTML = '<div class="contact-option" style="cursor:default"><div class="contact-name">Google Contacts unavailable</div><div class="contact-email">Reconnect your Google account in Settings, or add people there to search them here.</div></div>';
+    drop.style.display = 'block';
+    return;
+  }
+  drop.style.display = 'none';
+}
+
 async function searchRvContacts(id, q) {
   clearTimeout(rvSearchTimers[id]);
   const drop = document.getElementById(`rv-cdrop-${id}`);
@@ -2970,7 +2984,7 @@ async function searchRvContacts(id, q) {
     try {
       const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
       const contacts = await res.json();
-      if (!contacts.length) { drop.style.display = 'none'; return; }
+      if (!contacts.length) { showContactsEmpty(drop, res); return; }
       drop.innerHTML = contacts.map(c =>
         `<div class="contact-option" onclick="addRvPerson('${id}','${c.name.replace(/'/g,"\\'")}','${c.email}')">
           <div class="contact-name">${escHtml(c.name)}</div>
@@ -3263,7 +3277,7 @@ async function searchContacts(i, q) {
     try {
       const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
       const contacts = await res.json();
-      if (!contacts.length) { drop.style.display = 'none'; return; }
+      if (!contacts.length) { showContactsEmpty(drop, res); return; }
       drop.innerHTML = contacts.map(c =>
         `<div class="contact-option" onclick="addPerson(${i}, '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${escHtml(c.name)}</div><div class="contact-email">${escHtml(c.email)}</div></div>`
       ).join('');
@@ -4212,7 +4226,7 @@ async function searchCedContacts(key, q) {
     try {
       const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
       const contacts = await res.json();
-      if (!contacts.length) { drop.style.display = 'none'; return; }
+      if (!contacts.length) { showContactsEmpty(drop, res); return; }
       drop.innerHTML = contacts.map(c =>
         `<div class="contact-option" onclick="addCedPerson('${key}', '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${escHtml(c.name)}</div><div class="contact-email">${escHtml(c.email)}</div></div>`
       ).join('');

@@ -3314,9 +3314,17 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
   const gpFamily = await getUserFamily(email).values();
   const gpFamilyNames = gpFamily.map(m => m.name).filter(Boolean);
 
-  // Always advance historyId first so we don't reprocess on retry
-  watchData.historyId = newHistoryId || startHistoryId;
-  await redis.set(`gmailWatch:${email}`, JSON.stringify(watchData));
+  // The cursor is NOT advanced here. It used to be, "so we don't reprocess on
+  // retry" — but the per-message lock below already does that job, and moving
+  // past the range before doing the work meant any failure after this point
+  // lost those emails permanently. history.list erroring, an Anthropic call
+  // failing, or the function hitting Vercel's 60s maxDuration mid-batch all
+  // ended the same way: the next webhook started after the emails it never
+  // read. The cursor now advances only once the work is actually done.
+  const advanceHistoryCursor = async () => {
+    watchData.historyId = newHistoryId || startHistoryId;
+    await redis.set(`gmailWatch:${email}`, JSON.stringify(watchData));
+  };
 
   let historyData;
   try {
@@ -3339,7 +3347,8 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
     }
   }
   console.log(`[gmail-process] email=${email} found ${messageIds.size} new message(s) in history`);
-  if (!messageIds.size) return;
+  // Nothing to do, so the range is genuinely consumed — safe to move past it.
+  if (!messageIds.size) { await advanceHistoryCursor(); return; }
 
   const eventsStore = getUserEvents(email);
 
@@ -3515,6 +3524,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       console.error(`[gmail-process] ERROR messageId=${messageId} email=${email}:`, err.message, err.stack?.split('\n')[1]);
     }
   }
+  await advanceHistoryCursor();
   console.log(`[gmail-process] DONE email=${email}`);
 }
 

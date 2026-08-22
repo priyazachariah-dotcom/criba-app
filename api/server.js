@@ -1418,14 +1418,56 @@ app.get('/api/calendars', requireAuth, async (req, res) => {
   res.json(list);
 });
 
-app.delete('/api/calendars/:id', requireAuth, async (req, res) => {
-  const cals = getUserCalendars(req.user.email);
-  await cals.delete(req.params.id);
+// How many of this calendar's events are still ahead of the user. Deleting a
+// finished season should leave the games that already happened alone; deleting
+// mid-season is a different decision, and the count is what tells them apart.
+app.get('/api/calendars/:id/upcoming-count', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
-  for (const [eid, ev] of await events.entries()) {
-    if (ev.calendar_id === req.params.id && ev.status === 'pending') await events.delete(eid);
+  const todayStr = new Date().toLocaleDateString('en-CA');
+  const upcoming = (await events.values()).filter(ev =>
+    ev.calendar_id === req.params.id && ev.status === 'added' && ev.calEventId && ev.date >= todayStr);
+  res.json({ upcomingCount: upcoming.length });
+});
+
+app.delete('/api/calendars/:id', requireAuth, async (req, res) => {
+  const calId = req.params.id;
+  const removeUpcoming = req.query.removeUpcoming === '1';
+  const cals = getUserCalendars(req.user.email);
+  const events = getUserEvents(req.user.email);
+  const todayStr = new Date().toLocaleDateString('en-CA');
+
+  let removedFromCalendar = 0;
+  if (removeUpcoming) {
+    // Only ever future events Criba itself wrote from this calendar. Past
+    // events stay put — a season that happened, happened, and wiping the
+    // history is not what "the season is over" means.
+    const calendar = google.calendar({ version: 'v3', auth: await getUserOAuthClient(req.user) });
+    for (const [, ev] of await events.entries()) {
+      if (ev.calendar_id !== calId || ev.status !== 'added' || !ev.calEventId) continue;
+      if (!ev.date || ev.date < todayStr) continue;
+      try {
+        await calendar.events.delete({ calendarId: ev.gcalId, eventId: ev.calEventId, sendUpdates: 'none' });
+        removedFromCalendar++;
+      } catch (err) {
+        // Already gone from Google is a success, not a failure.
+        if ([404, 410].includes(err?.code)) removedFromCalendar++;
+        else console.error(`[calendar delete] ${ev.calEventId}:`, err.message);
+      }
+    }
   }
-  res.json({ ok: true });
+
+  await cals.delete(calId);
+  // Every record for this calendar goes, not just the pending ones. Leaving
+  // them behind orphaned rows that the dedup and sync passes still walked.
+  for (const [eid, ev] of await events.entries()) {
+    if (ev.calendar_id === calId) await events.delete(eid);
+  }
+
+  // Stop the nightly sync visiting a user with no feeds left.
+  const remaining = await cals.values();
+  if (!remaining.some(c => c.source === 'ical' && c.url)) await redis.srem('icalSubscribers', req.user.email);
+
+  res.json({ ok: true, removedFromCalendar });
 });
 
 // Deterministically turns a parsed VEVENT into {date, end_date, time, end_time,

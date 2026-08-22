@@ -3371,8 +3371,45 @@ function renderCalendars() {
 }
 
 async function deleteCalendar(id) {
-  if (!confirm('Remove this calendar?')) return;
-  try { await fetch(`/api/calendars/${id}`, { method: 'DELETE' }); await loadCalendars(); } catch {}
+  const cal = calendars.find(c => c.id === id);
+  const label = cal ? cal.name : 'this calendar';
+  let upcoming = 0;
+  try {
+    const res = await fetch(`/api/calendars/${id}/upcoming-count`);
+    if (res.ok) upcoming = (await res.json()).upcomingCount || 0;
+  } catch {}
+
+  // Two very different intents share one button. Season over: stop syncing,
+  // leave the games that happened. Mid-season: also clear what is still ahead.
+  // Guessing wrong either deletes history or leaves ghost events behind, so ask.
+  let removeUpcoming = false;
+  if (upcoming > 0) {
+    const msg = `Remove "${label}"?\n\nCriba will stop checking this calendar for updates.\n\n`
+      + `There ${upcoming === 1 ? 'is 1 event' : `are ${upcoming} events`} still coming up.\n\n`
+      + `OK — also remove ${upcoming === 1 ? 'it' : 'them'} from your Google Calendar\n`
+      + `Cancel — leave ${upcoming === 1 ? 'it' : 'them'} on your calendar`;
+    // Three outcomes from two buttons, so escape/close is handled separately.
+    const choice = await threeWayConfirm(msg);
+    if (choice === 'abort') return;
+    removeUpcoming = choice === 'yes';
+  } else if (!confirm(`Remove "${label}"?\n\nCriba will stop checking it for updates. Events already on your calendar stay.`)) {
+    return;
+  }
+
+  try {
+    await fetch(`/api/calendars/${id}?removeUpcoming=${removeUpcoming ? 1 : 0}`, { method: 'DELETE' });
+    await loadCalendars();
+  } catch {}
+}
+
+// confirm() gives two answers and we need three (remove events / keep events /
+// never mind). Rather than a custom modal, ask twice: the second question only
+// appears once the user has already committed to removing the calendar.
+async function threeWayConfirm(msg) {
+  if (!confirm(msg)) {
+    return confirm('Leave those events on your calendar and just stop syncing?') ? 'no' : 'abort';
+  }
+  return 'yes';
 }
 
 function showCalForm() {

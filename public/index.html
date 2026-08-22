@@ -1046,10 +1046,7 @@ let groupsState = { calendarId: null, calName: '', categories: [], removals: [] 
 let cedPeople = {};           // key `${ci}-${ei}` → [{name, email}]
 let cedSearchTimers = {};     // debounce timers for inline editor people-search
 
-// Review queue people state (legacy index-based kept for reference)
-let selectedPeople = {};
-let searchTimers = {};
-// New id-keyed people state for redesigned review cards
+// Id-keyed people state for the review cards
 let rvPeople = {};
 let rvSearchTimers = {};
 
@@ -3039,41 +3036,103 @@ function showContactsEmpty(drop, res) {
   drop.style.display = 'none';
 }
 
-async function searchRvContacts(id, q) {
-  clearTimeout(rvSearchTimers[id]);
-  const drop = document.getElementById(`rv-cdrop-${id}`);
-  if (!q || q.length < 2) { if (drop) drop.style.display = 'none'; return; }
-  rvSearchTimers[id] = setTimeout(async () => {
-    try {
-      const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
-      const contacts = await res.json();
-      if (!contacts.length) { showContactsEmpty(drop, res); return; }
-      drop.innerHTML = contacts.map(c =>
-        `<div class="contact-option" onclick="addRvPerson('${id}','${c.name.replace(/'/g,"\\'")}','${c.email}')">
-          <div class="contact-name">${escHtml(c.name)}</div>
-          <div class="contact-email">${escHtml(c.email)}</div>
-        </div>`
+// ── Guest picker ──────────────────────────────────────────────────────────
+// The legacy review cards, the redesigned review cards and the inline category
+// editor all offer the same "add guests" control. They used to be three copies
+// of this logic behind three id schemes, so every guest fix had to be made
+// three times and one copy was always missed. One implementation now,
+// parameterised by the id scheme and the state map it writes into.
+//
+// `state` and `timers` are read through functions because callers reassign the
+// backing maps wholesale (leaving the category page clears cedPeople), and a
+// captured reference would keep pointing at the discarded object.
+function createGuestPicker({ state, timers, inputId, dropId, listId, addFn, removeFn, numericKey }) {
+  // The key is interpolated into inline handler attributes, so it needs the
+  // same quote escaping as any other interpolated string. Numeric keys go bare.
+  const arg = k => numericKey ? String(k) : `'${String(k).replace(/'/g, "\\'")}'`;
+  const find = (idFn, k) => document.getElementById(idFn(k));
+
+  const picker = {
+    render(k) {
+      const el = find(listId, k);
+      if (!el) return;
+      // Attendees extracted from a PDF can carry a name Criba never resolved to
+      // an address, or nothing at all. Those render as a chip with no label and
+      // a lone × that removes nothing, so drop them rather than show them.
+      el.innerHTML = (state()[k] || []).filter(p => p && p.email).map(p =>
+        `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="${removeFn}(${arg(k)}, '${p.email}')">×</button></div>`
       ).join('');
-      drop.style.display = 'block';
-    } catch { if (drop) drop.style.display = 'none'; }
-  }, 300);
+    },
+
+    add(k, name, email) {
+      const map = state();
+      if (!map[k]) map[k] = [];
+      if (map[k].find(p => p.email === email)) return;
+      map[k].push({ name, email });
+      picker.render(k);
+      const inp = find(inputId, k);
+      if (inp) inp.value = '';
+      const drop = find(dropId, k);
+      if (drop) drop.style.display = 'none';
+    },
+
+    remove(k, email) {
+      const map = state();
+      if (map[k]) map[k] = map[k].filter(p => p.email !== email);
+      picker.render(k);
+    },
+
+    search(k, q) {
+      clearTimeout(timers()[k]);
+      const drop = find(dropId, k);
+      if (!q || q.length < 2) { if (drop) drop.style.display = 'none'; return; }
+      timers()[k] = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
+          const contacts = await res.json();
+          if (!contacts.length) { showContactsEmpty(drop, res); return; }
+          drop.innerHTML = contacts.map(c =>
+            `<div class="contact-option" onclick="${addFn}(${arg(k)}, '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${escHtml(c.name)}</div><div class="contact-email">${escHtml(c.email)}</div></div>`
+          ).join('');
+          drop.style.display = 'block';
+        } catch { if (drop) drop.style.display = 'none'; }
+      }, 300);
+    },
+  };
+  return picker;
 }
 
-function addRvPerson(id, name, email) {
-  if (!rvPeople[id]) rvPeople[id] = [];
-  if (rvPeople[id].find(p => p.email === email)) return;
-  rvPeople[id].push({ name, email });
-  renderRvPeople(id);
-  const inp = document.getElementById(`rv-psearch-${id}`);
-  if (inp) inp.value = '';
-  const drop = document.getElementById(`rv-cdrop-${id}`);
-  if (drop) drop.style.display = 'none';
-}
+const rvGuests = createGuestPicker({
+  state: () => rvPeople,
+  timers: () => rvSearchTimers,
+  inputId: id => `rv-psearch-${id}`,
+  dropId: id => `rv-cdrop-${id}`,
+  listId: id => `rv-speople-${id}`,
+  addFn: 'addRvPerson',
+  removeFn: 'removeRvPerson',
+});
 
-function removeRvPerson(id, email) {
-  if (rvPeople[id]) rvPeople[id] = rvPeople[id].filter(p => p.email !== email);
-  renderRvPeople(id);
-}
+const cedGuests = createGuestPicker({
+  state: () => cedPeople,
+  timers: () => cedSearchTimers,
+  inputId: key => `ced-people-${key}`,
+  dropId: key => `ced-drop-${key}`,
+  listId: key => `ced-selected-${key}`,
+  addFn: 'addCedPerson',
+  removeFn: 'removeCedPerson',
+});
+
+// Thin wrappers: the call sites are inline onclick/oninput attributes, which
+// can only reach globals.
+function searchRvContacts(id, q) { rvGuests.search(id, q); }
+function addRvPerson(id, name, email) { rvGuests.add(id, name, email); }
+function removeRvPerson(id, email) { rvGuests.remove(id, email); }
+function renderRvPeople(id) { rvGuests.render(id); }
+
+function searchCedContacts(key, q) { cedGuests.search(key, q); }
+function addCedPerson(key, name, email) { cedGuests.add(key, name, email); }
+function removeCedPerson(key, email) { cedGuests.remove(key, email); }
+function renderCedPeople(key) { cedGuests.render(key); }
 
 // One click to invite a saved person, instead of typing their name into a
 // search box that has to round-trip to Google. Writes into the same rvPeople
@@ -3089,18 +3148,7 @@ function toggleRvSavedPerson(id, ri) {
   renderRvPeople(id);
 }
 
-function renderRvPeople(id) {
-  const el = document.getElementById(`rv-speople-${id}`);
-  if (!el) return;
-  // Attendees extracted from a PDF can carry a name Criba never resolved to an
-  // address, or nothing at all. Those render as a chip with no label and a
-  // lone × that removes nothing, so drop them rather than show them.
-  el.innerHTML = (rvPeople[id] || []).filter(p => p && p.email).map(p =>
-    `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removeRvPerson('${id}','${p.email}')">×</button></div>`
-  ).join('');
-}
-
-// ── Review queue event actions ────────────────────────────────────────────
+// ── Review queue event actions ───────────────────────────────────────────
 async function approveReviewEvent(id) {
   const ev = pendingEvents.find(e => e.id === id);
   if (!ev) return;
@@ -3351,45 +3399,6 @@ function formatTime(t) {
   const [h, m] = t.split(':').map(Number);
   const ampm = h >= 12 ? 'PM' : 'AM';
   return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${ampm}`;
-}
-
-// ── Review queue contacts search ──────────────────────────────────────────
-async function searchContacts(i, q) {
-  clearTimeout(searchTimers[i]);
-  const drop = document.getElementById(`contacts-drop-${i}`);
-  if (!q || q.length < 2) { drop.style.display = 'none'; return; }
-  searchTimers[i] = setTimeout(async () => {
-    try {
-      const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
-      const contacts = await res.json();
-      if (!contacts.length) { showContactsEmpty(drop, res); return; }
-      drop.innerHTML = contacts.map(c =>
-        `<div class="contact-option" onclick="addPerson(${i}, '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${escHtml(c.name)}</div><div class="contact-email">${escHtml(c.email)}</div></div>`
-      ).join('');
-      drop.style.display = 'block';
-    } catch { drop.style.display = 'none'; }
-  }, 300);
-}
-
-function addPerson(i, name, email) {
-  if (!selectedPeople[i]) selectedPeople[i] = [];
-  if (selectedPeople[i].find(p => p.email === email)) return;
-  selectedPeople[i].push({ name, email });
-  renderSelectedPeople(i);
-  document.getElementById(`people-search-${i}`).value = '';
-  document.getElementById(`contacts-drop-${i}`).style.display = 'none';
-}
-
-function removePerson(i, email) {
-  selectedPeople[i] = selectedPeople[i].filter(p => p.email !== email);
-  renderSelectedPeople(i);
-}
-
-function renderSelectedPeople(i) {
-  const el = document.getElementById(`selected-people-${i}`);
-  el.innerHTML = (selectedPeople[i] || []).map(p =>
-    `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removePerson(${i}, '${p.email}')">×</button></div>`
-  ).join('');
 }
 
 document.addEventListener('click', e => {
@@ -4302,49 +4311,7 @@ async function cedApprove(evId, key, ci, ei) {
   }
 }
 
-// ── Inline editor: contacts search ───────────────────────────────────────
-async function searchCedContacts(key, q) {
-  clearTimeout(cedSearchTimers[key]);
-  const drop = document.getElementById(`ced-drop-${key}`);
-  if (!q || q.length < 2) { if (drop) drop.style.display = 'none'; return; }
-  cedSearchTimers[key] = setTimeout(async () => {
-    try {
-      const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q)}`);
-      const contacts = await res.json();
-      if (!contacts.length) { showContactsEmpty(drop, res); return; }
-      drop.innerHTML = contacts.map(c =>
-        `<div class="contact-option" onclick="addCedPerson('${key}', '${c.name.replace(/'/g,"\\'")}', '${c.email}')"><div class="contact-name">${escHtml(c.name)}</div><div class="contact-email">${escHtml(c.email)}</div></div>`
-      ).join('');
-      drop.style.display = 'block';
-    } catch { if (drop) drop.style.display = 'none'; }
-  }, 300);
-}
-
-function addCedPerson(key, name, email) {
-  if (!cedPeople[key]) cedPeople[key] = [];
-  if (cedPeople[key].find(p => p.email === email)) return;
-  cedPeople[key].push({ name, email });
-  renderCedPeople(key);
-  const inp = document.getElementById(`ced-people-${key}`);
-  const drop = document.getElementById(`ced-drop-${key}`);
-  if (inp) inp.value = '';
-  if (drop) drop.style.display = 'none';
-}
-
-function removeCedPerson(key, email) {
-  cedPeople[key] = (cedPeople[key] || []).filter(p => p.email !== email);
-  renderCedPeople(key);
-}
-
-function renderCedPeople(key) {
-  const el = document.getElementById(`ced-selected-${key}`);
-  if (!el) return;
-  el.innerHTML = (cedPeople[key] || []).filter(p => p && p.email).map(p =>
-    `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removeCedPerson('${key}', '${p.email}')">×</button></div>`
-  ).join('');
-}
-
-// ── Logout ────────────────────────────────────────────────────────────────
+// ── Logout ───────────────────────────────────────────────────────────────
 async function logout() { await fetch('/api/auth/logout', { method: 'POST' }); user = null; showAuth(); }
 </script>
 </body>

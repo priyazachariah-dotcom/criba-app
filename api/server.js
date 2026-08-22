@@ -139,6 +139,47 @@ function matchFamilyMember(members, nameStrings, text = '') {
   return null;
 }
 
+// Who is an event about, when nobody's name appears in it?
+//
+// matchFamilyMember needs a name written down somewhere. For the mail that
+// actually fills a family calendar there usually isn't one: "Frosh Home Game vs
+// Redwood" names a school and an opponent, "Regular Early Release Day" names
+// neither. So attribution failed on exactly the events that matter, and the
+// user picked a colour by hand — then picked the same colour for the next mail
+// from the same school, and the next, forever. Criba had every one of those
+// decisions on record and consulted none of them.
+//
+// This reads them back. Keyed on sender domain rather than address because a
+// school speaks through many mailboxes — newsletters@, the coach, the athletic
+// director are all siprep.org, and all about the same child.
+//
+// Only explicit user choices count as evidence. event.member_id is written when
+// the user approves or edits an event, never by a guess; feeding automatic
+// suggestions back in would let one wrong guess confirm itself indefinitely.
+function learnSenderAttribution(allEvents) {
+  const byDomain = new Map();
+  for (const e of allEvents || []) {
+    if (!e?.member_id || !e?.sender_email) continue;
+    const domain = String(e.sender_email).toLowerCase().split('@')[1];
+    if (!domain) continue;
+    if (!byDomain.has(domain)) byDomain.set(domain, new Map());
+    const counts = byDomain.get(domain);
+    counts.set(e.member_id, (counts.get(e.member_id) || 0) + 1);
+  }
+
+  const out = new Map();
+  for (const [domain, counts] of byDomain) {
+    let top = null, topN = 0, total = 0;
+    for (const [id, n] of counts) { total += n; if (n > topN) { topN = n; top = id; } }
+    // Two decisions minimum and the user has to have been consistent. One pick
+    // is an anecdote. A sender split evenly between two children is a sender
+    // that genuinely serves both, and guessing there would be worse than the
+    // blank the user can fill in.
+    if (total >= 2 && topN / total >= 0.75) out.set(domain, { memberId: top, n: topN, total });
+  }
+  return out;
+}
+
 // Resolve event color by matching name strings (from Claude attendees) to family records
 async function resolveEventColorByNames(email, nameStrings, text = '') {
   const members = await getUserFamily(email).values();
@@ -922,13 +963,31 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
   // colours change, and a guess frozen weeks ago would be shown as fact.
   const members = await getUserFamily(req.user.email).values();
   if (members.length) {
+    const learned = learnSenderAttribution(all);
     for (const ev of pending) {
       const text = [ev.title, ev.location, ev.notes].filter(Boolean).join(' ');
       const names = Array.isArray(ev.attendees) ? ev.attendees.map(a => a?.name || a?.email || '') : [];
-      const match = matchFamilyMember(members, names, text);
+      let match = matchFamilyMember(members, names, text);
+      let reason = match ? 'named' : null;
+
+      // Nobody named. Fall back to what this sender has meant every other time.
+      if (!match && ev.sender_email) {
+        const domain = String(ev.sender_email).toLowerCase().split('@')[1];
+        const hit = domain ? learned.get(domain) : null;
+        // The member can have been deleted since those events were attributed.
+        const m = hit && members.find(x => x.id === hit.memberId);
+        if (m) {
+          match = m;
+          reason = `every other ${domain} event you've filed went to ${m.name}`;
+        }
+      }
+
       if (match) {
         ev.suggested_member_id = match.id;
         ev.suggested_color = match.eventColor || match.color || null;
+        // Shown on the card. A colour that appears with no stated reason is the
+        // kind of thing that makes people distrust the whole queue.
+        ev.suggested_reason = reason;
       }
     }
   }
@@ -4762,6 +4821,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Loaded once per request rather than three times per extracted event.
   const knownEvents = dryRun ? [] : await eventsStore.values();
   const familyMembers = dryRun ? [] : await getUserFamily(email).values();
+  // Built from knownEvents, which is every event already stored for this user —
+  // including the ones they have coloured by hand. Computed once per scan.
+  const learnedAttribution = dryRun ? new Map() : learnSenderAttribution(knownEvents);
   const bfCalId = dryRun ? null : await resolveTargetCalendar(email);
 
   // What is already on the user's calendar, including subscribed feeds, so we
@@ -5002,7 +5064,19 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           const conflictNote = findConflictIn(knownEvents, ev.date, startTime, endTime)
             || findCalendarConflict(existingCalEvents, ev.date, startTime, endTime);
           const combinedNotes = ev.notes || null;
-          const bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
+          // Colour at write time, so an auto-added event lands on the calendar
+          // already the right colour instead of grey until someone opens it.
+          // Falls back to what this sender has meant every other time — see
+          // learnSenderAttribution. Deliberately does not set member_id on the
+          // stored event: that field is the record of what the user chose, and
+          // writing guesses into it would let the learner train on itself.
+          let bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
+          if (!bfColorId) {
+            const dom = String(senderEmail || '').toLowerCase().split('@')[1];
+            const hit = dom ? learnedAttribution.get(dom) : null;
+            const lm = hit && familyMembers.find(x => x.id === hit.memberId);
+            if (lm) bfColorId = lm.eventColor || lm.color || null;
+          }
           let calEventId = null;
           // The check above only saw the target calendar; autoWriteToCalendar
           // additionally checks every other calendar the user subscribes to and

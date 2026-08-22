@@ -1081,7 +1081,12 @@ function eventDotHtml(ev) {
   const colorId = (m && (m.eventColor || m.color)) || ev.suggested_color;
   if (!colorId) return '';
   const who = m ? m.name : 'a family member';
-  return `<span class="quick-dot" style="background:${memberColor(colorId)};margin-right:7px" title="${escHtml(who)}"></span>`;
+  // When the colour came from the sender's history rather than a name in the
+  // event, say so on hover. An unexplained colour is the kind of thing that
+  // makes the whole queue feel arbitrary.
+  const why = ev.suggested_reason && ev.suggested_reason !== 'named'
+    ? ` — ${ev.suggested_reason}` : '';
+  return `<span class="quick-dot" style="background:${memberColor(colorId)};margin-right:7px" title="${escHtml(who + why)}"></span>`;
 }
 
 // Whose event is this — id → memberId, '' meaning explicitly nobody. Only holds

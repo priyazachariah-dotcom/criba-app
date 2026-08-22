@@ -139,6 +139,89 @@ function matchFamilyMember(members, nameStrings, text = '') {
   return null;
 }
 
+// ── Grade relevance ───────────────────────────────────────────────────────
+// A school newsletter covers the whole school. Criba was writing every event in
+// it to the calendar, so a family with a third grader got Kindergarten Full-Day
+// Schedule Begins, TK What to Expect Night and the K-2nd presentations — none of
+// which will ever concern them. That is not a filtering nicety; it is the
+// difference between a calendar you trust and one you stop reading.
+//
+// Grades are normalised to numbers so ranges work: TK is -1, K is 0.
+const GRADE_NAMED = { tk: -1, 'pre-k': -1, prek: -1, 'transitional kindergarten': -1, k: 0, kinder: 0, kindergarten: 0 };
+
+function normalizeGrade(raw) {
+  const s = String(raw || '').toLowerCase().trim();
+  if (!s) return null;
+  if (Object.prototype.hasOwnProperty.call(GRADE_NAMED, s)) return GRADE_NAMED[s];
+  const m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?$/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  return n >= 1 && n <= 12 ? n : null;
+}
+
+// Which grades does this text single out? Returns an empty set when the text
+// isn't about particular grades at all — which is the common case, and must be
+// treated as "concerns everyone" rather than "concerns nobody".
+//
+// Deliberately conservative. A false positive here hides a real event, so a
+// grade only counts when it is unambiguously a grade: the word kindergarten or
+// TK, an explicit "3rd grade" / "grades 4-6", or an ordinal range like "K-2nd".
+// A bare "1st" is left alone — it is far more often a place or a date.
+function gradesMentionedIn(text) {
+  const t = String(text || '').toLowerCase();
+  const found = new Set();
+  const add = g => { if (g !== null) found.add(g); };
+  const expand = (a, b) => { if (a !== null && b !== null && b >= a) for (let g = a; g <= b; g++) found.add(g); };
+
+  if (/\btransitional kindergarten\b/.test(t)) add(-1);
+  if (/\bkindergarten\b|\bkinder\b/.test(t)) add(0);
+  if (/\btk\b/.test(t)) add(-1);
+  if (/\bpre-?k\b/.test(t)) add(-1);
+
+  const ORD = '(tk|k|\\d{1,2}(?:st|nd|rd|th))';
+  // Ranges: "K-2nd", "3rd-5th", "grades 4 through 6".
+  for (const m of t.matchAll(new RegExp(`\\b${ORD}\\s*(?:-|–|—|to|through)\\s*${ORD}\\b`, 'g'))) {
+    expand(normalizeGrade(m[1]), normalizeGrade(m[2]));
+  }
+  // "grades 6 through 8" — bare digits, so the ordinal pattern above misses it.
+  // Safe to read loosely here because the word "grades" already disambiguates.
+  const N = '(\\d{1,2})(?:st|nd|rd|th)?';
+  for (const m of t.matchAll(new RegExp(`\\bgrades?\\s+${N}\\s*(?:-|–|—|to|through)\\s*${N}\\b`, 'g'))) {
+    expand(normalizeGrade(m[1]), normalizeGrade(m[2]));
+  }
+  // "grades 6 and 8" lists two grades; it does not span the ones between.
+  for (const m of t.matchAll(new RegExp(`\\bgrades?\\s+${N}\\s*(?:and|&|,)\\s*${N}\\b`, 'g'))) {
+    add(normalizeGrade(m[1])); add(normalizeGrade(m[2]));
+  }
+  // Explicit singles: "3rd grade", "grade 3".
+  for (const m of t.matchAll(/\b(\d{1,2})(?:st|nd|rd|th)?\s+grade\b/g)) add(normalizeGrade(m[1]));
+  for (const m of t.matchAll(/\bgrades?\s+(\d{1,2})(?:st|nd|rd|th)?\b/g)) add(normalizeGrade(m[1]));
+
+  return found;
+}
+
+// Does this event concern anyone in the family?
+// Returns { relevant, reason }. Anything uncertain is relevant: the cost of
+// showing one extra event is far below the cost of silently withholding one.
+function gradeRelevance(text, members) {
+  const mentioned = gradesMentionedIn(text);
+  if (!mentioned.size) return { relevant: true, reason: null };
+
+  const ourGrades = (members || [])
+    .map(m => normalizeGrade(m.grade))
+    .filter(g => g !== null);
+  // No grades on file means no basis to exclude anything.
+  if (!ourGrades.length) return { relevant: true, reason: null };
+
+  if (ourGrades.some(g => mentioned.has(g))) return { relevant: true, reason: null };
+
+  const label = g => g === -1 ? 'TK' : g === 0 ? 'K' : `${g}`;
+  return {
+    relevant: false,
+    reason: `For grade ${[...mentioned].sort((a, b) => a - b).map(label).join(', ')} — nobody in your family is in that grade`,
+  };
+}
+
 // Who is an event about, when nobody's name appears in it?
 //
 // matchFamilyMember needs a name written down somewhere. For the mail that
@@ -2502,10 +2585,12 @@ app.get('/api/family', requireAuth, async (req, res) => {
 });
 
 app.post('/api/family', requireAuth, async (req, res) => {
-  const { name, color, eventColor } = req.body;
+  const { name, color, eventColor, grade } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
   const id = randomUUID();
-  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', googleCalendarId: null };
+  // Grade is stored as the user typed it ("3rd", "K", "TK", "9") and normalised
+  // at comparison time, so nothing is lost if they type something unexpected.
+  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, googleCalendarId: null };
   await getUserFamily(req.user.email).set(id, member);
   res.json(member);
 });
@@ -2517,6 +2602,9 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
   if (req.body.name) member.name = req.body.name.trim();
   if (req.body.color) member.color = req.body.color;
   if (req.body.eventColor) member.eventColor = req.body.eventColor;
+  // Explicit undefined check: '' is how the UI clears a grade back to unset,
+  // and a truthiness test would make clearing impossible.
+  if (req.body.grade !== undefined) member.grade = String(req.body.grade).trim() || null;
   await fam.set(req.params.id, member);
   res.json(member);
 });
@@ -5077,14 +5165,26 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             const lm = hit && familyMembers.find(x => x.id === hit.memberId);
             if (lm) bfColorId = lm.eventColor || lm.color || null;
           }
+          // A school newsletter covers every grade in the school. Writing the
+          // Kindergarten schedule to the calendar of a family whose youngest is
+          // in third grade is how a calendar stops being worth reading.
+          //
+          // Held back rather than discarded: it still appears in the queue with
+          // the reason shown, and one click adds it. Criba guessing wrong about
+          // your family should cost you a click, not an event.
+          const relevance = gradeRelevance(
+            [ev.title, ev.notes, subject].filter(Boolean).join(' '), familyMembers);
+
           let calEventId = null;
           // The check above only saw the target calendar; autoWriteToCalendar
           // additionally checks every other calendar the user subscribes to and
           // returns null (setting duplicate_of) instead of writing a second copy.
           const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: null, attendees: [] };
-          try {
-            calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz });
-          } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
+          if (relevance.relevant) {
+            try {
+              calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz });
+            } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
+          }
           const otherCalDup = bfWriteObj.duplicate_of || null;
           const evId = randomUUID();
           const stored = {
@@ -5094,7 +5194,8 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             notes: combinedNotes,
             conflict_note: otherCalDup
               ? `Already on your calendar as "${otherCalDup.title}"${otherCalDup.calendarName && otherCalDup.calendarId !== bfCalId ? ` (${otherCalDup.calendarName})` : ''} — not added again`
-              : conflictNote || null,
+              : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
+            held_reason: relevance.reason || null,
             duplicate_of_calendar: !!otherCalDup,
             source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
             source: 'gmail', gmail_message_id: messageId,

@@ -495,6 +495,8 @@
   .member-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
   .member-name { flex: 1; font-size: 0.9rem; font-weight: 500; }
   .member-cal-badge { font-size: 0.75rem; color: var(--text2); background: var(--bg); border: 1px solid var(--ink); padding: 2px 7px; }
+  .member-grade { width: 3.5rem; font-family: inherit; font-size: 0.8rem; text-align: center; padding: 3px 4px; border: 1px solid var(--ink); background: var(--bg); color: var(--ink); }
+  .member-grade:focus { outline: none; background: white; }
   .member-delete { background: none; border: none; cursor: pointer; color: var(--text2); padding: 4px 6px; font-size: 0.875rem; }
   .member-delete:hover { color: var(--red); }
   .add-member-form { background: white; border: 1.5px solid var(--ink); padding: 1rem; margin-top: 0.5rem; }
@@ -1188,6 +1190,10 @@ function renderSettingsPage() {
       <span class="member-dot member-dot-btn" style="background:${memberColor(m.color)}"
             title="Change ${escHtml(m.name)}'s colour" onclick="toggleMemberColors('${m.id}')"></span>
       <span class="member-name">${escHtml(m.name)}</span>
+      <input class="member-grade" id="member-grade-${m.id}" value="${escHtml(m.grade || '')}"
+             placeholder="grade" maxlength="4" autocomplete="off"
+             title="School grade — TK, K, or a number. Used to skip newsletter events for grades nobody is in."
+             onchange="setMemberGrade('${m.id}', this.value)" />
       ${m.googleCalendarId ? '<span class="member-cal-badge">Calendar created</span>' : ''}
       <button class="member-delete" title="Remove" onclick="deleteMember('${m.id}')">✕</button>
     </div>
@@ -1228,6 +1234,30 @@ async function setMemberColor(id, colorId) {
     member.color = previous;       // never leave a colour showing that did not save
     renderSettingsPage();
     alert(`Could not change the colour: ${e.message}`);
+  }
+}
+
+// Grade drives which newsletter events are worth adding, so a save that fails
+// silently would leave Criba filtering on a value the user thinks they changed.
+async function setMemberGrade(id, value) {
+  const member = familyMembers.find(m => m.id === id);
+  if (!member) return;
+  const previous = member.grade || '';
+  const next = String(value || '').trim();
+  if (next === previous) return;
+  member.grade = next || null;
+  try {
+    const res = await fetch(`/api/family/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grade: next }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed');
+    Object.assign(member, await res.json());
+  } catch (e) {
+    member.grade = previous || null;
+    const input = document.getElementById(`member-grade-${id}`);
+    if (input) input.value = previous;
+    alert(`Could not save the grade: ${e.message}`);
   }
 }
 

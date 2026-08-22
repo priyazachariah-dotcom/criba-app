@@ -267,6 +267,11 @@
   .drop-zone { border: 2px dashed var(--ink); padding: 2rem; text-align: center; cursor: pointer; color: var(--text2); font-size: 0.875rem; transition: all 0.15s; }
   .drop-zone:hover, .drop-zone.dragover { background: var(--bg2); }
   .drop-zone.has-file { border-color: var(--green); background: rgba(45,106,79,0.06); color: var(--green); }
+  .cal-instructions { width: 100%; margin-top: 0.75rem; padding: 0.75rem; border: 1px solid var(--ink);
+    font-family: inherit; font-size: 0.875rem; line-height: 1.5; color: var(--ink); background: #fff;
+    resize: vertical; min-height: 64px; }
+  .cal-instructions:focus { outline: none; border-color: var(--blue); }
+  .cal-instructions::placeholder { color: #999; }
   .form-actions { display: flex; gap: 0.75rem; margin-top: 1.25rem; }
   .btn-primary { padding: 0.625rem 1.5rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
   .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -852,18 +857,29 @@
         <div class="form-group">
           <label>Source</label>
           <div class="source-tabs">
-            <button class="source-tab active" onclick="switchSource('url', this)">URL subscription</button>
-            <button class="source-tab" onclick="switchSource('pdf', this)">Upload file</button>
+            <button class="source-tab active" data-source="url" onclick="switchSource('url', this)">Subscribe to a link</button>
+            <button class="source-tab" data-source="pdf" onclick="switchSource('pdf', this)">Upload or type</button>
           </div>
-          <div id="source-url"><input type="url" id="cal-url" placeholder="https://calendar.google.com/calendar/ical/..." /></div>
+          <div id="source-url">
+            <input type="url" id="cal-url" placeholder="https://calendar.google.com/calendar/ical/..." />
+            <div style="font-size:0.8rem;opacity:0.7;margin-top:0.5rem">
+              Events go straight onto your calendar and Criba keeps this link up to
+              date on its own — if the school moves or cancels something, so does your calendar.
+            </div>
+          </div>
           <div id="source-pdf" style="display:none">
             <div class="drop-zone" id="drop-zone" onclick="document.getElementById('pdf-input').click()">
               <div id="drop-zone-text">Click to upload a PDF or screenshot, or drag and drop</div>
             </div>
             <input type="file" id="pdf-input" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp" style="display:none" onchange="handleFileSelect(this)" />
+            <!-- Works three ways: a file on its own, a file plus a correction
+                 ("make these 1-2pm and invite Bharat"), or the sentence alone
+                 with no file at all. -->
+            <textarea id="cal-instructions" class="cal-instructions" rows="2"
+              placeholder="Tell Criba anything about it — or just describe an event, like &quot;lunch with Maya Aug 30 at 2pm&quot;"></textarea>
             <div style="font-size:0.8rem;opacity:0.7;margin-top:0.5rem">
-              Schedules, holiday lists or closure notices all work. Criba proposes
-              what to add and what to remove — nothing changes until you approve.
+              Attach a file, type an instruction, or both. Anything you type here wins
+              over what's in the file. Nothing reaches your calendar until you approve it.
             </div>
           </div>
         </div>
@@ -3418,6 +3434,9 @@ function showCalForm() {
   document.getElementById('extract-status').innerHTML = '';
   document.getElementById('cal-name').value = '';
   document.getElementById('cal-url').value = '';
+  // Left behind, a stale instruction silently reapplies itself to the next
+  // unrelated upload.
+  document.getElementById('cal-instructions').value = '';
   document.getElementById('cal-submit-btn').textContent = 'Add calendar';
   document.getElementById('cal-submit-btn').disabled = false;
   document.getElementById('cal-submit-btn').onclick = submitCalendar;
@@ -3459,6 +3478,10 @@ function setCalMember(id) {
 function hideCalForm() {
   document.getElementById('cal-form-container').style.display = 'none';
   document.getElementById('add-cal-btn').style.display = 'flex';
+}
+
+function instructionText() {
+  return document.getElementById('cal-instructions')?.value.trim() || '';
 }
 
 function switchSource(type, btn) {
@@ -3503,7 +3526,10 @@ dropZone.addEventListener('drop', e => {
 
 async function submitCalendar() {
   const name = document.getElementById('cal-name').value.trim();
-  const isUrl = document.querySelector('.source-tab.active').textContent.includes('URL');
+  // Read from data-source, not the label. This used to sniff the button text
+  // for "URL", so renaming the tab silently sent subscriptions down the upload
+  // path — a rename should never be able to change behaviour.
+  const isUrl = document.querySelector('.source-tab.active').dataset.source === 'url';
   if (!name) { alert('Please enter a calendar name'); return; }
   const btn = document.getElementById('cal-submit-btn');
   const status = document.getElementById('extract-status');
@@ -3512,8 +3538,9 @@ async function submitCalendar() {
   if (isUrl) {
     const url = document.getElementById('cal-url').value.trim();
     if (!url) { alert('Please enter a URL'); return; }
-  } else {
-    if (!selectedFile) { alert('Please select a PDF or screenshot'); return; }
+  } else if (!selectedFile && !instructionText()) {
+    alert('Attach a PDF or screenshot, or describe the event in the box below.');
+    return;
   }
 
   // Colours are assigned once at setup, so the owner is already ticked on the
@@ -3556,18 +3583,30 @@ async function doImport(name, isUrl, memberId, btn, status) {
       btn.disabled = false;
     }
   } else {
-    status.innerHTML = '<div class="loading"><div class="spinner"></div>Reading your file with AI — takes about 30 seconds...</div>';
+    const instructions = instructionText();
+    status.innerHTML = `<div class="loading"><div class="spinner"></div>${
+      selectedFile ? 'Reading your file with AI — takes about 30 seconds...' : 'Working out the event...'
+    }</div>`;
     const formData = new FormData();
-    formData.append('pdf', selectedFile);
+    // The file is now optional: a typed instruction on its own is a valid
+    // request. Appending a null file would post the string "null" as a upload.
+    if (selectedFile) formData.append('pdf', selectedFile);
+    if (instructions) formData.append('instructions', instructions);
     formData.append('name', name);
     if (memberId) formData.append('memberId', memberId);
     try {
       const res = await fetch('/api/calendars/add-pdf', { method: 'POST', body: formData });
       const data = await res.json();
       if (res.ok && (data.categories || (data.removals && data.removals.length))) {
+        const unmatched = data.unmatchedNames || [];
         hideCalForm();
         await loadCalendars();
         await loadCategoryGroups(data.calendarId, name, data.totalEvents, memberId, data.removals);
+        // Said before the user starts approving, because an invite that never
+        // goes out stays invisible until the person does not turn up.
+        if (unmatched.length) {
+          alert(`Criba couldn't match ${unmatched.map(n => '"' + n + '"').join(', ')} to anyone you've saved, so they have not been invited.\n\nAdd them under Family first, then tick them on the events.`);
+        }
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
         btn.disabled = false;

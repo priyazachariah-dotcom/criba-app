@@ -1930,26 +1930,55 @@ function buildUploadBlock(mimetype, filename, base64) {
 
 app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req, res) => {
   const { name, memberId } = req.body;
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const instructions = String(req.body.instructions || '').trim();
+  // Three ways in now: a file, a typed instruction, or both. Only the
+  // combination of neither is an error.
+  if (!req.file && !instructions) return res.status(400).json({ error: 'Attach a file or describe the event' });
   if (!name) return res.status(400).json({ error: 'Calendar name is required' });
-  const pdfPath = req.file.path;
+  const pdfPath = req.file?.path;
+  // Declared out here because the catch block needs it too, and it is derived
+  // from the request rather than from anything parsed inside the try.
+  const sourceNoun = !req.file ? 'instruction'
+    : /^image\//i.test(req.file.mimetype || '') || /\.(png|jpe?g|gif|webp)$/i.test(req.file.originalname || '') ? 'image'
+    : 'PDF';
   try {
-    const pdfBuffer = fs.readFileSync(pdfPath);
-    const pdfBase64 = pdfBuffer.toString('base64');
-    const { block: pdfBlock, kind } = buildUploadBlock(req.file.mimetype, req.file.originalname, pdfBase64);
+    let pdfBlock = null;
+    let kind = 'text';
+    if (req.file) {
+      const pdfBase64 = fs.readFileSync(pdfPath).toString('base64');
+      ({ block: pdfBlock, kind } = buildUploadBlock(req.file.mimetype, req.file.originalname, pdfBase64));
+    }
     const label = kind === 'image' ? 'screenshot of a school/family/league calendar' : 'school/family calendar PDF';
+    const today = new Date().toISOString().split('T')[0];
+
+    // The user's own words outrank anything read out of the document. If they
+    // say "1pm-2pm, weekly" and the flyer says otherwise, they are correcting
+    // the flyer — that is the entire reason the box exists.
+    const instructionText = instructions ? `
+The user typed this instruction, and it takes priority over anything in the attached file. Apply it to every event you produce unless they clearly meant it for only one:
+
+"${instructions}"
+
+If they gave a time, a duration, or said the event repeats, use that. If they named people to invite, put each of their names in the "attendees" array. If they described an event that is not in any attached file, create it from their words alone.
+` : '';
+
+    const sourceText = req.file
+      ? `This is a ${label}. Today is ${today}. Only include events from today onward.\n\nIf the source shows dates without a year, infer the year from the weekday when one is given (for example "Saturday, January 9th" only matches a year in which January 9th is a Saturday), and otherwise choose the next occurrence after today.\n${instructionText}`
+      : `Today is ${today}. Create calendar events from the user's instruction below. There is no attached file — their words are the only source. Only include events from today onward, and if they name a date without a year choose the next occurrence after today.\n${instructionText}`;
+
+    const content = [];
+    if (pdfBlock) content.push(pdfBlock);
+    content.push({ type: 'text', text: `${sourceText}\n\n${FULL_EXTRACTION_PROMPT}` });
+
     const response = await anthropic.messages.create({
       model: 'claude-fable-5',
       max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: [
-          pdfBlock,
-          { type: 'text', text: `This is a ${label}. Today is ${new Date().toISOString().split('T')[0]}. Only include events from today onward.\n\nIf the source shows dates without a year, infer the year from the weekday when one is given (for example "Saturday, January 9th" only matches a year in which January 9th is a Saturday), and otherwise choose the next occurrence after today.\n\n${FULL_EXTRACTION_PROMPT}` }
-        ]
-      }]
+      messages: [{ role: 'user', content }],
     });
-    const closures = await extractClosures(pdfBlock, new Date().toISOString().split('T')[0]);
+    // Closure detection reads a document for "school closed" ranges. With no
+    // document there is nothing to read, so skip the call rather than spend a
+    // round trip proving a typed sentence contains no closure calendar.
+    const closures = pdfBlock ? await extractClosures(pdfBlock, today) : [];
     const removals = closures.length
       ? matchClosuresToEvents(closures, await liveCalendarEvents(req.user.email))
       : [];
@@ -1959,12 +1988,14 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     try {
       const raw = JSON.parse(text.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim());
       flatEvents = Array.isArray(raw) ? raw : [];
-    } catch { return res.status(500).json({ error: `AI could not parse this ${kind === 'image' ? 'image' : 'PDF'}.` }); }
+    } catch { return res.status(500).json({ error: `AI could not parse this ${sourceNoun}.` }); }
     // A closure list produces no additions and that is a success, not a
     // failure — it is the whole point of uploading one. Only error when the
     // document had no effect on the calendar at all.
     if (!flatEvents.length && !removals.length) {
-      return res.status(400).json({ error: `No events found in this ${kind === 'image' ? 'image' : 'PDF'}` });
+      return res.status(400).json({ error: sourceNoun === 'instruction'
+        ? 'Could not work out an event from that. Try including a date, like "lunch with Maya Aug 30 at 2pm".'
+        : `No events found in this ${sourceNoun}` });
     }
     if (!flatEvents.length) {
       return res.json({ ok: true, calendarId: null, totalEvents: 0, categories: [], removals });
@@ -1983,10 +2014,34 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
     }
     const parsed = { categories: Array.from(catMap.entries()).map(([n, evs]) => ({ name: n, events: evs })) };
 
+    // "add bharat to it" comes back as a bare name, and the calendar write only
+    // keeps attendees that have an email — so without this the person the user
+    // explicitly asked for is dropped without a word. Match names against the
+    // people they have already saved; never invent an address for a name we do
+    // not recognise, because that is a real email to a possibly wrong person.
+    const savedPeople = await getSavedRecipients(req.user.email);
+    const unmatchedNames = new Set();
+    const resolveAttendees = (list) => {
+      if (!Array.isArray(list)) return [];
+      const out = [];
+      for (const a of list) {
+        const email = String(a?.email || '').trim().toLowerCase();
+        if (email.includes('@')) { out.push({ email, name: a.name || '' }); continue; }
+        const name = String(a?.name || a || '').trim().toLowerCase();
+        if (!name) continue;
+        const hit = savedPeople.find(p =>
+          String(p.name || '').trim().toLowerCase() === name ||
+          String(p.email || '').split('@')[0].toLowerCase() === name);
+        if (hit) out.push({ email: hit.email, name: hit.name || '' });
+        else unmatchedNames.add(String(a?.name || a || '').trim());
+      }
+      return out;
+    };
+
     const calId = randomUUID();
     const totalEvents = flatEvents.length;
     const cals = getUserCalendars(req.user.email);
-    await cals.set(calId, { id: calId, name, source: 'pdf', url: req.file.originalname || 'upload.pdf', memberId: memberId || null, event_count: 0, created_at: new Date().toISOString() });
+    await cals.set(calId, { id: calId, name, source: req.file ? 'pdf' : 'typed', url: req.file?.originalname || (instructions.slice(0, 80) || 'typed entry'), memberId: memberId || null, event_count: 0, created_at: new Date().toISOString() });
     const events = getUserEvents(req.user.email);
     const eventPairs = [];
     for (const cat of parsed.categories) {
@@ -1997,16 +2052,24 @@ app.post('/api/calendars/add-pdf', requireAuth, upload.single('pdf'), async (req
         // The conflict is stored separately in conflict_note and rendered on its own
         // line, so folding it into notes as well printed the same warning twice.
         const combinedNotes = norm.notes || null;
-        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, notes: combinedNotes, conflict_note: conflictNote || null, attendees: Array.isArray(ev.attendees) ? ev.attendees : [], category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
+        eventPairs.push([evId, { id: evId, calendar_id: calId, title: ev.title, ...norm, notes: combinedNotes, conflict_note: conflictNote || null, attendees: resolveAttendees(ev.attendees), category: cat.name, source: name, status: 'draft', created_at: new Date().toISOString() }]);
       }
     }
     await events.setMany(eventPairs);
-    try { fs.unlinkSync(pdfPath); } catch {}
-    res.json({ ok: true, calendarId: calId, totalEvents, categories: parsed.categories.map(c => ({ name: c.name, count: c.events?.length || 0 })), removals });
+    if (pdfPath) { try { fs.unlinkSync(pdfPath); } catch {} }
+    res.json({
+      ok: true, calendarId: calId, totalEvents,
+      categories: parsed.categories.map(c => ({ name: c.name, count: c.events?.length || 0 })),
+      removals,
+      // Surfaced so the user finds out on the review page that the person they
+      // named is not in their saved people, instead of discovering it when the
+      // invite never arrives.
+      unmatchedNames: [...unmatchedNames],
+    });
   } catch (err) {
-    console.error('PDF error:', err);
-    try { fs.unlinkSync(pdfPath); } catch {}
-    res.status(500).json({ error: 'Failed to process PDF: ' + err.message });
+    console.error('Upload/instruction error:', err);
+    if (pdfPath) { try { fs.unlinkSync(pdfPath); } catch {} }
+    res.status(500).json({ error: `Failed to process this ${sourceNoun}: ` + err.message });
   }
 });
 

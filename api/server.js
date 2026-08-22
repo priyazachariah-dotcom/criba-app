@@ -3231,11 +3231,75 @@ function titleTokens(s) {
     String(s || '').toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 2 && !TITLE_STOPWORDS.has(w))
+      .filter(w => w.length > 1 && !TITLE_STOPWORDS.has(w))
   );
 }
+// Words that say what kind of thing an event is, not which thing it is. Shared
+// between two titles they mean nothing: every school email says "meeting" and
+// every fixture says "game". Names — of schools, teams, opponents, people — are
+// what actually identify an event, so they are what the token rule below counts.
+//
+// Kept separate from TITLE_STOPWORDS, which the Jaccard path needs to KEEP
+// (there "practice" vs "game" is the only thing distinguishing two fixtures).
+const GENERIC_TITLE_TOKENS = new Set([
+  'game','games','match','meet','practice','scrimmage','tournament','event','events',
+  'meeting','night','day','days','week','morning','afternoon','evening','lunch',
+  'school','high','middle','elementary','college','preparatory','prep','academy','district',
+  'home','away','team','teams','class','classes','session','parent','parents',
+  'family','student','students','annual','first','back',
+  'due','homework','assignment','deadline','reminder','form','forms','picture','photo',
+  'field','gym','room','center','centre','vs','versus',
+  'opener','season','all','st',
+  // Schedule words. "Weekly Thursdays" describes when a class recurs, not which
+  // class it is, so it must not distinguish a series from its first session.
+  'weekly','monthly','recurring','monday','tuesday','wednesday','thursday',
+  'friday','saturday','sunday','mondays','tuesdays','wednesdays','thursdays',
+  'fridays','saturdays','sundays',
+]);
+
+function distinctiveTokens(s) {
+  const out = new Set();
+  for (const w of titleTokens(s)) if (!GENERIC_TITLE_TOKENS.has(w)) out.add(w);
+  return out;
+}
+
+// The same fixture written two ways. A club's feed says "St. Ignatius College
+// Preparatory Football (Frosh) vs Redwood High School"; the coach's email says
+// "Frosh Home Game vs Redwood". Word-overlap scoring cannot bridge that — they
+// share 2 words out of 10, well under any usable threshold — but the two names
+// that matter, "frosh" and "redwood", appear in both.
+//
+// The test is not how much the titles overlap but whether EACH names something
+// the other doesn't. "Frosh vs Redwood" and "Varsity vs Redwood" each carry a
+// name the other lacks, so they are different games. "Frosh vs Redwood" and the
+// feed's formal version add only school boilerplate on one side, so they are
+// one game described twice.
+//
+// This is what counting shared words gets wrong in both directions: the two
+// wordings of one fixture share almost nothing, while "What to Expect Night
+// 3rd-5th" and "What to Expect Night K-2nd" share almost everything and are
+// four different evenings.
+//
+// Callers apply their own same-day and same-time checks on top of this.
+function titlesShareDistinctiveTokens(a, b) {
+  const da = distinctiveTokens(a), db = distinctiveTokens(b);
+  if (!da.size || !db.size) return false;
+  let shared = 0;
+  for (const w of da) if (db.has(w)) shared++;
+  if (!shared) return false;
+  const extraA = [...da].some(w => !db.has(w));
+  const extraB = [...db].some(w => !da.has(w));
+  return !(extraA && extraB);
+}
+
 function titlesLooselyMatch(a, b) {
   const ta = titleTokens(a), tb = titleTokens(b);
+  // When both titles name something — a school, an opponent, a child, a grade
+  // range — those names decide it, and word-overlap scoring is not consulted at
+  // all. Overlap is a proxy for sameness that fails badly on exactly the titles
+  // that matter here.
+  const da = distinctiveTokens(a), db = distinctiveTokens(b);
+  if (da.size && db.size) return titlesShareDistinctiveTokens(a, b);
   // Nothing distinctive left after stripping — fall back to exact comparison
   // rather than declaring everything a match.
   if (!ta.size || !tb.size) {
@@ -3251,9 +3315,9 @@ function titlesLooselyMatch(a, b) {
   // Washington Park". Requires at least two words so a bare "Practice" doesn't
   // swallow everything that mentions practice.
   const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
-  if (small.size < 2) return false;
-  for (const w of small) if (!big.has(w)) return false;
-  return true;
+  if (small.size >= 2 && [...small].every(w => big.has(w))) return true;
+  // Last resort: the same names in both titles, however differently worded.
+  return titlesShareDistinctiveTokens(a, b);
 }
 
 // Is this event already on the calendar, put there by something other than us?

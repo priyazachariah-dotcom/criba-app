@@ -1086,7 +1086,6 @@ function rvChosenMember(ev) {
 // behind Edit meant expanding a card just to tick one box.
 function renderQuickAdds(ev) {
   const id = ev.id;
-  if (!familyMembers.length && !savedRecipients.length) return '';
   const chosen = rvChosenMember(ev);
   const guessed = ev.suggested_member_id || '';
   const people = familyMembers.length ? `
@@ -1108,7 +1107,11 @@ function renderQuickAdds(ev) {
                  onchange="this.closest('.quick-chip').classList.toggle('on', this.checked)">
           ${escHtml(r.name)}
         </label>`).join('')}
-    </div>` : '';
+    </div>` : `
+    <div class="quick-add-group">
+      <button class="quick-chip" onclick="document.getElementById('nav-settings-btn').click()"
+              title="Save the people you invite most, then tick them here">+ Add people</button>
+    </div>`;
   return `<div class="quick-adds">${people}${recips}</div>`;
 }
 

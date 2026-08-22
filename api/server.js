@@ -1196,23 +1196,25 @@ app.post('/api/events/mark-reviewed', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// Mark every event currently in the review queue as reviewed.
+// Mark every event ALREADY ON THE CALENDAR as reviewed.
 //
-// The queue is post-write: everything in it is already on the calendar, so for
-// most people most of the time the correct action on the whole list is "yes,
-// fine". Without this the only way to empty a long queue was to press OK on
-// each card, which is why the tab grew unbounded.
+// Most of the queue is post-write — already on the calendar — so the correct
+// action on the whole list is usually "yes, fine". Without this the only way to
+// empty a long queue was to press OK on each card, which is why the tab grew
+// unbounded.
 //
-// Deliberately only touches events the queue itself would show — same predicate
-// as GET /api/events/pending — so a bulk OK can never silently clear something
-// that needs a decision, like a cancellation or a reschedule.
+// Deliberately skips cancellations and reschedules, which need a decision, and
+// drafts (status 'pending'), which were never written. Marking a draft
+// "reviewed" claimed it was on the calendar when it wasn't, and dropped it out
+// of the queue for good — a bulk OK quietly discarded every event Criba hadn't
+// managed to add yet.
 app.post('/api/events/review-all-ok', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
   const all = await events.values();
   let cleared = 0;
   for (const ev of all) {
     if (ev.status === 'pending_cancellation' || ev.status === 'pending_reschedule') continue;
-    if ((ev.status === 'added' || ev.status === 'pending') && !ev.reviewed) {
+    if (ev.status === 'added' && !ev.reviewed) {
       ev.reviewed = true;
       ev.status = 'reviewed';
       await events.set(ev.id, ev);

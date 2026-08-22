@@ -393,6 +393,11 @@
   .quick-chip.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   .quick-chip input { margin: 0; cursor: pointer; }
   .quick-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
+  /* Whether a row is really on the calendar is the single most important fact
+     about it, so it gets colour rather than another grey pill. */
+  .state-pill { font-size: 9.5px; }
+  .state-added { border-color: #137333; color: #137333; }
+  .state-draft { border-color: #b45309; color: #b45309; }
   .recipient-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid rgba(0,0,0,0.08); }
   .recipient-row:last-child { border-bottom: none; }
   .btn-delete { padding: 0.5rem 1.25rem; background: #c5221f; color: white; border: none; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
@@ -1070,6 +1075,18 @@ function memberDotHtml(colorId, size) {
   return `<span class="${size === 'sm' ? 'member-dot' : 'picker-member-dot'}" style="background:${memberColor(colorId)}"></span>`;
 }
 
+// The same colour dot on every screen that lists events. Whose event it is was
+// only ever visible on the review queue, so the colour you picked there
+// vanished the moment the event moved to Edit Calendar Events.
+function eventDotHtml(ev) {
+  const memberId = rvChosenMember(ev);
+  const m = memberId ? familyMembers.find(x => x.id === memberId) : null;
+  const colorId = (m && (m.eventColor || m.color)) || ev.suggested_color;
+  if (!colorId) return '';
+  const who = m ? m.name : 'a family member';
+  return `<span class="quick-dot" style="background:${memberColor(colorId)};margin-right:7px" title="${escHtml(who)}"></span>`;
+}
+
 // Whose event is this — id → memberId, '' meaning explicitly nobody. Only holds
 // entries the user actually clicked, so an untouched card falls back to the
 // server's guess rather than to a stale local value.
@@ -1615,8 +1632,14 @@ async function commitDismiss() {
 // be changed or deleted later.
 async function markAllReviewed() {
   const btn = document.getElementById('review-all-ok-btn');
-  const n = pendingEvents.filter(e => e.status !== 'pending_cancellation' && e.status !== 'pending_reschedule').length;
-  if (!confirm(`Keep all ${n} events on your calendar and clear the review list?\n\nNothing is deleted — they move to Edit Calendar Events.`)) return;
+  // Counts only what the server will actually clear. Drafts are left behind on
+  // purpose — they are not on the calendar, so "keep them" is meaningless and
+  // clearing them would throw them away.
+  const n = pendingEvents.filter(e => e.status === 'added' && !e.reviewed).length;
+  const drafts = pendingEvents.filter(e => e.status === 'pending').length;
+  if (!n) { alert(drafts ? `Nothing to clear — all ${drafts} remaining are drafts that aren't on your calendar yet. Add or discard them individually.` : 'Nothing to clear.'); return; }
+  if (!confirm(`Keep all ${n} events on your calendar and clear them from the review list?\n\nNothing is deleted — they move to Edit Calendar Events.`
+    + (drafts ? `\n\n${drafts} draft${drafts > 1 ? 's' : ''} not yet added will stay in the list.` : ''))) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Clearing…'; }
   try {
     const res = await fetch('/api/events/review-all-ok', { method: 'POST' });
@@ -2041,12 +2064,22 @@ function renderPostWriteReviewCard(ev) {
   const isDup = ev.status === 'duplicate';
   const sourceTag = ev.source === 'gmail' ? `<span class="pill" style="font-size:9.5px">Gmail</span>` : ev.source ? `<span class="pill" style="font-size:9.5px">${escHtml(ev.source)}</span>` : '';
   const dupTag = isDup ? `<span class="pill" style="font-size:9.5px;border-color:#c5221f;color:#c5221f">Already on calendar</span>` : '';
+  // The queue mixes events Criba actually wrote with ones it only drafted, and
+  // used to give both the identical card — same Delete button, same "remove
+  // from your Google Calendar" tooltip. That made the list impossible to
+  // reconcile against the calendar: half the rows described something that was
+  // never there. Say which is which.
+  const isDraft = ev.status === 'pending';
+  const stateTag = isDup ? '' : isDraft
+    ? `<span class="pill state-pill state-draft">Not added yet</span>`
+    : `<span class="pill state-pill state-added">On your calendar</span>`;
+  const dot = eventDotHtml(ev);
   const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem;font-style:italic">${escHtml(ev.notes)}</div>` : '';
   return `
   <div class="review-card" id="rcard-${id}" style="transition:opacity 0.3s">
     <div class="review-card-row" id="rrow-${id}">
       <div class="review-card-content">
-        <div class="review-card-title">${escHtml(ev.title)} ${sourceTag} ${dupTag}</div>
+        <div class="review-card-title">${dot}${escHtml(ev.title)} ${sourceTag} ${stateTag} ${dupTag}</div>
         <div class="review-card-meta">${meta}</div>
         ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong></div>` : ''}
         ${notesHtml}
@@ -2057,9 +2090,13 @@ function renderPostWriteReviewCard(ev) {
              the event from Google Calendar — a name that reads like "hide this"
              doing something destructive. The common case is the opposite: the
              event is already on the calendar and is fine. OK is now that path. -->
-        ${isDup ? '' : `<button class="btn-outlined btn-sm" onclick="deleteFromReview('${id}')" title="Remove this event from your Google Calendar">Delete</button>`}
-        ${isDup ? '' : `<button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')" title="Change the details, then save to your calendar">Edit</button>`}
-        <button class="btn-filled btn-sm" onclick="markReviewedAndDismiss('${id}')" title="${isDup ? 'Clear this notice' : 'Keep on your calendar and move to Edit Calendar Events'}">OK</button>
+        ${isDup || isDraft ? '' : `<button class="btn-outlined btn-sm" onclick="deleteFromReview('${id}')" title="Remove this event from your Google Calendar">Delete</button>`}
+        ${isDup ? '' : `<button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')" title="${isDraft ? 'Fill in the details before adding' : 'Change the details, then save to your calendar'}">Edit</button>`}
+        ${isDraft ? `<button class="btn-outlined btn-sm" onclick="dismissReviewEvent('${id}')" title="Discard this draft — nothing is on your calendar to remove">Discard</button>` : ''}
+        ${isDraft
+          ? `<button class="btn-filled btn-sm" id="rv-rowaddbtn-${id}" onclick="approveReviewEvent('${id}')" title="Add this to your Google Calendar">Add</button>
+             <span id="rv-rowstatus-${id}" style="font-size:0.8rem"></span>`
+          : `<button class="btn-filled btn-sm" onclick="markReviewedAndDismiss('${id}')" title="${isDup ? 'Clear this notice' : 'Keep on your calendar and move to Edit Calendar Events'}">OK</button>`}
       </div>
     </div>
     <div class="review-card-editor" id="reditor-${id}" style="display:none">
@@ -2114,17 +2151,26 @@ function renderReminderCard(ev) {
   const id = ev.id;
   const sourceTag = ev.source === 'gmail' ? `<span class="pill" style="font-size:9px">Gmail</span>` : ev.source ? `<span class="pill" style="font-size:9px">${escHtml(ev.source)}</span>` : '';
   const typeLabel = ev.source_type === 'deadline' ? 'deadline' : 'action item';
+  const isDraft = ev.status === 'pending';
+  const stateTag = isDraft
+    ? `<span class="pill state-pill state-draft">Not added yet</span>`
+    : `<span class="pill state-pill state-added">On your calendar</span>`;
   return `
   <div id="rcard-${id}" style="transition:opacity 0.3s">
     <div class="reminder-card">
       <div>
-        <div class="reminder-headline">${reminderHeadline(ev)} ${sourceTag}</div>
+        <div class="reminder-headline">${eventDotHtml(ev)}${reminderHeadline(ev)} ${sourceTag} ${stateTag}</div>
         ${ev.sender_name ? `<div class="reminder-source">from ${escHtml(ev.sender_name)} · ${typeLabel}</div>` : `<div class="reminder-source">${typeLabel}</div>`}
       </div>
       <div class="reminder-actions">
-        <button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteReminder('${id}')">Delete</button>
+        ${isDraft
+          ? `<button class="btn-outlined btn-sm" onclick="dismissReviewEvent('${id}')" title="Discard this draft — nothing is on your calendar to remove">Discard</button>`
+          : `<button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteReminder('${id}')">Delete</button>`}
         <button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')">Edit</button>
-        <button class="btn-filled btn-sm" onclick="markReviewedAndDismiss('${id}')" title="Keep on your calendar and clear from this list">OK</button>
+        ${isDraft
+          ? `<button class="btn-filled btn-sm" id="rv-rowaddbtn-${id}" onclick="approveReviewEvent('${id}')" title="Add this to your Google Calendar">Add</button>
+             <span id="rv-rowstatus-${id}" style="font-size:0.8rem"></span>`
+          : `<button class="btn-filled btn-sm" onclick="markReviewedAndDismiss('${id}')" title="Keep on your calendar and clear from this list">OK</button>`}
       </div>
     </div>
     <div class="reminder-editor-wrap" id="reditor-${id}" style="display:none">
@@ -3058,9 +3104,13 @@ function renderRvPeople(id) {
 async function approveReviewEvent(id) {
   const ev = pendingEvents.find(e => e.id === id);
   if (!ev) return;
-  const btn = document.getElementById(`rv-addbtn-${id}`);
-  const status = document.getElementById(`rv-status-${id}`);
-  if (btn) { btn.disabled = true; }
+  // Add exists in two places now: on the collapsed row for a draft, and inside
+  // the editor. Whichever the user pressed, both must reflect the result — the
+  // editor's status line is hidden when the card is collapsed.
+  const btns = [`rv-addbtn-${id}`, `rv-rowaddbtn-${id}`].map(x => document.getElementById(x)).filter(Boolean);
+  const statusEls = [`rv-status-${id}`, `rv-rowstatus-${id}`].map(x => document.getElementById(x)).filter(Boolean);
+  const status = { set innerHTML(v) { statusEls.forEach(e => { e.innerHTML = v; }); } };
+  btns.forEach(b => { b.disabled = true; });
   const allDay = document.getElementById(`rv-allday-${id}`)?.checked;
   const payload = {
     id,
@@ -3088,12 +3138,12 @@ async function approveReviewEvent(id) {
       setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
     } else {
       const err = await res.json();
-      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-      if (btn) btn.disabled = false;
+      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+      btns.forEach(b => { b.disabled = false; });
     }
   } catch {
-    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
-    if (btn) btn.disabled = false;
+    status.innerHTML = '<span class="error-msg">Network error</span>';
+    btns.forEach(b => { b.disabled = false; });
   }
 }
 
@@ -3115,12 +3165,12 @@ async function approveCancellation(id) {
       setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
     } else {
       const err = await res.json();
-      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-      if (btn) btn.disabled = false;
+      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+      btns.forEach(b => { b.disabled = false; });
     }
   } catch {
-    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
-    if (btn) btn.disabled = false;
+    status.innerHTML = '<span class="error-msg">Network error</span>';
+    btns.forEach(b => { b.disabled = false; });
   }
 }
 
@@ -3142,12 +3192,12 @@ async function approveReschedule(id) {
       setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
     } else {
       const err = await res.json();
-      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-      if (btn) btn.disabled = false;
+      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+      btns.forEach(b => { b.disabled = false; });
     }
   } catch {
-    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
-    if (btn) btn.disabled = false;
+    status.innerHTML = '<span class="error-msg">Network error</span>';
+    btns.forEach(b => { b.disabled = false; });
   }
 }
 
@@ -3196,7 +3246,7 @@ function renderRecent() {
       <div class="recent-card-header">
         <div class="recent-row-day">${dayAbbr(ev.date)}</div>
         <div class="recent-row-info">
-          <div class="recent-card-title">${escHtml(ev.title)}</div>
+          <div class="recent-card-title">${eventDotHtml(ev)}${escHtml(ev.title)}</div>
           <div class="recent-card-meta">${formatDate(ev.date)}${ev.time ? ' · ' + formatTime(ev.time) : ' · All day'}</div>
         </div>
         <div class="recent-card-right">
@@ -3266,12 +3316,12 @@ async function saveEdit(id) {
       await loadRecentEvents();
     } else {
       const err = await res.json().catch(() => ({}));
-      if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-      if (btn) btn.disabled = false;
+      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
+      btns.forEach(b => { b.disabled = false; });
     }
   } catch {
-    if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
-    if (btn) btn.disabled = false;
+    status.innerHTML = '<span class="error-msg">Network error</span>';
+    btns.forEach(b => { b.disabled = false; });
   }
 }
 

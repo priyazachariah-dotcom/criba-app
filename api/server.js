@@ -2873,10 +2873,33 @@ async function fetchEmailImages(payload, gmail, messageId) {
   return images;
 }
 
+// How much of an email body reaches the model. This was 8000 characters, which
+// is roughly 2000 tokens — a fraction of the context available, and far less
+// than a school newsletter. The West Welcome Back E-Packet was 18,724
+// characters: Claude read the first 43% of it, found 11 events there, and never
+// saw the deadlines and fees in the rest. The trace called that email a
+// success, because everything Claude did return was stored.
+//
+// Bumping this is the whole fix for "reminders keep getting missed from long
+// emails". The cap stays only as a guard against a pathological body.
+const EXTRACTION_CHAR_LIMIT = 60000;
+
+// The "have we already extracted this email" key. Three call sites built this
+// string independently — the scan path, the cross-user guard and the dry-run
+// diagnostic — so a change to one silently stopped matching the others, and the
+// diagnostic could report an email as unprocessed while the scanner skipped it.
+// One definition.
+//
+// Versioned by the extraction limit: see the fingerprint note in the scan loop.
+function emailFingerprintKey(senderEmail, subject, dateSent) {
+  const raw = `${String(senderEmail).toLowerCase()}:${String(subject).trim()}:${String(dateSent).trim()}:v${EXTRACTION_CHAR_LIMIT}`;
+  return `processedEmail:${crypto.createHash('sha256').update(raw).digest('hex')}`;
+}
+
 // Call Claude to extract calendar events from a single email.
 // When images are supplied (image-heavy emails / flyers), uses multimodal API.
 async function extractGmailEvents(body, senderName, senderEmail, subject, images = [], dateSent = '', familyNames = []) {
-  const textContent = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, 8000);
+  const textContent = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, EXTRACTION_CHAR_LIMIT);
 
   // Anchor relative dates. Without this the model sees "Monday" or "August 12"
   // with no year and has to guess, which is what normalizeEventDate was left
@@ -3510,9 +3533,8 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       // Cross-user duplicate guard: same email sent to multiple family members
       // (e.g. school newsletter to both Priya and Bharat) should only be extracted once.
       // Fingerprint = SHA-256 of senderEmail + subject + Date header (normalised).
-      const fpRaw = `${senderEmail.toLowerCase()}:${subject.trim()}:${dateSent.trim()}`;
-      const fingerprint = crypto.createHash('sha256').update(fpRaw).digest('hex');
-      const fpKey = `processedEmail:${fingerprint}`;
+      const fpKey = emailFingerprintKey(senderEmail, subject, dateSent);
+      const fingerprint = fpKey.slice('processedEmail:'.length);
       const alreadyProcessed = await redis.exists(fpKey);
       if (alreadyProcessed) {
         console.log(`[gmail-process] DEDUP SKIP msg=${messageId} fingerprint=${fingerprint.slice(0, 12)}… already extracted for another user`);
@@ -4552,7 +4574,7 @@ app.get('/api/debug/extract', requireAuth, async (req, res) => {
     }
     res.json({
       messageId: id, subject, dateSent,
-      bodyLength: body.length, truncatedAt8000: body.length > 8000,
+      bodyLength: body.length, truncated: body.length > EXTRACTION_CHAR_LIMIT, limit: EXTRACTION_CHAR_LIMIT,
       preFilterPassed: preFilter.pass,
       body,
       eventCount: extracted ? extracted.length : null,
@@ -4621,8 +4643,7 @@ app.get('/api/debug/scan-list', requireAuth, async (req, res) => {
       const from = h('from');
       const dateSent = h('date');
       const senderEmail = (from.match(/<(.+?)>/)?.[1] || from).toLowerCase();
-      const fpRaw = `${senderEmail}:${subject.trim()}:${dateSent.trim()}`;
-      const fpKey = `processedEmail:${crypto.createHash('sha256').update(fpRaw).digest('hex')}`;
+      const fpKey = emailFingerprintKey(senderEmail, subject, dateSent);
       rows.push({
         subject, from, dateSent,
         fingerprinted: (await redis.exists(fpKey)) === 1,
@@ -4802,9 +4823,13 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
     // ── Fingerprint dedup ────────────────────────────────────────────────────
     const { senderName, senderEmail } = parseFrom(from);
-    const fpRaw = `${senderEmail.toLowerCase()}:${subject.trim()}:${dateSent.trim()}`;
-    const fingerprint = crypto.createHash('sha256').update(fpRaw).digest('hex');
-    const fpKey = `processedEmail:${fingerprint}`;
+    // The character limit is part of the fingerprint. An email read at 8000
+    // characters was only partly read, but the fingerprint said "done" and no
+    // later scan would ever look at it again — a truncated extraction was
+    // permanent. Versioning by the limit means raising it re-reads exactly the
+    // emails the old limit could have cut short, once. Events that were already
+    // captured come back out and are caught by the normal duplicate check.
+    const fpKey = emailFingerprintKey(senderEmail, subject, dateSent);
     if (await redis.exists(fpKey)) {
       skippedDedup++;
       await traceEmail(email, { stage: 'SKIP-DEDUP', messageId, subject, from });
@@ -4894,9 +4919,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         stage: 'SENT-TO-AI', messageId, subject, from, claudeEvents: extracted.length,
         claudeMs, preClaudeMs: 0, elapsedMs: Date.now() - startedAt,
         // An events=0 result is ambiguous without these: it can mean the email
-        // genuinely had no dates, or that the body was cut at 8000 chars before
-        // the schedule appeared, or that the content was in an unfetched image.
-        bodyLen: c.body.length, truncated: c.body.length > 8000, imgs: imageCount,
+        // genuinely had no dates, or that the body was cut short before the
+        // schedule appeared, or that the content was in an unfetched image.
+        bodyLen: c.body.length, truncated: c.body.length > EXTRACTION_CHAR_LIMIT, imgs: imageCount,
         // Without the titles, a count cannot distinguish "Claude never saw the
         // reminder" from "Claude found it and a later stage dropped it" — the
         // two have completely different fixes. Type included because the

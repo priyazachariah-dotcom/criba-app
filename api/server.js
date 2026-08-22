@@ -1054,6 +1054,10 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
       }
     }
     event.status = 'added';
+    // Remember whose colour this is. Without it the Edit tab can only fall back
+    // to Criba's original guess, so reopening an event the user had recoloured
+    // showed the wrong person.
+    if (targetMemberId !== undefined) event.member_id = targetMemberId || null;
     event.reviewed = true; // manually approved events are already reviewed
     event.calEventId = calEvent.data.id;
     // Keep the calendar we actually wrote to. Overwriting it with the target
@@ -1130,6 +1134,21 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     const eventAttendees = (attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
 
     const resource = { summary: title, location: location || '', start, end, attendees: eventAttendees };
+
+    // Recolouring after the fact. Editing an event used to strip the person it
+    // belonged to — the patch omitted colorId entirely, so Google kept whatever
+    // was there and there was no way to change it short of deleting and
+    // re-adding. Only touched when the client actually sends the field, so
+    // clients that don't (the review queue) leave the colour alone.
+    if (has('targetMemberId')) {
+      const cals = getUserCalendars(req.user.email);
+      const calSrc = event.calendar_id ? await cals.get(event.calendar_id) : null;
+      const colorId = await resolveEventColor(req.user.email, req.body.targetMemberId, calSrc);
+      // "" is Google's documented way to clear a colour back to the calendar
+      // default, which is what "No colour" has to mean.
+      resource.colorId = colorId ? String(colorId) : '';
+      event.member_id = req.body.targetMemberId || null;
+    }
     // Google only changes recurrence when the field is present, and an empty
     // array is how a series is turned back into a single event. Send it either
     // way, or "does not repeat" would silently do nothing.

@@ -1076,9 +1076,11 @@ function memberDotHtml(colorId, size) {
 const rvMemberState = {};
 
 function rvChosenMember(ev) {
-  return Object.prototype.hasOwnProperty.call(rvMemberState, ev.id)
-    ? rvMemberState[ev.id]
-    : (ev.suggested_member_id || '');
+  if (Object.prototype.hasOwnProperty.call(rvMemberState, ev.id)) return rvMemberState[ev.id];
+  // A member the user actually chose beats Criba's original guess. Stored
+  // events carry member_id once approved; pending ones only have the guess.
+  if (ev.member_id !== undefined && ev.member_id !== null) return ev.member_id || '';
+  return ev.suggested_member_id || '';
 }
 
 // The two decisions that get made on nearly every card: who it belongs to, and
@@ -2922,6 +2924,18 @@ function renderReviewEditor(ev, opts = {}) {
         ${renderRecurrenceDropdown(id, ev.recurrence_rule || null, ev.date || '')}
       </div>
     </div>
+    ${opts.showRecipients && savedRecipients.length ? `
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">forward_to_inbox</span>
+      <div class="gcal-fields" style="flex-wrap:wrap;gap:0.5rem">
+        ${savedRecipients.map((r, ri) => `
+          <button type="button" class="quick-chip ${(rvPeople[id] || []).some(p => p.email === r.email) ? 'on' : ''}"
+                  id="rvsp-${id}-${ri}" title="${escHtml(r.email)}"
+                  onclick="toggleRvSavedPerson('${id}', ${ri})">
+            ${escHtml(r.name)}
+          </button>`).join('')}
+      </div>
+    </div>` : ''}
     ${opts.hideMember ? '' : memberSelect}
     <div class="gcal-actions">
       ${opts.actions || `
@@ -2952,7 +2966,7 @@ function toggleReviewCard(id) {
     // Pre-populate attendees from event (e.g. Gmail sender)
     const ev = pendingEvents.find(e => e.id === id);
     if (ev?.attendees?.length && !rvPeople[id]) {
-      rvPeople[id] = [...ev.attendees];
+      rvPeople[id] = ev.attendees.filter(a => a && a.email);
       renderRvPeople(id);
     }
   }
@@ -3015,10 +3029,27 @@ function removeRvPerson(id, email) {
   renderRvPeople(id);
 }
 
+// One click to invite a saved person, instead of typing their name into a
+// search box that has to round-trip to Google. Writes into the same rvPeople
+// list the guest chips use, so saving needs no extra plumbing.
+function toggleRvSavedPerson(id, ri) {
+  const r = savedRecipients[ri];
+  if (!r) return;
+  const list = rvPeople[id] || (rvPeople[id] = []);
+  const at = list.findIndex(p => p.email === r.email);
+  if (at >= 0) list.splice(at, 1);
+  else list.push({ name: r.name || r.email, email: r.email });
+  document.getElementById(`rvsp-${id}-${ri}`)?.classList.toggle('on', at < 0);
+  renderRvPeople(id);
+}
+
 function renderRvPeople(id) {
   const el = document.getElementById(`rv-speople-${id}`);
   if (!el) return;
-  el.innerHTML = (rvPeople[id] || []).map(p =>
+  // Attendees extracted from a PDF can carry a name Criba never resolved to an
+  // address, or nothing at all. Those render as a chip with no label and a
+  // lone × that removes nothing, so drop them rather than show them.
+  el.innerHTML = (rvPeople[id] || []).filter(p => p && p.email).map(p =>
     `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removeRvPerson('${id}','${p.email}')">×</button></div>`
   ).join('');
 }
@@ -3175,7 +3206,7 @@ function renderRecent() {
       </div>
       <div id="edit-${ev.id}" style="display:none;padding:0 0 1.5rem">
         ${renderReviewEditor(ev, {
-          hideMember: true,
+          showRecipients: true,
           actions: `
       <button class="btn-gcal-add" id="rv-addbtn-${ev.id}" onclick="saveEdit('${ev.id}')">Save changes</button>
       <button class="btn-gcal-dismiss" onclick="toggleEdit('${ev.id}')">Cancel</button>
@@ -3199,7 +3230,7 @@ function toggleEdit(id) {
   // does. Without this, saving an edit would silently strip every attendee.
   const ev = recentEvents.find(e => e.id === id);
   if (ev?.attendees?.length && !rvPeople[id]) {
-    rvPeople[id] = [...ev.attendees];
+    rvPeople[id] = ev.attendees.filter(a => a && a.email);
     renderRvPeople(id);
   }
 }
@@ -3220,7 +3251,8 @@ async function saveEdit(id) {
     time: allDay ? '' : (document.getElementById(`rv-time-${id}`)?.value || ''),
     endTime: allDay ? '' : (document.getElementById(`rv-endtime-${id}`)?.value || ''),
     location: document.getElementById(`rv-loc-${id}`)?.value || '',
-    attendees: rvPeople[id] || [],
+    attendees: (rvPeople[id] || []).filter(p => p && p.email),
+    targetMemberId: rvChosenMember(ev) || '',
     // Same resolution the review queue uses: the dropdown/custom-modal state
     // wins when the user touched it, otherwise keep what is stored.
     recurrenceRule: Object.prototype.hasOwnProperty.call(rvRecurrenceState, id)
@@ -4058,7 +4090,7 @@ function toggleEventEditor(ci, ei) {
     const key = `${ci}-${ei}`;
     if (!cedPeople[key]) {
       const ev = groupsState.categories[ci]?.events[ei];
-      cedPeople[key] = ev?.attendees ? [...ev.attendees] : [];
+      cedPeople[key] = (ev?.attendees || []).filter(a => a && a.email);
       renderCedPeople(key);
     }
   }
@@ -4257,7 +4289,7 @@ function removeCedPerson(key, email) {
 function renderCedPeople(key) {
   const el = document.getElementById(`ced-selected-${key}`);
   if (!el) return;
-  el.innerHTML = (cedPeople[key] || []).map(p =>
+  el.innerHTML = (cedPeople[key] || []).filter(p => p && p.email).map(p =>
     `<div class="person-chip">${escHtml(p.name || p.email)}<button onclick="removeCedPerson('${key}', '${p.email}')">×</button></div>`
   ).join('');
 }

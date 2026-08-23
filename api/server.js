@@ -278,6 +278,41 @@ async function resolveEventColorByNames(email, nameStrings, text = '') {
 // The duplicate check lives here rather than in each caller because this is the
 // single chokepoint every write passes through. Putting it in one caller — which
 // is what we had — left the live Gmail path writing blind.
+// Everything Claude extracted beyond a date has, until now, been stored in
+// Redis and thrown away at the calendar boundary — every event got the string
+// "Added via Criba" and nothing else. The attire rules, what to bring, the
+// amount owed, who sent it: all of it existed and none of it reached the place
+// the user actually looks. This builds the description every write path uses.
+//
+// Claude sometimes emits a literal backslash-n inside notes rather than a real
+// newline; Google Calendar renders that as visible "\n" text, so unescape it.
+function buildEventDescription(ev) {
+  const parts = [];
+  const notes = String(ev?.notes || '').replace(/\\r\\n|\\n/g, '\n').trim();
+  if (notes) parts.push(notes);
+
+  const recurringNote = ev?.recurring_note;
+  if (recurringNote && (ev.recurrence_rule || ev.type === 'recurring')) {
+    parts.push(`Repeats: ${recurringNote}`);
+  }
+
+  const from = ev?.sender_name || ev?.sender_email;
+  const provenance = [];
+  if (from) provenance.push(`From ${from}`);
+  if (ev?.subject) provenance.push(`Re: ${ev.subject}`);
+  if (provenance.length) parts.push(provenance.join('\n'));
+
+  // A deep link back to the source email. This is the difference between a
+  // calendar entry and a calendar manager: the answer to "wait, what did that
+  // email say about parking?" is one click away instead of a Gmail search.
+  if (ev?.gmail_message_id) {
+    parts.push(`Original email: https://mail.google.com/mail/u/0/#all/${ev.gmail_message_id}`);
+  }
+
+  parts.push('Added via Criba');
+  return parts.join('\n\n');
+}
+
 async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts = {}) {
   if (!opts.skipDuplicateCheck) {
     const dup = await findExistingOnAnyCalendar(calendarApi, targetCalId, ev);
@@ -289,12 +324,7 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
   }
   const span = resolveRecurringSpan(ev.recurrence_rule, ev.date, ev.end_date || '', ev.recurrence_end_date);
   const { start, end } = buildCalendarTimes(ev.date, ev.time || '', span.endDate, ev.end_time || '', opts.timezone);
-  // Only append the suffix when there is actually a note to append. The backfill
-  // always passes recurring_note: null, which produced the dangling
-  // "Added via Criba — recurring:" on every recurring event.
-  const description = ev.recurrence_rule && ev.recurring_note
-    ? `Added via Criba — recurring: ${ev.recurring_note}`
-    : 'Added via Criba';
+  const description = buildEventDescription(ev);
   const resource = {
     summary: ev.title,
     location: ev.location || '',
@@ -1137,9 +1167,7 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     if (attendees && Array.isArray(attendees)) {
       attendees.forEach(a => { if (a.email) eventAttendees.push({ email: a.email }); });
     }
-    const description = event.type === 'recurring' && event.recurring_note
-      ? `Added via Criba — recurring: ${event.recurring_note}`
-      : 'Added via Criba';
+    const description = buildEventDescription(event);
 
     const calEventResource = { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description };
     if (recurrenceRule) calEventResource.recurrence = [ensureRecurrenceEnd(recurrenceRule, date, span.recurrenceEndDate)];
@@ -1759,9 +1787,7 @@ function buildGoogleResource(ev, { colorId, tz, extraAttendees = [] }) {
   for (const addr of extraAttendees) {
     if (!attendees.some(a => String(a.email).toLowerCase() === addr)) attendees.push({ email: addr });
   }
-  const description = ev.type === 'recurring' && ev.recurring_note
-    ? `Added via Criba — recurring: ${ev.recurring_note}`
-    : 'Added via Criba';
+  const description = buildEventDescription(ev);
   const resource = { summary: ev.title, location: ev.location || '', start, end, attendees, description };
   if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, span.recurrenceEndDate)];
   if (colorId) resource.colorId = String(colorId);
@@ -2477,9 +2503,7 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
       for (const addr of groupRecipients) {
         if (!eventAttendees.some(a => String(a.email).toLowerCase() === addr)) eventAttendees.push({ email: addr });
       }
-      const description = ev.type === 'recurring' && ev.recurring_note
-        ? `Added via Criba — recurring: ${ev.recurring_note}`
-        : 'Added via Criba';
+      const description = buildEventDescription(ev);
       const resource = { summary: ev.title, location: ev.location || '', start, end, attendees: eventAttendees, description };
       if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, catSpan.recurrenceEndDate)];
       if (colorId) resource.colorId = String(colorId);
@@ -3755,7 +3779,10 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
 
         // Auto-write to calendar immediately
         const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
-        const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: ev.recurring_note || null, attendees: [] };
+        const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: ev.recurring_note || null, attendees: [],
+          // Carried purely so buildEventDescription can write the details and
+          // the back-link to the source email into the calendar entry.
+          notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
         let calEventId = null;
         try {
           calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz });
@@ -5203,7 +5230,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // The check above only saw the target calendar; autoWriteToCalendar
           // additionally checks every other calendar the user subscribes to and
           // returns null (setting duplicate_of) instead of writing a second copy.
-          const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: null, attendees: [] };
+          const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: null, attendees: [],
+            // Carried purely so buildEventDescription can write the details and
+            // the back-link to the source email into the calendar entry.
+            notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
           if (relevance.relevant) {
             try {
               calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz });

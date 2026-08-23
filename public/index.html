@@ -1107,7 +1107,7 @@ function rvChosenMember(ev) {
 // The two decisions that get made on nearly every card: who it belongs to, and
 // who else should be invited. Both sit on the collapsed row — burying them
 // behind Edit meant expanding a card just to tick one box.
-function renderQuickAdds(ev) {
+function renderQuickAdds(ev, opts = {}) {
   const id = ev.id;
   const chosen = rvChosenMember(ev);
   const guessed = ev.suggested_member_id || '';
@@ -1122,7 +1122,9 @@ function renderQuickAdds(ev) {
       <button class="quick-chip ${chosen === '' ? 'on' : ''}" id="qm-${id}-none"
               onclick="setQuickMember('${id}','')" title="No colour — use the calendar default">None</button>
     </div>` : '';
-  const recips = savedRecipients.length ? `
+  // A deadline or action item is a note to self — there is nobody to invite to
+  // "Tuition payment due", so the card only offers the colour chips.
+  const recips = opts.hideRecipients ? '' : savedRecipients.length ? `
     <div class="quick-add-group">
       ${savedRecipients.map(r => `
         <label class="quick-chip" title="Invite ${escHtml(r.email)}">
@@ -2116,6 +2118,7 @@ function renderPostWriteReviewCard(ev) {
         ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong></div>` : ''}
         ${notesHtml}
         ${ev.conflict_note ? `<div class="review-conflict">${escHtml(ev.conflict_note)}</div>` : ''}
+        ${isDup ? '' : renderQuickAdds(ev)}
       </div>
       <div class="review-card-tags">
         <!-- "Dismiss" used to be the only exit from this queue, and it deleted
@@ -2142,8 +2145,16 @@ function openPostWriteEdit(id) {
   if (!editor) return;
   const isOpen = editor.style.display !== 'none';
   editor.style.display = isOpen ? 'none' : 'block';
-  if (!isOpen) {
-    initLocationAutocomplete(`rv-loc-${id}`);
+  if (isOpen) return;
+  initLocationAutocomplete(`rv-loc-${id}`);
+  // Seed the guest chips from the extracted event. Without this, approveReviewEvent
+  // reads rvPeople[id] as empty and posts attendees: [] — so opening Edit and
+  // pressing Add silently dropped every guest Criba had found. The Recent page
+  // already did this in toggleEdit; this path was the one that never got it.
+  const ev = pendingEvents.find(e => e.id === id);
+  if (ev?.attendees?.length && !rvPeople[id]) {
+    rvPeople[id] = ev.attendees.filter(a => a && a.email);
+    renderRvPeople(id);
   }
 }
 
@@ -2193,6 +2204,7 @@ function renderReminderCard(ev) {
       <div>
         <div class="reminder-headline">${eventDotHtml(ev)}${reminderHeadline(ev)} ${sourceTag} ${stateTag}</div>
         ${ev.sender_name ? `<div class="reminder-source">from ${escHtml(ev.sender_name)} · ${typeLabel}</div>` : `<div class="reminder-source">${typeLabel}</div>`}
+        ${renderQuickAdds(ev, { hideRecipients: true })}
       </div>
       <div class="reminder-actions">
         ${isDraft
@@ -2565,42 +2577,10 @@ async function runBackfill(days, dryRun = false) {
   }
 }
 
-function renderReviewCard(ev) {
-  if (ev.intent === 'cancellation') return renderCancellationCard(ev);
-  if (ev.intent === 'reschedule') return renderRescheduleCard(ev);
-
-  const id = ev.id;
-  const isGmail = ev.source === 'gmail';
-  const dateStr = ev.date ? shortDate(ev.date) : '';
-  const timeStr = (ev.is_all_day || !ev.time) ? 'All day' : formatTime(ev.time);
-  const meta = [dateStr, timeStr, ev.location ? escHtml(ev.location) : ''].filter(Boolean).join(' · ');
-  const badges = [
-    isGmail ? `<span class="review-badge-gmail">Gmail</span>` : `<span class="review-badge">${escHtml(ev.source || 'Event')}</span>`,
-    ev.source_type === 'deadline' ? `<span class="review-badge-deadline">Deadline</span>` : '',
-    ev.source_type === 'action_item' ? `<span class="review-badge-action">Action</span>` : '',
-    ev.source_type === 'financial_reminder' ? `<span class="review-badge-financial">Financial</span>` : '',
-    ev.recurrence_rule ? `<span class="review-badge-recurring">↻ Recurring</span>` : '',
-  ].filter(Boolean).join('');
-  return `
-  <div class="review-card" id="rcard-${id}">
-    <div class="review-card-row" id="rrow-${id}">
-      <div class="review-card-content">
-        <div class="review-card-title">${escHtml(ev.title)} ${badges}</div>
-        <div class="review-card-meta">${meta}</div>
-        ${ev.conflict_note ? `<div class="review-conflict">${escHtml(ev.conflict_note)}</div>` : ''}
-        ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong></div>` : ''}
-        ${renderQuickAdds(ev)}
-      </div>
-      <div class="review-card-tags">
-        <button class="btn-outlined btn-sm" onclick="dismissReviewEvent('${id}')">Dismiss</button>
-        <button class="btn-filled btn-sm" onclick="toggleReviewCard('${id}')">Add →</button>
-      </div>
-    </div>
-    <div class="review-card-editor" id="reditor-${id}" style="display:none">
-      ${renderReviewEditor(ev)}
-    </div>
-  </div>`;
-}
+// renderReviewCard and toggleReviewCard used to be the review queue. The page
+// now renders renderPostWriteReviewCard / renderReminderCard instead, and both
+// dead functions were removed — they were the only callers of renderQuickAdds,
+// which is why the colour chips vanished from every screen.
 
 // Returns a coloured confidence pill: green ≥80%, amber 65–79%, red 50–64%.
 function confidencePill(score) {
@@ -3024,32 +3004,6 @@ function renderReviewEditor(ev, opts = {}) {
   </div>`;
 }
 
-function toggleReviewCard(id) {
-  const editor = document.getElementById(`reditor-${id}`);
-  const row = document.getElementById(`rrow-${id}`);
-  const chevron = document.getElementById(`rchev-${id}`);
-  const isOpen = editor.style.display !== 'none';
-
-  // Close all other open editors first
-  document.querySelectorAll('.review-card-editor').forEach(e => { e.style.display = 'none'; });
-  document.querySelectorAll('.review-card-row').forEach(r => r.classList.remove('open'));
-  document.querySelectorAll('.review-chevron').forEach(c => { c.style.transform = ''; });
-
-  if (!isOpen) {
-    editor.style.display = 'block';
-    row.classList.add('open');
-    chevron.style.transform = 'rotate(180deg)';
-    // Init Places autocomplete on location field
-    initLocationAutocomplete(`rv-loc-${id}`);
-    // Pre-populate attendees from event (e.g. Gmail sender)
-    const ev = pendingEvents.find(e => e.id === id);
-    if (ev?.attendees?.length && !rvPeople[id]) {
-      rvPeople[id] = ev.attendees.filter(a => a && a.email);
-      renderRvPeople(id);
-    }
-  }
-}
-
 function toggleReviewAllDay(id) {
   const checked = document.getElementById(`rv-allday-${id}`)?.checked;
   const wrap = document.getElementById(`rv-time-wrap-${id}`);
@@ -3184,6 +3138,15 @@ function toggleRvSavedPerson(id, ri) {
 }
 
 // ── Review queue event actions ───────────────────────────────────────────
+// Every failure path here used to call btns.forEach(...), copied from
+// approveReviewEvent — the only function that actually declares btns. Anywhere
+// else it threw a ReferenceError, so a failed save showed no message at all and
+// left the button disabled: the edit looked like it had simply stopped working.
+function showActionError(statusEl, btn, message) {
+  if (statusEl) statusEl.innerHTML = `<span class="error-msg">${escHtml(message)}</span>`;
+  if (btn) btn.disabled = false;
+}
+
 async function approveReviewEvent(id) {
   const ev = pendingEvents.find(e => e.id === id);
   if (!ev) return;
@@ -3247,13 +3210,11 @@ async function approveCancellation(id) {
       await loadRecentEvents();
       setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
     } else {
-      const err = await res.json();
-      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-      btns.forEach(b => { b.disabled = false; });
+      const err = await res.json().catch(() => ({}));
+      showActionError(status, btn, err.error || 'Failed');
     }
   } catch {
-    status.innerHTML = '<span class="error-msg">Network error</span>';
-    btns.forEach(b => { b.disabled = false; });
+    showActionError(status, btn, 'Network error');
   }
 }
 
@@ -3274,13 +3235,11 @@ async function approveReschedule(id) {
       await loadRecentEvents();
       setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
     } else {
-      const err = await res.json();
-      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-      btns.forEach(b => { b.disabled = false; });
+      const err = await res.json().catch(() => ({}));
+      showActionError(status, btn, err.error || 'Failed');
     }
   } catch {
-    status.innerHTML = '<span class="error-msg">Network error</span>';
-    btns.forEach(b => { b.disabled = false; });
+    showActionError(status, btn, 'Network error');
   }
 }
 
@@ -3399,12 +3358,10 @@ async function saveEdit(id) {
       await loadRecentEvents();
     } else {
       const err = await res.json().catch(() => ({}));
-      status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
-      btns.forEach(b => { b.disabled = false; });
+      showActionError(status, btn, err.error || 'Failed');
     }
   } catch {
-    status.innerHTML = '<span class="error-msg">Network error</span>';
-    btns.forEach(b => { b.disabled = false; });
+    showActionError(status, btn, 'Network error');
   }
 }
 
@@ -4086,6 +4043,18 @@ function renderInlineEditor(ev, ci, ei) {
       </div>
     </div>` : ''}
 
+    ${familyMembers.length ? `
+    <div class="gcal-row">
+      <span class="material-icons gcal-icon">group</span>
+      <div class="gcal-fields">
+        <select class="gcal-input" id="ced-member-${key}" style="cursor:pointer;min-width:180px"
+                title="Whose event this is. Sets the colour on your calendar.">
+          <option value="">Calendar default colour</option>
+          ${familyMembers.map(m => `<option value="${m.id}" ${ev.member_id === m.id ? 'selected' : ''}>${escHtml(m.name)}</option>`).join('')}
+        </select>
+      </div>
+    </div>` : ''}
+
     <div class="gcal-actions">
       <button class="btn-gcal-add" id="ced-add-${key}" onclick="cedApprove('${ev.id}', '${key}', ${ci}, ${ei})">Add to Calendar</button>
       <button class="btn-gcal-dismiss" onclick="dismissCatEvent(${ci}, ${ei})">Dismiss</button>
@@ -4325,6 +4294,11 @@ async function cedApprove(evId, key, ci, ei) {
     attendees: cedPeople[key] || [],
     recipientEmails: [...document.querySelectorAll(`.ced-recip-${key}:checked`)].map(c => c.value),
   };
+  // Only send it when the picker is actually on screen. Sending '' when there
+  // are no family members would still be read as "clear the member", which is
+  // a different statement from "I didn't choose".
+  const memberSel = document.getElementById(`ced-member-${key}`);
+  if (memberSel) payload.targetMemberId = memberSel.value;
   try {
     const res = await fetch('/api/events/approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

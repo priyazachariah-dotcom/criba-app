@@ -1138,16 +1138,20 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     const targetCalId = await resolveTargetCalendar(req.user.email);
     const colorId = await resolveEventColor(req.user.email, targetMemberId, calSrc);
 
-    const finalEndDate = endDate || event.end_date || '';
-    const finalEndTime = endTime || event.end_time || '';
+    // A field the client sent must win even when blank — that is how the user
+    // clears an end time or a location. /api/events/update learned this months
+    // ago; this endpoint kept the `||` fallbacks, so the same edit made on the
+    // review screen instead of the edit screen silently reverted.
+    const has = k => Object.prototype.hasOwnProperty.call(req.body, k);
+    const finalEndDate = has('endDate') ? (endDate || '') : (event.end_date || '');
+    const finalEndTime = has('endTime') ? (endTime || '') : (event.end_time || '');
+    const finalLocation = has('location') ? (location || '') : (event.location || '');
     const userTz = await getUserTimezone(req.user.email);
 
     // Use the RRULE from body if the user kept it, or fall back to the stored rule.
     // The frontend sends recurrenceRule: null to remove recurrence before adding.
     // Resolved here rather than further down because the span fix below needs it.
-    const recurrenceRule = Object.prototype.hasOwnProperty.call(req.body, 'recurrenceRule')
-      ? req.body.recurrenceRule
-      : event.recurrence_rule;
+    const recurrenceRule = has('recurrenceRule') ? req.body.recurrenceRule : event.recurrence_rule;
 
     const span = resolveRecurringSpan(recurrenceRule, date, finalEndDate, req.body.recurrenceEndDate || event.recurrence_end_date);
     const { start, end } = buildCalendarTimes(date, time, span.endDate, finalEndTime, userTz);
@@ -1165,13 +1169,24 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
       }
     }
     if (attendees && Array.isArray(attendees)) {
-      attendees.forEach(a => { if (a.email) eventAttendees.push({ email: a.email }); });
+      // Deduped against the ticked recipients above — a saved recipient who is
+      // also in the guest list was being added to the invite twice.
+      attendees.forEach(a => {
+        const addr = String(a?.email || '').trim().toLowerCase();
+        if (addr && !eventAttendees.some(x => x.email.toLowerCase() === addr)) {
+          eventAttendees.push({ email: a.email });
+        }
+      });
     }
     const description = buildEventDescription(event);
 
-    const calEventResource = { summary: title || event.title, location: location || event.location || '', start, end, attendees: eventAttendees, description };
+    const calEventResource = { summary: title || event.title, location: finalLocation, start, end, attendees: eventAttendees, description };
     if (recurrenceRule) calEventResource.recurrence = [ensureRecurrenceEnd(recurrenceRule, date, span.recurrenceEndDate)];
-    if (colorId) calEventResource.colorId = String(colorId);
+    // "" is Google's documented way to clear a colour back to the calendar
+    // default, which is what "No colour" has to mean. Only sent when the client
+    // actually chose, so callers that omit the field leave the colour alone.
+    if (has('targetMemberId')) calEventResource.colorId = colorId ? String(colorId) : '';
+    else if (colorId) calEventResource.colorId = String(colorId);
 
     // Approving an event that is already on the calendar must update that event,
     // not add a second one. This path inserts directly rather than going through
@@ -1240,7 +1255,16 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     event.time = time || '';
     event.end_date = finalEndDate;
     event.end_time = finalEndTime;
-    event.location = location || event.location || '';
+    event.location = finalLocation;
+    // The guests went to Google and nowhere else. Reopening the event on the
+    // Edit screen then read event.attendees, found it empty, and the next save
+    // patched the invite list back to empty — so adding a guest here and
+    // editing anything later silently uninvited them.
+    event.attendees = eventAttendees.map(a => ({ email: a.email }));
+    if (has('recurrenceRule')) {
+      event.recurrence_rule = recurrenceRule || null;
+      event.recurrence_end_date = recurrenceRule ? span.recurrenceEndDate : null;
+    }
     await events.set(id, event);
     res.json({ ok: true, calEventId: calEvent.data.id });
   } catch (err) {
@@ -1336,6 +1360,10 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     event.title = title; event.date = date; event.time = time || '';
     event.end_date = finalEndDate; event.end_time = finalEndTime;
     event.location = location || '';
+    // Same round-trip gap as /api/events/approve: the patch sent the guests to
+    // Google but the store never kept them, so the next edit re-sent an empty
+    // list and dropped everyone.
+    if (has('attendees')) event.attendees = eventAttendees.map(a => ({ email: a.email }));
     if (has('recurrenceRule')) {
       event.recurrence_rule = recurrenceRule || null;
       event.recurrence_end_date = recurrenceRule ? span.recurrenceEndDate : null;

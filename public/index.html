@@ -1965,11 +1965,33 @@ async function loadCalendars() {
 }
 
 // ── Nav ───────────────────────────────────────────────────────────────────
+// Review and Edit Calendar Events both render renderReviewEditor, which emits
+// rv-title-${id}, rv-loc-${id}, rv-status-${id} and the rest. Both pages live in
+// the DOM permanently — only a CSS class hides one — and /api/events/pending and
+// /api/events/recent overlap on every auto-added event that has not been
+// reviewed yet. So those ids existed twice, and getElementById returns the first
+// in document order, which is always the Review copy.
+//
+// The result: on Edit Calendar Events, Save read the Review card's untouched
+// inputs and wrote them back, so edits silently reverted, and the "Updated"
+// message was painted onto an invisible page so nothing appeared to happen.
+//
+// Only the active page keeps its cards rendered, which makes the ids unique.
+function pageIsActive(page) {
+  return !!document.getElementById(`page-${page}`)?.classList.contains('active');
+}
+
 function showPage(page, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(`page-${page}`).classList.add('active');
   if (btn) btn.classList.add('active');
+  // Clear first, then render, so the two lists never both hold cards — not even
+  // for the duration of this function.
+  if (page !== 'review') { const el = document.getElementById('review-list'); if (el) el.innerHTML = ''; }
+  if (page !== 'recent') { const el = document.getElementById('recent-list'); if (el) el.innerHTML = ''; }
+  if (page === 'review') renderReview();
+  if (page === 'recent') renderRecent();
   // renderSettingsPage returns early when there are no members, so the
   // recipient list is painted separately rather than chained onto it.
   if (page === 'settings') { renderSettingsPage(); renderRecipients(); }
@@ -2271,6 +2293,8 @@ function renderReview() {
   if (!container) return;
   // The first-run scan owns this container until it finishes.
   if (onboardingScanRunning) return;
+  // Same reason as renderRecent: only the visible page may hold rv-* ids.
+  if (!pageIsActive('review')) { container.innerHTML = ''; return; }
 
   // Separate cancellation/reschedule from regular post-write review
   const cancellations = pendingEvents.filter(e => e.status === 'pending_cancellation');
@@ -3158,14 +3182,14 @@ async function approveReviewEvent(id) {
   const status = { set innerHTML(v) { statusEls.forEach(e => { e.innerHTML = v; }); } };
   btns.forEach(b => { b.disabled = true; });
   const allDay = document.getElementById(`rv-allday-${id}`)?.checked;
+  // Every field used to read `input.value || ev.field`. Blank is falsy, so
+  // clearing a location or an end time fell straight back to the stored value
+  // and the edit was impossible — the same bug the server had, mirrored on the
+  // client. Now: field on screen wins verbatim, blank included; field absent
+  // (editor closed) means omit the key so the server keeps what it has.
+  const val = elId => { const el = document.getElementById(elId); return el ? el.value : undefined; };
   const payload = {
     id,
-    title: document.getElementById(`rv-title-${id}`)?.value || ev.title,
-    date: document.getElementById(`rv-date-${id}`)?.value || ev.date,
-    endDate: document.getElementById(`rv-enddate-${id}`)?.value || ev.end_date || '',
-    time: allDay ? '' : (document.getElementById(`rv-time-${id}`)?.value || ev.time || ''),
-    endTime: allDay ? '' : (document.getElementById(`rv-endtime-${id}`)?.value || ev.end_time || ''),
-    location: document.getElementById(`rv-loc-${id}`)?.value || ev.location || '',
     attendees: rvPeople[id] || [],
     recipientEmails: [...document.querySelectorAll(`.rv-recip-${id}:checked`)].map(c => c.value),
     // The chips on the collapsed row are the source of truth. The editor's
@@ -3176,6 +3200,18 @@ async function approveReviewEvent(id) {
       ? (rvRecurrenceState[id] || null)
       : (rvRecurrenceRemoved[id] ? null : (ev.recurrence_rule || null)),
   };
+  const setIf = (key, v) => { if (v !== undefined) payload[key] = v; };
+  setIf('title', val(`rv-title-${id}`));
+  setIf('endDate', val(`rv-enddate-${id}`));
+  setIf('location', val(`rv-loc-${id}`));
+  if (allDay) { payload.time = ''; payload.endTime = ''; }
+  else { setIf('time', val(`rv-time-${id}`)); setIf('endTime', val(`rv-endtime-${id}`)); }
+  // Date is the one field the server rejects outright when missing, and the row
+  // Add button works with the editor closed — so it always goes, falling back to
+  // the stored date only when there is no input to read.
+  const dateVal = val(`rv-date-${id}`);
+  payload.date = dateVal === undefined ? (ev.date || '') : dateVal;
+
   try {
     const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (res.ok) {
@@ -3278,6 +3314,11 @@ async function promoteRescheduleAsNew(id) {
 // ── Edit Calendar Events render ───────────────────────────────────────────
 function renderRecent() {
   const container = document.getElementById('recent-list');
+  // Painting this while the Review page is showing would duplicate every rv-*
+  // id in the document. showPage re-renders on activation, and recentEvents is
+  // held in JS state, so nothing is lost by staying blank until then.
+  if (!container) return;
+  if (!pageIsActive('recent')) { container.innerHTML = ''; return; }
   if (!recentEvents.length) {
     container.innerHTML = `<div class="empty-state"><h3>Nothing here yet</h3><p>Events you approve will appear here for editing.</p></div>`;
     return;
@@ -4283,20 +4324,25 @@ async function cedApprove(evId, key, ci, ei) {
   if (addBtn) addBtn.disabled = true;
   if (statusEl) statusEl.innerHTML = '<span style="color:var(--text2)">Adding…</span>';
 
+  // Only send fields whose inputs are actually rendered. The end-date box only
+  // exists for breaks, so sending endDate:'' unconditionally now reads as
+  // "clear the stored end date" rather than "I have nothing to say about it".
+  const val = elId => { const el = document.getElementById(elId); return el ? el.value : undefined; };
   const payload = {
     id: evId,
-    title:    document.getElementById(`ced-title-${key}`)?.value || '',
-    date:     document.getElementById(`ced-date-${key}`)?.value || '',
-    time:     document.getElementById(`ced-time-${key}`)?.value || '',
-    endDate:  document.getElementById(`ced-enddate-${key}`)?.value || '',
-    endTime:  document.getElementById(`ced-endtime-${key}`)?.value || '',
-    location: document.getElementById(`ced-loc-${key}`)?.value || '',
+    title:    val(`ced-title-${key}`) ?? '',
+    date:     val(`ced-date-${key}`) ?? '',
     attendees: cedPeople[key] || [],
     recipientEmails: [...document.querySelectorAll(`.ced-recip-${key}:checked`)].map(c => c.value),
   };
   // Only send it when the picker is actually on screen. Sending '' when there
   // are no family members would still be read as "clear the member", which is
   // a different statement from "I didn't choose".
+  const setIf = (k, v) => { if (v !== undefined) payload[k] = v; };
+  setIf('time',     val(`ced-time-${key}`));
+  setIf('endTime',  val(`ced-endtime-${key}`));
+  setIf('endDate',  val(`ced-enddate-${key}`));
+  setIf('location', val(`ced-loc-${key}`));
   const memberSel = document.getElementById(`ced-member-${key}`);
   if (memberSel) payload.targetMemberId = memberSel.value;
   try {

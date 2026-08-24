@@ -263,6 +263,254 @@ function learnSenderAttribution(allEvents) {
   return out;
 }
 
+// ── Structured activity facts ─────────────────────────────────────────────────
+//
+// learnSenderAttribution above keys on sender domain alone, which is too coarse
+// for the case that actually breaks: one school, one sport, two teams. A frosh
+// football mail and a varsity football mail both come from siprep.org and both
+// say "football", so domain attribution colours them identically. If the frosh
+// one is your child's and the varsity one is not, the calendar is quietly wrong
+// and nothing on screen says a guess was made.
+//
+// An activity record carries the discriminators that tell those apart:
+//   { sport_or_type, org, team_tier, sender_domain, confidence }
+// team_tier is a HARD requirement — see tierRelation. Everything else narrows.
+
+// Tokens that name a competitive tier. "junior varsity" is consumed before
+// "varsity" is tested, otherwise every JV mail would also read as varsity.
+const TIER_PATTERNS = [
+  { tier: 'frosh-soph', re: /\b(frosh[-\s/]?soph(?:omore)?|f\/s)\b/ },
+  { tier: 'frosh', re: /\b(frosh|freshman|freshmen)\b/ },
+  { tier: 'jv', re: /\b(junior varsity|jv)\b/ },
+  { tier: 'varsity', re: /\bvarsity\b/ },
+];
+
+// Tiers that should not be treated as contradicting each other. A frosh-soph
+// team is the team a freshman plays on, so a parent who wrote "frosh" and a
+// coach who wrote "frosh/soph" mean the same thing and must not collide.
+const TIER_COMPATIBLE = [new Set(['frosh', 'frosh-soph'])];
+
+function normalizeTier(raw) {
+  const s = String(raw || '').toLowerCase().trim();
+  if (!s) return null;
+  for (const { tier, re } of TIER_PATTERNS) if (re.test(s)) return tier;
+  return null;
+}
+
+// Which tiers does this text name? Empty set means the text is silent on tier,
+// which is "unknown", never "none" — see tierRelation.
+function tiersMentionedIn(text) {
+  let t = String(text || '').toLowerCase();
+  const found = new Set();
+  for (const { tier, re } of TIER_PATTERNS) {
+    if (re.test(t)) {
+      found.add(tier);
+      // Consume the match so a longer alias cannot also satisfy a shorter one
+      // ("junior varsity" must not additionally register as varsity).
+      t = t.replace(new RegExp(re.source, 'g'), ' ');
+    }
+  }
+  return found;
+}
+
+// 'match' | 'conflict' | 'unknown'. Only 'conflict' excludes, and it requires
+// positive evidence on both sides: a tier written in the email and a different
+// tier recorded on the activity. Silence never excludes anyone.
+function tierRelation(activityTier, mentionedTiers) {
+  const at = normalizeTier(activityTier);
+  if (!at) return 'unknown';
+  if (!mentionedTiers || !mentionedTiers.size) return 'unknown';
+  for (const mt of mentionedTiers) {
+    if (mt === at) return 'match';
+    if (TIER_COMPATIBLE.some(g => g.has(mt) && g.has(at))) return 'match';
+  }
+  return 'conflict';
+}
+
+// Activity types Criba can recognise unprompted in email text. Kept to things
+// that are unambiguously an activity when they appear next to a date; a word
+// like "band" or "chess" is far more often prose, so those have to be typed in
+// by the user rather than detected.
+const ACTIVITY_TYPE_PATTERNS = [
+  ['football', /\bfootball\b/], ['soccer', /\bsoccer\b/], ['basketball', /\bbasketball\b/],
+  ['baseball', /\bbaseball\b/], ['softball', /\bsoftball\b/], ['volleyball', /\bvolleyball\b/],
+  ['lacrosse', /\blacrosse\b/], ['hockey', /\bhockey\b/], ['tennis', /\btennis\b/],
+  ['swimming', /\bswim(?:ming|\s*team|\s*meet)\b/],
+  ['cross country', /\bcross[-\s]country\b/], ['water polo', /\bwater\s*polo\b/],
+  ['track', /\btrack(?:\s*(?:and|&)\s*field)?\b/],
+  ['golf', /\bgolf\b/], ['wrestling', /\bwrestling\b/], ['rowing', /\b(rowing|crew)\b/],
+];
+
+function activityTypesIn(text) {
+  const t = String(text || '').toLowerCase();
+  const found = new Set();
+  for (const [type, re] of ACTIVITY_TYPE_PATTERNS) if (re.test(t)) found.add(type);
+  return found;
+}
+
+// Normalise whatever the client sent into storable activity records. Unknown
+// keys are dropped rather than persisted, and an activity with no type is
+// meaningless so it is discarded outright.
+function normalizeActivities(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const a of raw) {
+    const type = String(a?.sport_or_type || '').toLowerCase().trim();
+    if (!type) continue;
+    const rec = {
+      sport_or_type: type,
+      org: String(a?.org || '').trim() || null,
+      team_tier: normalizeTier(a?.team_tier),
+      sender_domain: String(a?.sender_domain || '').toLowerCase().trim().replace(/^@/, '') || null,
+      confidence: a?.confidence === 'confirmed' ? 'confirmed' : 'inferred',
+    };
+    // Same type, org, tier and domain twice is the same fact twice.
+    const dupe = out.some(x => x.sport_or_type === rec.sport_or_type
+      && x.org === rec.org && x.team_tier === rec.team_tier && x.sender_domain === rec.sender_domain);
+    if (!dupe) out.push(rec);
+  }
+  return out;
+}
+
+// Who does this event belong to?
+//
+// Returns { memberId, reason, ambiguous, ambiguityReason }. Exactly one of
+// memberId / ambiguous is meaningful: an ambiguous result must not be coloured,
+// because a wrong colour shown confidently is worse than no colour at all.
+//
+// Silence is never grounds for exclusion, but a stated contradiction is.
+function attributeByActivity(members, text, senderDomain) {
+  const domain = String(senderDomain || '').toLowerCase().split('@').pop() || null;
+  const tiers = tiersMentionedIn(text);
+  const types = activityTypesIn(text);
+
+  // A candidate is an activity this email could plausibly be about: it names
+  // the activity, or it comes from the address that activity arrives from.
+  const candidates = [];
+  for (const m of members || []) {
+    for (const a of Array.isArray(m.activities) ? m.activities : []) {
+      const typeHit = !!(a.sport_or_type && types.has(a.sport_or_type));
+      const domainHit = !!(a.sender_domain && domain && a.sender_domain === domain);
+      if (!typeHit && !domainHit) continue;
+      candidates.push({ member: m, activity: a, typeHit, domainHit, rel: tierRelation(a.team_tier, tiers) });
+    }
+  }
+  if (!candidates.length) return { memberId: null, reason: null, ambiguous: false, ambiguityReason: null };
+
+  const viable = candidates.filter(c => c.rel !== 'conflict');
+
+  // Every candidate contradicted. This is the varsity-mail-to-a-frosh-parent
+  // case: we know enough to be sure it is NOT the recorded activity, and not
+  // enough to say whose it is. Falling back to domain attribution here would
+  // undo the whole point, so this returns without one.
+  if (!viable.length) {
+    const named = [...tiers].join('/') || 'another team';
+    const rec = candidates[0];
+    return {
+      memberId: null, reason: null, ambiguous: true,
+      ambiguityReason: `Looks like ${named} ${rec.activity.sport_or_type} — ${rec.member.name} is recorded as ${rec.activity.team_tier}`,
+    };
+  }
+
+  // Narrow before declaring a collision. Two children in the same sport is the
+  // normal case, not an impasse — what separates them is which league the mail
+  // came from ("SI Prep for Aarav and Next Level for Arin"). Positive tier
+  // evidence outranks a domain match, and a domain match outranks the bare fact
+  // that both children play the sport.
+  let pool = viable;
+  const tierMatched = pool.filter(c => c.rel === 'match');
+  if (tierMatched.length) pool = tierMatched;
+  else {
+    const domainMatched = pool.filter(c => c.domainHit);
+    if (domainMatched.length) pool = domainMatched;
+  }
+
+  const distinct = [...new Set(pool.map(c => c.member.id))];
+  if (distinct.length > 1) {
+    const names = distinct.map(id => pool.find(c => c.member.id === id).member.name);
+    return {
+      memberId: null, reason: null, ambiguous: true,
+      ambiguityReason: `Could be ${names.join(' or ')} — both have a matching activity`,
+    };
+  }
+
+  const best = pool.find(c => c.rel === 'match') || pool[0];
+  // An inferred fact acted on without positive tier evidence is a guess resting
+  // on a guess. Confirmed facts may act on silence; inferred ones may not.
+  if (best.activity.confidence !== 'confirmed' && best.rel !== 'match') {
+    return {
+      memberId: null, reason: null, ambiguous: true,
+      ambiguityReason: `${best.member.name}'s ${best.activity.sport_or_type} is a guess Criba hasn't had confirmed`,
+    };
+  }
+
+  // The member records two teams in this sport and the mail names neither.
+  const sameType = pool.filter(c => c.activity.sport_or_type === best.activity.sport_or_type);
+  if (best.rel === 'unknown' && new Set(sameType.map(c => c.activity.team_tier)).size > 1) {
+    return {
+      memberId: null, reason: null, ambiguous: true,
+      ambiguityReason: `${best.member.name} has more than one ${best.activity.sport_or_type} team and this doesn't say which`,
+    };
+  }
+
+  const bits = [best.activity.team_tier, best.activity.sport_or_type].filter(Boolean).join(' ');
+  return {
+    memberId: best.member.id,
+    reason: `${best.member.name} plays ${bits}`,
+    ambiguous: false, ambiguityReason: null,
+  };
+}
+
+// The user just told us whose event this is. Turn that into a durable fact so
+// the next mail like it does not have to be asked about again.
+//
+// Only ever called from an explicit user action (approving or editing an event
+// onto a member). Nothing derived from Criba's own guesses is written here —
+// that is what would let a single bad guess confirm itself forever.
+function recordActivityFromEvent(member, text, senderDomain) {
+  const types = activityTypesIn(text);
+  if (!types.size) return false;
+  const domain = String(senderDomain || '').toLowerCase().split('@').pop() || null;
+  const tiers = tiersMentionedIn(text);
+  const tier = tiers.size === 1 ? [...tiers][0] : null;
+
+  const list = Array.isArray(member.activities) ? member.activities : [];
+  let changed = false;
+  for (const type of types) {
+    const existing = list.find(a => a.sport_or_type === type
+      && (!a.sender_domain || !domain || a.sender_domain === domain)
+      && (!a.team_tier || !tier || a.team_tier === tier));
+    if (existing) {
+      // Fill in blanks and harden a guess into a confirmed fact.
+      if (!existing.sender_domain && domain) { existing.sender_domain = domain; changed = true; }
+      if (!existing.team_tier && tier) { existing.team_tier = tier; changed = true; }
+      if (existing.confidence !== 'confirmed') { existing.confidence = 'confirmed'; changed = true; }
+    } else {
+      list.push({ sport_or_type: type, org: null, team_tier: tier, sender_domain: domain, confidence: 'confirmed' });
+      changed = true;
+    }
+  }
+  if (changed) member.activities = list;
+  return changed;
+}
+
+// Called wherever the user assigns an event to a family member. Persists the
+// activity fact that assignment implies, so the same question is not asked
+// twice. Never throws into the caller: failing to learn is a worse outcome than
+// failing to save the event, but only slightly, and the event must still save.
+async function learnFromMemberAssignment(email, memberId, event) {
+  if (!memberId || !event) return;
+  try {
+    const fam = getUserFamily(email);
+    const member = await fam.get(memberId);
+    if (!member) return;
+    const text = [event.title, event.location, event.notes, event.subject].filter(Boolean).join(' ');
+    if (recordActivityFromEvent(member, text, event.sender_email)) await fam.set(memberId, member);
+  } catch (err) {
+    console.error('[learn] activity fact not recorded:', err.message);
+  }
+}
+
 // Resolve event color by matching name strings (from Claude attendees) to family records
 async function resolveEventColorByNames(email, nameStrings, text = '') {
   const members = await getUserFamily(email).values();
@@ -1078,10 +1326,32 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
   if (members.length) {
     const learned = learnSenderAttribution(all);
     for (const ev of pending) {
-      const text = [ev.title, ev.location, ev.notes].filter(Boolean).join(' ');
+      const text = [ev.title, ev.location, ev.notes, ev.subject].filter(Boolean).join(' ');
       const names = Array.isArray(ev.attendees) ? ev.attendees.map(a => a?.name || a?.email || '') : [];
       let match = matchFamilyMember(members, names, text);
       let reason = match ? 'named' : null;
+
+      // A name written in the event still wins — it is the strongest evidence
+      // there is. Below that, recorded activities are consulted before sender
+      // history, because they carry the discriminators sender history lacks.
+      // member_id is only ever written by an explicit user choice, so an event
+      // that has one has already been answered. Asking again would make the
+      // queue feel like it forgets what you told it.
+      if (!match && !ev.member_id) {
+        const act = attributeByActivity(members, text, ev.sender_email);
+        if (act.ambiguous) {
+          // Deliberately no suggested_member_id and no suggested_color. The card
+          // renders in the calendar default with the reason shown, so the user
+          // sees a question rather than a confident wrong answer.
+          ev.attribution_ambiguous = true;
+          ev.ambiguity_reason = act.ambiguityReason;
+          continue;
+        }
+        if (act.memberId) {
+          const m = members.find(x => x.id === act.memberId);
+          if (m) { match = m; reason = act.reason; }
+        }
+      }
 
       // Nobody named. Fall back to what this sender has meant every other time.
       if (!match && ev.sender_email) {
@@ -1243,6 +1513,8 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     // to Criba's original guess, so reopening an event the user had recoloured
     // showed the wrong person.
     if (targetMemberId !== undefined) event.member_id = targetMemberId || null;
+    // The user just answered "whose is this". Record it as a fact.
+    if (targetMemberId) await learnFromMemberAssignment(req.user.email, targetMemberId, event);
     event.reviewed = true; // manually approved events are already reviewed
     event.calEventId = calEvent.data.id;
     // Keep the calendar we actually wrote to. Overwriting it with the target
@@ -1342,6 +1614,7 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
       // default, which is what "No colour" has to mean.
       resource.colorId = colorId ? String(colorId) : '';
       event.member_id = req.body.targetMemberId || null;
+      if (req.body.targetMemberId) await learnFromMemberAssignment(req.user.email, req.body.targetMemberId, event);
     }
     // Google only changes recurrence when the field is present, and an empty
     // array is how a series is turned back into a single event. Send it either
@@ -2637,12 +2910,12 @@ app.get('/api/family', requireAuth, async (req, res) => {
 });
 
 app.post('/api/family', requireAuth, async (req, res) => {
-  const { name, color, eventColor, grade } = req.body;
+  const { name, color, eventColor, grade, activities } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
   const id = randomUUID();
   // Grade is stored as the user typed it ("3rd", "K", "TK", "9") and normalised
   // at comparison time, so nothing is lost if they type something unexpected.
-  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, googleCalendarId: null };
+  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, googleCalendarId: null, activities: normalizeActivities(activities) };
   await getUserFamily(req.user.email).set(id, member);
   res.json(member);
 });
@@ -2657,6 +2930,9 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
   // Explicit undefined check: '' is how the UI clears a grade back to unset,
   // and a truthiness test would make clearing impossible.
   if (req.body.grade !== undefined) member.grade = String(req.body.grade).trim() || null;
+  // Same explicit-undefined rule: [] is how the UI removes every activity, and
+  // a facts store you cannot empty is a facts store you cannot correct.
+  if (req.body.activities !== undefined) member.activities = normalizeActivities(req.body.activities);
   await fam.set(req.params.id, member);
   res.json(member);
 });
@@ -5237,8 +5513,24 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // learnSenderAttribution. Deliberately does not set member_id on the
           // stored event: that field is the record of what the user chose, and
           // writing guesses into it would let the learner train on itself.
-          let bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
+          const attrText = [ev.title, ev.location, ev.notes, subject].filter(Boolean).join(' ');
+          let bfColorId = resolveColorIn(familyMembers, Array.isArray(ev.attendees) ? ev.attendees : [], attrText);
+          // Recorded activities are consulted before sender history, and an
+          // ambiguous verdict blocks the fallback rather than deferring to it —
+          // otherwise the domain guess would paint the colour that the activity
+          // check just established we cannot justify.
+          let bfAmbiguity = null;
           if (!bfColorId) {
+            const act = attributeByActivity(familyMembers, attrText, senderEmail);
+            if (act.ambiguous) {
+              bfAmbiguity = act.ambiguityReason;
+              await traceEmail(email, { stage: 'AMBIGUOUS', messageId, subject, from, title: ev.title, reason: act.ambiguityReason });
+            } else if (act.memberId) {
+              const am = familyMembers.find(x => x.id === act.memberId);
+              if (am) bfColorId = am.eventColor || am.color || null;
+            }
+          }
+          if (!bfColorId && !bfAmbiguity) {
             const dom = String(senderEmail || '').toLowerCase().split('@')[1];
             const hit = dom ? learnedAttribution.get(dom) : null;
             const lm = hit && familyMembers.find(x => x.id === hit.memberId);

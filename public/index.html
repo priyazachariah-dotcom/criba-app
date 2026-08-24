@@ -210,6 +210,8 @@
   .review-card-editor { border-top: 1px solid rgba(17,17,17,0.15); }
   .review-chevron { display: none; } /* replaced by action buttons */
   .review-conflict { font-size: 0.75rem; color: #c5221f; margin-top: 2px; }
+  /* An open question, not an error — amber rather than the conflict red. */
+  .review-ambiguous { font-size: 0.75rem; color: #92400e; background: #fffbeb; border-left: 3px solid #f59e0b; padding: 5px 8px; border-radius: 4px; margin-top: 5px; }
   .review-from { font-size: 13.5px; color: #777; font-style: italic; margin-top: 0.2rem; }
   /* Badge styles */
   .review-badge-gmail { display: inline-block; background: var(--pill); color: var(--ink); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; white-space: nowrap; }
@@ -497,6 +499,17 @@
   .member-cal-badge { font-size: 0.75rem; color: var(--text2); background: var(--bg); border: 1px solid var(--ink); padding: 2px 7px; }
   .member-grade { width: 3.5rem; font-family: inherit; font-size: 0.8rem; text-align: center; padding: 3px 4px; border: 1px solid var(--ink); background: var(--bg); color: var(--ink); }
   .member-grade:focus { outline: none; background: white; }
+  .member-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 0 6px 22px; }
+  .act-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; padding: 2px 5px 2px 7px; border: 1px solid var(--ink); border-radius: 10px; }
+  /* Dashed edge marks a fact Criba inferred rather than one you confirmed. */
+  .act-chip-guess { border-style: dashed; opacity: 0.75; }
+  .act-chip-detail { color: var(--text2); margin-left: 3px; }
+  .act-chip-x { border: none; background: none; cursor: pointer; color: var(--text2); font-size: 0.7rem; padding: 0 1px; }
+  .act-chip-x:hover { color: #c5221f; }
+  .act-add { border: 1px dashed var(--ink); background: none; cursor: pointer; font-family: inherit; font-size: 0.72rem; padding: 2px 7px; border-radius: 10px; color: var(--text2); }
+  .act-form { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; margin-top: 4px; }
+  .act-in { text-align: left; padding-left: 5px; }
+  .act-in-wide { width: 6.5rem; }
   .member-delete { background: none; border: none; cursor: pointer; color: var(--text2); padding: 4px 6px; font-size: 0.875rem; }
   .member-delete:hover { color: var(--red); }
   .add-member-form { background: white; border: 1.5px solid var(--ink); padding: 1rem; margin-top: 0.5rem; }
@@ -1091,6 +1104,15 @@ function eventDotHtml(ev) {
   return `<span class="quick-dot" style="background:${memberColor(colorId)};margin-right:7px" title="${escHtml(who + why)}"></span>`;
 }
 
+// Criba could not tell whose event this is, and said so rather than picking.
+// Hidden the moment the user answers by choosing a member on the card, because
+// a question that stays on screen after you have answered it reads as broken.
+function renderAmbiguityNote(ev) {
+  if (!ev.attribution_ambiguous || !ev.ambiguity_reason) return '';
+  if (Object.prototype.hasOwnProperty.call(rvMemberState, ev.id)) return '';
+  return `<div class="review-ambiguous">Not sure whose this is — ${escHtml(ev.ambiguity_reason)}. Pick below and Criba will remember.</div>`;
+}
+
 // Whose event is this — id → memberId, '' meaning explicitly nobody. Only holds
 // entries the user actually clicked, so an untouched card falls back to the
 // server's guess rather than to a stale local value.
@@ -1200,7 +1222,85 @@ function renderSettingsPage() {
       <button class="member-delete" title="Remove" onclick="deleteMember('${m.id}')">✕</button>
     </div>
     <div class="member-colors" id="member-colors-${m.id}" style="display:none"></div>
+    ${renderMemberActivities(m)}
   `).join('');
+}
+
+// What Criba believes about this person, shown as removable chips. Every fact
+// it acts on has to be visible and revisable here — a profile that only grows,
+// and that you cannot inspect, silently ossifies around its first mistake.
+function renderMemberActivities(m) {
+  const acts = Array.isArray(m.activities) ? m.activities : [];
+  const chips = acts.map((a, i) => {
+    const label = [a.team_tier, a.sport_or_type].filter(Boolean).join(' ');
+    const detail = [a.org, a.sender_domain].filter(Boolean).join(' · ');
+    // A guess and a confirmed fact must not look alike, or "revisable" means
+    // nothing — you cannot correct what you cannot tell apart.
+    const guess = a.confidence !== 'confirmed';
+    return `<span class="act-chip${guess ? ' act-chip-guess' : ''}" title="${escHtml(detail || label)}${guess ? ' — Criba guessed this' : ' — you confirmed this'}">
+      ${escHtml(label)}${detail ? `<span class="act-chip-detail">${escHtml(detail)}</span>` : ''}
+      <button class="act-chip-x" title="Forget this" onclick="removeMemberActivity('${m.id}', ${i})">✕</button>
+    </span>`;
+  }).join('');
+  return `<div class="member-acts">
+    ${chips}
+    <button class="act-add" onclick="toggleActivityForm('${m.id}')">+ activity</button>
+    <div class="act-form" id="act-form-${m.id}" style="display:none">
+      <input class="member-grade act-in" id="act-type-${m.id}" placeholder="football" title="Activity or sport" />
+      <input class="member-grade act-in" id="act-tier-${m.id}" placeholder="frosh" title="Team tier — frosh, JV or varsity. Left blank, any tier matches." />
+      <input class="member-grade act-in act-in-wide" id="act-org-${m.id}" placeholder="SI Prep" title="League or club" />
+      <input class="member-grade act-in act-in-wide" id="act-dom-${m.id}" placeholder="siprep.org" title="Email domain this arrives from" />
+      <button class="act-add" onclick="addMemberActivity('${m.id}')">Save</button>
+    </div>
+  </div>`;
+}
+
+function toggleActivityForm(id) {
+  const f = document.getElementById(`act-form-${id}`);
+  if (f) f.style.display = f.style.display === 'none' ? 'flex' : 'none';
+}
+
+// Both edits go through the same save: read the current list, change it, PATCH
+// the whole array. The server normalises and is the authority on what was
+// stored, so the local copy is replaced with its response rather than assumed.
+async function saveMemberActivities(id, activities, onFail) {
+  const member = familyMembers.find(m => m.id === id);
+  if (!member) return;
+  const previous = Array.isArray(member.activities) ? member.activities.slice() : [];
+  member.activities = activities;
+  renderSettingsPage();
+  try {
+    const res = await fetch(`/api/family/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activities }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed');
+    Object.assign(member, await res.json());
+    renderSettingsPage();
+  } catch (e) {
+    member.activities = previous;
+    renderSettingsPage();
+    alert(`${onFail}: ${e.message}`);
+  }
+}
+
+async function addMemberActivity(id) {
+  const val = k => (document.getElementById(`act-${k}-${id}`)?.value || '').trim();
+  const type = val('type');
+  if (!type) { alert('An activity needs a name — "football", "soccer".'); return; }
+  const member = familyMembers.find(m => m.id === id);
+  const list = (Array.isArray(member?.activities) ? member.activities : []).slice();
+  // Typed in by hand is a statement of fact, not an inference.
+  list.push({ sport_or_type: type, team_tier: val('tier'), org: val('org'), sender_domain: val('dom'), confidence: 'confirmed' });
+  await saveMemberActivities(id, list, 'Could not save the activity');
+}
+
+async function removeMemberActivity(id, index) {
+  const member = familyMembers.find(m => m.id === id);
+  const list = (Array.isArray(member?.activities) ? member.activities : []).slice();
+  if (index < 0 || index >= list.length) return;
+  list.splice(index, 1);
+  await saveMemberActivities(id, list, 'Could not remove the activity');
 }
 
 function toggleMemberColors(id) {
@@ -2140,6 +2240,7 @@ function renderPostWriteReviewCard(ev) {
         ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong></div>` : ''}
         ${notesHtml}
         ${ev.conflict_note ? `<div class="review-conflict">${escHtml(ev.conflict_note)}</div>` : ''}
+        ${renderAmbiguityNote(ev)}
         ${isDup ? '' : renderQuickAdds(ev)}
       </div>
       <div class="review-card-tags">
@@ -2490,6 +2591,7 @@ async function showScanTrace() {
       'STORED':     '#22c55e',
       'ERROR':      '#ef4444',
       'TIMING':     '#0891b2',
+      'AMBIGUOUS':  '#f59e0b',
     };
 
     const rows = entries.map(e => {
@@ -2498,6 +2600,7 @@ async function showScanTrace() {
       const subject = e.subject ? escHtml(e.subject.slice(0, 55)) : '—';
       const from = e.from ? escHtml(e.from.replace(/<.*>/, '').trim().slice(0, 30)) : '—';
       const extra = e.stage === 'SKIP-CAT'  ? ` label=${escHtml(e.label||'')}` :
+                    e.stage === 'AMBIGUOUS' ? ` "${escHtml(e.title||'')}" — ${escHtml(e.reason||'')}` :
                     e.stage === 'DATE-NORM'  ? ` "${escHtml(e.rawDate||'')}"→"${escHtml(e.normalized||'')}"` :
                     e.stage === 'DROPPED'    ? ` reason=${escHtml(e.reason||'')} raw="${escHtml(e.rawDate||'null')}"` :
                     e.stage === 'SENT-TO-AI' ? ` events=${e.claudeEvents} claude=${e.claudeMs}ms body=${e.bodyLen ?? '?'}${e.truncated ? ' TRUNCATED' : ''}${e.imgs ? ` imgs=${e.imgs}` : ''} @${e.elapsedMs}ms` :

@@ -3371,6 +3371,27 @@ function emailFingerprintKey(senderEmail, subject, dateSent) {
   return `processedEmail:${crypto.createHash('sha256').update(raw).digest('hex')}`;
 }
 
+// A second dedup key, checked before anything is fetched.
+//
+// emailFingerprintKey needs the sender, subject and date — all of which arrive
+// only with the metadata fetch, so discovering "already done" cost the same
+// ~450ms as doing the work. The collect loop stops on wall-clock, not on work
+// completed, so that made a hard ceiling of roughly 37 messages per scan no
+// matter how many scans ran: every scan spent its whole budget re-fetching
+// headers for mail it had already processed, and anything deeper was never
+// reachable. Gmail's message id comes back free in messages.list, so keying on
+// it lets a skip cost nothing and the loop reach the full 150.
+//
+// This does NOT replace the fingerprint. The fingerprint is versioned on
+// EXTRACTION_CHAR_LIMIT so that raising the limit re-reads emails that were
+// truncated under the old one. This key therefore carries the same version: a
+// bare message id would skip those emails before the fingerprint ever got the
+// chance to let them through, silently cancelling the re-read. Both are written
+// together, both expire together, and both invalidate together.
+function processedMessageKey(email, messageId) {
+  return `processedMsg:v${EXTRACTION_CHAR_LIMIT}:${email}:${messageId}`;
+}
+
 // Call Claude to extract calendar events from a single email.
 // When images are supplied (image-heavy emails / flyers), uses multimodal API.
 async function extractGmailEvents(body, senderName, senderEmail, subject, images = [], dateSent = '', familyNames = []) {
@@ -5195,8 +5216,24 @@ app.delete('/api/gmail/fingerprints', requireAuth, async (req, res) => {
         if (mine.length > 0) { await redis.del(...mine); deleted += mine.length; }
       }
     } while (cursor !== 0);
-    console.log(`[fingerprints] cleared email=${email} force=${force} deleted=${deleted} skipped=${skipped} scanned=${scanned} sampleValues=${JSON.stringify(sample)}`);
-    res.json({ ok: true, deleted, skipped, scanned, force, sampleValues: sample });
+
+    // The message-id keys are the cheap first-pass dedup. Clearing only the
+    // fingerprints would leave those in place, and the scan would skip every
+    // message before it ever consulted a fingerprint — "Reset Dedup" would
+    // appear to do nothing. These carry the user's address in the key itself,
+    // so no value-matching is needed and force makes no difference.
+    let msgCursor = 0;
+    let msgDeleted = 0;
+    do {
+      const [nextCursor, keys] = await redis.scan(msgCursor, 'MATCH', `processedMsg:*:${email}:*`, 'COUNT', 200);
+      msgCursor = parseInt(nextCursor, 10);
+      if (keys.length === 0) continue;
+      await redis.del(...keys);
+      msgDeleted += keys.length;
+    } while (msgCursor !== 0);
+
+    console.log(`[fingerprints] cleared email=${email} force=${force} deleted=${deleted} msgIdKeys=${msgDeleted} skipped=${skipped} scanned=${scanned} sampleValues=${JSON.stringify(sample)}`);
+    res.json({ ok: true, deleted, messageIdKeysDeleted: msgDeleted, skipped, scanned, force, sampleValues: sample });
   } catch (err) {
     console.error('[fingerprints] clear failed:', err.message);
     res.status(500).json({ error: 'Failed to clear fingerprints: ' + err.message });
@@ -5300,6 +5337,16 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       hitLimit = true;
       break;
     }
+    // ── Free dedup ───────────────────────────────────────────────────────────
+    // Before the metadata fetch, so a message we have already processed costs
+    // nothing at all. Deliberately does not increment `scanned`: that counter
+    // means "messages this scan spent time on", and it is what the deadline
+    // trace reports. Counting free skips in it would hide the real reach.
+    if (!dryRun && await redis.exists(processedMessageKey(email, messageId))) {
+      skippedDedup++;
+      continue;
+    }
+
     scanned++;
     const msgStart = Date.now();
 
@@ -5393,10 +5440,32 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Extractions run in waves. Storage stays serial because it mutates
   // knownEvents for in-run duplicate detection and writes to Google Calendar.
   const CONCURRENCY = 5;
+  // A wave is all-or-nothing: five Claude calls in flight, and the storage that
+  // follows them. The old guard asked whether the budget had already been spent,
+  // which let a wave start at 41.9s and run to ~61s — past Vercel's 60s kill and
+  // past the client's 55s abort. Everything stored before that point survived and
+  // nothing unreached was fingerprinted, so no data was lost, but the scan
+  // returned no response at all: a mostly-successful run reported as a failure.
+  //
+  // Ask instead whether the wave can finish. Seeded from the observed cost of
+  // a Claude call plus its calendar writes, then replaced by what this run is
+  // actually measuring, because a slow Anthropic day is exactly when the naive
+  // estimate is most wrong.
+  let waveEstimateMs = 20000;
+  let iterStart = null;
   for (let i = 0; i < candidates.length; i += CONCURRENCY) {
-    if (Date.now() - startedAt > TIME_BUDGET_MS) {
+    const now = Date.now();
+    // Measured at the top of the next iteration rather than after the wave, so
+    // the estimate includes the serial storage and calendar writes that follow
+    // it. Those are part of what has to fit inside the budget. The floor stops
+    // one cheap wave — a partial last batch, or one that failed fast — from
+    // making the next look affordable when it is not.
+    if (iterStart !== null) waveEstimateMs = Math.max(now - iterStart, 8000);
+    iterStart = now;
+    const elapsed = now - startedAt;
+    if (elapsed + waveEstimateMs > TIME_BUDGET_MS) {
       hitLimit = true;
-      await traceEmail(email, { stage: 'TIMING', note: 'deadline-before-wave', scanned: candidates.length - i, elapsedMs: Date.now() - startedAt });
+      await traceEmail(email, { stage: 'TIMING', note: 'deadline-before-wave', scanned: candidates.length - i, elapsedMs: elapsed, estimateMs: waveEstimateMs });
       break;
     }
     const wave = candidates.slice(i, i + CONCURRENCY);
@@ -5437,8 +5506,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
       try {
         // Fingerprint only after a successful extraction, so anything we did
-        // not reach stays eligible for the next scan.
+        // not reach stays eligible for the next scan. The message-id key is
+        // written in the same breath and with the same TTL: if these two ever
+        // disagree, the cheap one would skip mail the authoritative one still
+        // considers unread.
         await redis.set(fpKey, email, 'EX', 30 * 24 * 60 * 60);
+        await redis.set(processedMessageKey(email, messageId), '1', 'EX', 30 * 24 * 60 * 60);
 
         for (const ev of extracted) {
           // Normalize partial dates (e.g. "August 12" → "2026-08-12")

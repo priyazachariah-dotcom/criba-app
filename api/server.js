@@ -461,6 +461,70 @@ function attributeByActivity(members, text, senderDomain) {
   };
 }
 
+// ── Confirmed sender facts ────────────────────────────────────────────────────
+//
+// Activities answer "what does this person do". They cannot answer "who is this
+// sender about", and that turned out to be the question most real mail asks.
+// Tested against the five events actually attributed by hand in this account —
+// "West Parent Newsletter", "New Families Welcome Coffee", "What to Expect in
+// Middle School", a St. Ignatius open house — the activity writer stored nothing
+// for any of them, because none contains a sport. A confirmation UI built on
+// that alone would look like it was learning and record nothing at all.
+//
+// So a member also carries confirmed senders: { domain, confidence }. This is
+// deliberately NOT learnSenderAttribution, which derives the same shape by
+// counting and is therefore always a guess. This one is only ever written by an
+// explicit human answer, and outranks the counted version wherever they differ.
+
+function normalizeSenders(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const s of raw) {
+    const domain = String(s?.domain || '').toLowerCase().trim().replace(/^@/, '').split('@').pop();
+    if (!domain || !domain.includes('.')) continue;
+    if (out.some(x => x.domain === domain)) continue;
+    out.push({ domain, confidence: s?.confidence === 'confirmed' ? 'confirmed' : 'inferred' });
+  }
+  return out;
+}
+
+// Resolve who an event is about, in evidence order.
+//
+// Activities first: they carry the tier discriminators, so they are the only
+// thing that can tell a frosh mail from a varsity one. Confirmed senders next.
+// An ambiguous verdict at either level is returned as-is and stops the search —
+// the caller must not fall through to the counted guess, which is precisely the
+// evidence we have just established is not good enough.
+function resolveAttribution(members, text, senderEmail) {
+  const act = attributeByActivity(members, text, senderEmail);
+  if (act.ambiguous || act.memberId) return act;
+
+  const domain = String(senderEmail || '').toLowerCase().split('@').pop() || null;
+  if (!domain) return act;
+
+  const hits = (members || []).filter(m =>
+    (Array.isArray(m.senders) ? m.senders : [])
+      .some(s => s.domain === domain && s.confidence === 'confirmed'));
+
+  if (!hits.length) return act;
+
+  // Two children at the same school is the ordinary case, not a contradiction:
+  // the sender genuinely serves both. Criba cannot pick, and picking one would
+  // be wrong half the time, so it says so instead.
+  if (hits.length > 1) {
+    return {
+      memberId: null, reason: null, ambiguous: true,
+      ambiguityReason: `${hits.map(m => m.name).join(' and ')} both get mail from ${domain}`,
+    };
+  }
+
+  return {
+    memberId: hits[0].id,
+    reason: `you've filed mail from ${domain} as ${hits[0].name}`,
+    ambiguous: false, ambiguityReason: null,
+  };
+}
+
 // The user just told us whose event this is. Turn that into a durable fact so
 // the next mail like it does not have to be asked about again.
 //
@@ -494,6 +558,28 @@ function recordActivityFromEvent(member, text, senderDomain) {
   return changed;
 }
 
+// The sender half of the same answer. Runs whether or not an activity was
+// recognised, which is the whole point: most confirmations carry no sport word,
+// and before this they wrote nothing at all.
+function recordSenderFromEvent(member, senderEmail) {
+  const domain = String(senderEmail || '').toLowerCase().split('@').pop() || null;
+  // Uploads have no sender. Nothing to learn here; the activity path may still
+  // have found something.
+  if (!domain || !domain.includes('.')) return false;
+
+  const list = Array.isArray(member.senders) ? member.senders : [];
+  const existing = list.find(s => s.domain === domain);
+  if (existing) {
+    if (existing.confidence === 'confirmed') return false;
+    existing.confidence = 'confirmed';
+    member.senders = list;
+    return true;
+  }
+  list.push({ domain, confidence: 'confirmed' });
+  member.senders = list;
+  return true;
+}
+
 // Called wherever the user assigns an event to a family member. Persists the
 // activity fact that assignment implies, so the same question is not asked
 // twice. Never throws into the caller: failing to learn is a worse outcome than
@@ -505,7 +591,12 @@ async function learnFromMemberAssignment(email, memberId, event) {
     const member = await fam.get(memberId);
     if (!member) return;
     const text = [event.title, event.location, event.notes, event.subject].filter(Boolean).join(' ');
-    if (recordActivityFromEvent(member, text, event.sender_email)) await fam.set(memberId, member);
+    // Both, and deliberately not short-circuited: an event can teach us the
+    // activity, the sender, or both, and the activity writer silently declines
+    // on anything without a sport in it — which is most school mail.
+    const learnedActivity = recordActivityFromEvent(member, text, event.sender_email);
+    const learnedSender = recordSenderFromEvent(member, event.sender_email);
+    if (learnedActivity || learnedSender) await fam.set(memberId, member);
   } catch (err) {
     console.error('[learn] activity fact not recorded:', err.message);
   }
@@ -1338,7 +1429,7 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
       // that has one has already been answered. Asking again would make the
       // queue feel like it forgets what you told it.
       if (!match && !ev.member_id) {
-        const act = attributeByActivity(members, text, ev.sender_email);
+        const act = resolveAttribution(members, text, ev.sender_email);
         if (act.ambiguous) {
           // Deliberately no suggested_member_id and no suggested_color. The card
           // renders in the calendar default with the reason shown, so the user
@@ -2910,12 +3001,12 @@ app.get('/api/family', requireAuth, async (req, res) => {
 });
 
 app.post('/api/family', requireAuth, async (req, res) => {
-  const { name, color, eventColor, grade, activities } = req.body;
+  const { name, color, eventColor, grade, activities, senders } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
   const id = randomUUID();
   // Grade is stored as the user typed it ("3rd", "K", "TK", "9") and normalised
   // at comparison time, so nothing is lost if they type something unexpected.
-  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, googleCalendarId: null, activities: normalizeActivities(activities) };
+  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, googleCalendarId: null, activities: normalizeActivities(activities), senders: normalizeSenders(senders) };
   await getUserFamily(req.user.email).set(id, member);
   res.json(member);
 });
@@ -2933,6 +3024,7 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
   // Same explicit-undefined rule: [] is how the UI removes every activity, and
   // a facts store you cannot empty is a facts store you cannot correct.
   if (req.body.activities !== undefined) member.activities = normalizeActivities(req.body.activities);
+  if (req.body.senders !== undefined) member.senders = normalizeSenders(req.body.senders);
   await fam.set(req.params.id, member);
   res.json(member);
 });
@@ -5594,7 +5686,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // check just established we cannot justify.
           let bfAmbiguity = null;
           if (!bfColorId) {
-            const act = attributeByActivity(familyMembers, attrText, senderEmail);
+            const act = resolveAttribution(familyMembers, attrText, senderEmail);
             if (act.ambiguous) {
               bfAmbiguity = act.ambiguityReason;
               await traceEmail(email, { stage: 'AMBIGUOUS', messageId, subject, from, title: ev.title, reason: act.ambiguityReason });

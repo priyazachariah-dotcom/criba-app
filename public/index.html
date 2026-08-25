@@ -510,6 +510,8 @@
   .act-form { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; margin-top: 4px; }
   .act-in { text-align: left; padding-left: 5px; }
   .act-in-wide { width: 6.5rem; }
+  /* Senders read as addresses, not activities — monospace keeps them distinct. */
+  .act-chip-sender { font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem; }
   .member-delete { background: none; border: none; cursor: pointer; color: var(--text2); padding: 4px 6px; font-size: 0.875rem; }
   .member-delete:hover { color: var(--red); }
   .add-member-form { background: white; border: 1.5px solid var(--ink); padding: 1rem; margin-top: 0.5rem; }
@@ -1242,8 +1244,18 @@ function renderMemberActivities(m) {
       <button class="act-chip-x" title="Forget this" onclick="removeMemberActivity('${m.id}', ${i})">✕</button>
     </span>`;
   }).join('');
+  // Sender facts sit alongside activities: same visibility rule, same one-click
+  // removal. "you've filed mail from siprep.org as Aarav" is a fact Criba acts
+  // on, so it has to be as inspectable as any other.
+  const senders = (Array.isArray(m.senders) ? m.senders : []).map((sd, i) => {
+    const guess = sd.confidence !== 'confirmed';
+    return `<span class="act-chip act-chip-sender${guess ? ' act-chip-guess' : ''}" title="Mail from ${escHtml(sd.domain)}${guess ? ' — Criba guessed this' : ' — you confirmed this'}">
+      ${escHtml(sd.domain)}
+      <button class="act-chip-x" title="Forget this" onclick="removeMemberSender('${m.id}', ${i})">✕</button>
+    </span>`;
+  }).join('');
   return `<div class="member-acts">
-    ${chips}
+    ${chips}${senders}
     <button class="act-add" onclick="toggleActivityForm('${m.id}')">+ activity</button>
     <div class="act-form" id="act-form-${m.id}" style="display:none">
       <input class="member-grade act-in" id="act-type-${m.id}" placeholder="football" title="Activity or sport" />
@@ -1293,6 +1305,29 @@ async function addMemberActivity(id) {
   // Typed in by hand is a statement of fact, not an inference.
   list.push({ sport_or_type: type, team_tier: val('tier'), org: val('org'), sender_domain: val('dom'), confidence: 'confirmed' });
   await saveMemberActivities(id, list, 'Could not save the activity');
+}
+
+async function removeMemberSender(id, index) {
+  const member = familyMembers.find(m => m.id === id);
+  const list = (Array.isArray(member?.senders) ? member.senders : []).slice();
+  if (index < 0 || index >= list.length) return;
+  list.splice(index, 1);
+  const previous = (member.senders || []).slice();
+  member.senders = list;
+  renderSettingsPage();
+  try {
+    const res = await fetch(`/api/family/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ senders: list }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed');
+    Object.assign(member, await res.json());
+    renderSettingsPage();
+  } catch (e) {
+    member.senders = previous;
+    renderSettingsPage();
+    alert(`Could not remove the sender: ${e.message}`);
+  }
 }
 
 async function removeMemberActivity(id, index) {

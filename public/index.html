@@ -88,13 +88,19 @@
     height: 88px; display: flex; align-items: center; padding: 0 48px;
     position: sticky; top: 0; z-index: 100; gap: 0;
   }
-  .header-logo-section { flex: 1; }
+  /* Both side sections must be allowed to shrink (min-width: 0 defeats the
+     default min-width:auto), or their nowrap contents overflow the flex box
+     and paint over the nav — which is how the Gmail pill came to sit on top
+     of the Family link. The nav itself never shrinks: a navigation link that
+     is covered is indistinguishable from a feature that was never built. */
+  .header-logo-section { flex: 1 1 0; min-width: 0; }
   .logo {
     font-family: 'Archivo Black', sans-serif; font-size: 24px;
     color: var(--ink); text-transform: uppercase; letter-spacing: 0.04em; line-height: 1;
   }
-  .header-nav-section { display: flex; align-items: center; gap: 36px; }
-  .header-user-section { flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 16px; }
+  .header-nav-section { display: flex; align-items: center; gap: 36px; flex: 0 0 auto; }
+  .header-user-section { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; overflow: hidden; }
+  .header-user-section .user-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   nav { display: flex; align-items: center; gap: 36px; }
   .nav-btn {
@@ -701,6 +707,9 @@
   .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #1e8e3e; flex-shrink: 0; animation: blink 2.2s infinite; }
   .live-pill.is-off .live-dot { background: #c5221f; animation: none; }
   .live-sub { font-size: 0.68rem; font-weight: 400; letter-spacing: 0; text-transform: none; opacity: 0.6; }
+  /* The renewal date is the least load-bearing thing in the header, so it is
+     the first to go when space runs short — before anything truncates. */
+  @media (max-width: 1400px) { .live-sub { display: none; } }
 
   /* Toast shown when background polling finds events that were not there
      when the page loaded. */

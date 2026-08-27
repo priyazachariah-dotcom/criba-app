@@ -4622,17 +4622,21 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         format: 'full',
       });
       const msg = msgRes.data;
-      // Skip Promotions / Social tabs — see GMAIL_NOISE_LABELS comment for why Updates/Forums are excluded
-      const labelIds = msg.labelIds || [];
-      if (labelIds.some(l => GMAIL_NOISE_LABELS.has(l))) {
-        console.log(`[gmail-process] SKIP msg=${messageId} — noise category label: ${labelIds.filter(l => GMAIL_NOISE_LABELS.has(l)).join(',')}`);
-        completed = true;
-        continue;
-      }
       const headers = msg.payload.headers || [];
       const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
       const from = headers.find(h => h.name.toLowerCase() === 'from')?.value || '';
       const dateSent = headers.find(h => h.name.toLowerCase() === 'date')?.value || '';
+      // Skip Promotions / Social tabs — see GMAIL_NOISE_LABELS comment for why Updates/Forums are excluded.
+      // Read the headers first: a skip we cannot name in the trace is a skip
+      // nobody can debug later.
+      const labelIds = msg.labelIds || [];
+      const noisy = labelIds.filter(l => GMAIL_NOISE_LABELS.has(l));
+      if (noisy.length) {
+        console.log(`[gmail-process] SKIP msg=${messageId} — noise category label: ${noisy.join(',')}`);
+        await traceEmail(email, { stage: 'SKIP-NOISE', via: 'webhook', messageId, subject, from, labels: noisy.join(',') });
+        completed = true;
+        continue;
+      }
       const { senderName, senderEmail } = parseFrom(from);
       const body = extractEmailBody(msg.payload);
 
@@ -4643,10 +4647,20 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
       console.log(`[gmail-process] msg=${messageId} from="${senderEmail}" subject="${subject}" bodyLen=${body.length} images=${imageParts.length} imageHeavy=${isImageHeavy}`);
 
-      // Pre-filter: skip if no calendar keywords in text AND email is not image-heavy.
-      // Image-heavy emails bypass the keyword check because event details are in the image.
-      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email) && !isImageHeavy) { completed = true; continue; }
-      if (isImageHeavy && !checkPreFilter(`${subject} ${body}`, subject, messageId, email)) {
+      // Pre-filter. This used to be diagnosePreFilter — a flat keyword list where
+      // a miss was a hard drop with no second look. The scan path had already
+      // moved to scanForDateContent, which escalates rather than discards, and
+      // the two filters silently disagreed: mail the scan happily queued, the
+      // webhook threw away. Both paths now apply the same test to the same
+      // full body, so a manual scan can no longer find what the webhook missed.
+      const wePass = scanForDateContent(`${subject} ${body.slice(0, 5000)}`).pass;
+      if (!wePass && !isImageHeavy) {
+        console.log(`[prefilter] SKIP msg=${messageId} user=${email} subject="${subject}" — no date signal in body`);
+        await traceEmail(email, { stage: 'SKIP-BODY', via: 'webhook', messageId, subject, from, bodyLen: body.length });
+        completed = true;
+        continue;
+      }
+      if (isImageHeavy && !wePass) {
         console.log(`[gmail-process] IMAGE-HEAVY BYPASS msg=${messageId} — skipping pre-filter for vision extraction`);
       }
 
@@ -4658,6 +4672,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       const alreadyProcessed = await redis.exists(fpKey);
       if (alreadyProcessed) {
         console.log(`[gmail-process] DEDUP SKIP msg=${messageId} fingerprint=${fingerprint.slice(0, 12)}… already extracted for another user`);
+        await traceEmail(email, { stage: 'SKIP-DEDUP', via: 'webhook', messageId, subject, from });
         completed = true;
         continue;
       }
@@ -4667,8 +4682,12 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         : [];
 
       console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude subject="${subject}" images=${images.length}`);
+      await traceEmail(email, { stage: 'SENT-TO-AI', via: 'webhook', messageId, subject, from, bodyLen: body.length, images: images.length });
       const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images, dateSent, gpFamilyNames);
       console.log(`[gmail-process] EXTRACT msg=${messageId} Claude returned ${extracted.length} event(s)`);
+      if (!extracted.length) {
+        await traceEmail(email, { stage: 'DROPPED', via: 'webhook', messageId, subject, from, note: 'no events returned' });
+      }
 
       // Mark as processed AFTER Claude returns successfully — mirroring the backfill fix.
       // Writing before the Claude call meant any timeout or throw in extractGmailEvents
@@ -4776,6 +4795,8 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           created_at: new Date().toISOString(),
         });
         console.log(`[gmail-process] STORED event "${ev.title}" on ${ev.date} for ${email} status=${calEventId ? 'added' : (calDup ? 'duplicate' : 'pending')} (id=${evId})`);
+        await traceEmail(email, { stage: 'STORED', via: 'webhook', messageId, subject, title: ev.title, date: ev.date,
+          status: calEventId ? 'added' : (calDup ? 'duplicate' : 'pending') });
       }
       completed = true;
     } catch (err) {

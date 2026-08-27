@@ -3095,9 +3095,14 @@ async function runBackfill(days, dryRun = false) {
       data = await res.json();
     } catch (fetchErr) {
       clearTimeout(timeoutId);
+      // Never say "try again" on a timeout. The client gives up at 55s but the
+      // server keeps working, and a second scan started here runs concurrently
+      // with the first — each holding a pre-write snapshot of known events, so
+      // neither can dedup against the other. That is how the same practice
+      // landed on the calendar twice in two different children's colours.
       result.innerHTML = fetchErr.name === 'AbortError'
-        ? '<span style="color:#ef4444">Scan timed out — try again</span>'
-        : '<span style="color:#ef4444">Network error — try again</span>';
+        ? '<span style="color:#6b7280">Still processing in the background — check back in a minute.</span>'
+        : '<span style="color:#ef4444">Network error — check your connection, then reload.</span>';
       return;
     }
 

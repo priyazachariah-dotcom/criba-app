@@ -3436,7 +3436,11 @@ function buildRruleFromCustom() {
   const endsVal = document.querySelector('input[name=cr-ends]:checked')?.value || 'never';
   if (endsVal === 'on') {
     const dateVal = document.getElementById('cr-ends-date').value;
-    if (dateVal) parts.push(`UNTIL=${dateVal.replace(/-/g,'')}T000000Z`);
+    // End of day UTC, not the start of it. UNTIL is compared against each
+    // occurrence's start instant, so midnight UTC on the chosen date excluded
+    // that date's own occurrence everywhere west of Greenwich — "ends 4 Dec"
+    // quietly meant "ends 3 Dec". This matches ensureRecurrenceEnd on the server.
+    if (dateVal) parts.push(`UNTIL=${dateVal.replace(/-/g,'')}T235959Z`);
   } else if (endsVal === 'after') {
     const count = parseInt(document.getElementById('cr-ends-count').value, 10) || 13;
     parts.push(`COUNT=${count}`);

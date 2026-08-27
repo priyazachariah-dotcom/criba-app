@@ -881,9 +881,20 @@ Rules for extraction:
 - "Due by X" or "before X" → create a deadline event on that date
 - Financial auto-charges → create a reminder event on the charge date with amount and action required in notes
 
-7. Never miss an event because it seems minor. "Return library books" is on the calendar. "Submit grad photo" is on the calendar. "Verify card is current" is on the calendar. Busy people miss these exactly because they seem small.
+7. Arrival and prep instructions are not durations. "Arrive 30 minutes early",
+"call time 2:30", "doors open at 6", "check in one hour before" describe a
+SEPARATE, SHORT event that ends when the main one starts — not an earlier start
+time for the main event, and never a longer block that swallows it.
+- "Practice 3:30-4:30, arrive 30 minutes early for jersey handout" → TWO events:
+  "Jersey Handout" 15:00-15:30, and "Practice" 15:30-16:30.
+- Never extend an event backwards past its stated start time. If the source
+  states a start time, that is the start time.
+- If the prep instruction names no distinct activity, do not create a second
+  event — put it in the main event's notes instead.
 
-8. Recurring events. If something repeats on a schedule ("every Tuesday at 4pm", "weekly practice", "meets every Monday and Wednesday"), output ONE event with:
+8. Never miss an event because it seems minor. "Return library books" is on the calendar. "Submit grad photo" is on the calendar. "Verify card is current" is on the calendar. Busy people miss these exactly because they seem small.
+
+9. Recurring events. If something repeats on a schedule ("every Tuesday at 4pm", "weekly practice", "meets every Monday and Wednesday"), output ONE event with:
 - date = the first occurrence (YYYY-MM-DD)
 - recurrence = the Google Calendar RRULE string (e.g. "RRULE:FREQ=WEEKLY;BYDAY=TU" for every Tuesday, "RRULE:FREQ=WEEKLY;BYDAY=MO,WE" for Monday+Wednesday, "RRULE:FREQ=DAILY" for daily)
 - recurrence_end_date = the last date the series runs (YYYY-MM-DD), whenever the content says or implies one: "through December", "for the fall semester", "8-week session", "until the end of the school year", a session end date, or a term end. Use null ONLY if there is genuinely no indication of when it stops.
@@ -4462,13 +4473,47 @@ async function registerGmailWatch(email, refreshToken) {
   return watchRes.data;
 }
 
+// How long one invocation may spend extracting before it stops and leaves the
+// rest for the next run. Vercel kills the function at 60s; a kill mid-batch is
+// the one outcome that loses mail, so we stop ourselves first with room to
+// write the cursor.
+const WEBHOOK_BUDGET_MS = 38000;
+// history.list is paginated. Three days of mail is far more than one page, and
+// reading only the first page while advancing the cursor to the newest
+// historyId silently discarded the remainder.
+const HISTORY_MAX_PAGES = 10;
+
 // Fetch new messages since the last known historyId and run extraction.
+//
+// Returns { done } — false means work remains in this history range and the
+// cursor was deliberately left where it was, so the next run resumes here.
 async function processNewGmailEmails(email, refreshToken, newHistoryId) {
+  const deadline = Date.now() + WEBHOOK_BUDGET_MS;
   console.log(`[gmail-process] START email=${email} newHistoryId=${newHistoryId}`);
+
+  // One extraction run per mailbox at a time. Pub/Sub redelivers a push it has
+  // not been ACKed for within the subscription's deadline, so a slow run used
+  // to be joined by a second copy of itself working the same history range.
+  // Both would pass the fingerprint check before either wrote, and both would
+  // write to the calendar — the same fixture twice, coloured for different
+  // children because the two extractions tagged attendees differently.
+  const procLock = `gmailProcLock:${email}`;
+  if (!(await redis.set(procLock, '1', 'EX', 90, 'NX'))) {
+    console.log(`[gmail-process] SKIP email=${email} — another run holds the lock`);
+    return { done: false };
+  }
+  try {
+    return await runGmailExtraction(email, refreshToken, newHistoryId, deadline);
+  } finally {
+    await redis.del(procLock);
+  }
+}
+
+async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
   const watchDataStr = await redis.get(`gmailWatch:${email}`);
   if (!watchDataStr) {
     console.error(`[gmail-process] ABORT email=${email} — no gmailWatch record in Redis`);
-    return;
+    return { done: true };
   }
   const watchData = JSON.parse(watchDataStr);
   const startHistoryId = watchData.historyId;
@@ -4496,41 +4541,79 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
     await redis.set(`gmailWatch:${email}`, JSON.stringify(watchData));
   };
 
-  let historyData;
+  const messageIds = new Set();
+  let pagesRead = 0;
+  let pageToken = undefined;
+  let historyComplete = true;
   try {
-    const histRes = await gmail.users.history.list({
-      userId: 'me',
-      startHistoryId,
-      historyTypes: ['messageAdded'],
-      labelId: 'INBOX',
-    });
-    historyData = histRes.data;
+    do {
+      const histRes = await gmail.users.history.list({
+        userId: 'me',
+        startHistoryId,
+        historyTypes: ['messageAdded'],
+        labelId: 'INBOX',
+        maxResults: 500,
+        pageToken,
+      });
+      for (const record of (histRes.data.history || [])) {
+        for (const added of (record.messagesAdded || [])) messageIds.add(added.message.id);
+      }
+      pageToken = histRes.data.nextPageToken;
+      pagesRead++;
+    } while (pageToken && pagesRead < HISTORY_MAX_PAGES);
+    if (pageToken) {
+      historyComplete = false;
+      console.warn(`[gmail-process] email=${email} history truncated at ${pagesRead} pages — more remains`);
+    }
   } catch (err) {
     console.error(`Gmail history.list error for ${email}:`, err.message);
-    return;
+    // A 404 means the cursor is older than Gmail's history retention and can
+    // never be read again. Leaving it in place would stall this mailbox
+    // forever, so jump to the current point and let the daily backfill cover
+    // the gap — a visible gap beats a permanent stall.
+    if (err.code === 404 || err.response?.status === 404) {
+      console.error(`[gmail-process] email=${email} historyId ${startHistoryId} expired — resetting cursor`);
+      await advanceHistoryCursor();
+    }
+    return { done: false };
   }
 
-  const messageIds = new Set();
-  for (const record of (historyData.history || [])) {
-    for (const added of (record.messagesAdded || [])) {
-      messageIds.add(added.message.id);
-    }
-  }
-  console.log(`[gmail-process] email=${email} found ${messageIds.size} new message(s) in history`);
+  console.log(`[gmail-process] email=${email} found ${messageIds.size} new message(s) across ${pagesRead} page(s)`);
   // Nothing to do, so the range is genuinely consumed — safe to move past it.
-  if (!messageIds.size) { await advanceHistoryCursor(); return; }
+  if (!messageIds.size && historyComplete) { await advanceHistoryCursor(); return { done: true }; }
 
   const eventsStore = getUserEvents(email);
+  let allProcessed = historyComplete;
 
   for (const messageId of messageIds) {
+    // Stop before the platform stops us. Whatever is left stays unclaimed and
+    // uncommitted, and the cursor stays put, so the next run sees it again.
+    if (Date.now() > deadline) {
+      console.warn(`[gmail-process] email=${email} BUDGET reached — deferring remaining messages`);
+      allProcessed = false;
+      break;
+    }
     console.log(`[gmail-process] email=${email} processing messageId=${messageId}`);
-    // Per-message lock — prevents double-processing if Pub/Sub retries
-    const lockKey = `gmailMsgLock:${email}:${messageId}`;
-    const locked = await redis.set(lockKey, '1', 'EX', 3600, 'NX');
-    if (!locked) {
-      console.log(`[gmail-process] SKIP messageId=${messageId} — already locked (Pub/Sub retry)`);
+    // Two different questions, deliberately two different keys. "Done" is a
+    // durable record that this message was fully handled. The claim is a short
+    // lease that only stops two concurrent runs colliding.
+    //
+    // These used to be one hour-long key taken before the work: a run killed
+    // by the 60s timeout left its messages claimed, the next run skipped them
+    // as "already handled", and then advanced the cursor past them. They were
+    // never extracted and never seen again.
+    if (await redis.exists(`gmailMsgDone:${email}:${messageId}`)) {
+      console.log(`[gmail-process] SKIP messageId=${messageId} — already processed`);
       continue;
     }
+    const lockKey = `gmailMsgLock:${email}:${messageId}`;
+    const locked = await redis.set(lockKey, '1', 'EX', 180, 'NX');
+    if (!locked) {
+      console.log(`[gmail-process] SKIP messageId=${messageId} — claimed by a concurrent run`);
+      allProcessed = false;
+      continue;
+    }
+    let completed = false;
 
     try {
       const msgRes = await gmail.users.messages.get({
@@ -4543,6 +4626,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       const labelIds = msg.labelIds || [];
       if (labelIds.some(l => GMAIL_NOISE_LABELS.has(l))) {
         console.log(`[gmail-process] SKIP msg=${messageId} — noise category label: ${labelIds.filter(l => GMAIL_NOISE_LABELS.has(l)).join(',')}`);
+        completed = true;
         continue;
       }
       const headers = msg.payload.headers || [];
@@ -4561,7 +4645,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
 
       // Pre-filter: skip if no calendar keywords in text AND email is not image-heavy.
       // Image-heavy emails bypass the keyword check because event details are in the image.
-      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email) && !isImageHeavy) continue;
+      if (!checkPreFilter(`${subject} ${body}`, subject, messageId, email) && !isImageHeavy) { completed = true; continue; }
       if (isImageHeavy && !checkPreFilter(`${subject} ${body}`, subject, messageId, email)) {
         console.log(`[gmail-process] IMAGE-HEAVY BYPASS msg=${messageId} — skipping pre-filter for vision extraction`);
       }
@@ -4574,6 +4658,7 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
       const alreadyProcessed = await redis.exists(fpKey);
       if (alreadyProcessed) {
         console.log(`[gmail-process] DEDUP SKIP msg=${messageId} fingerprint=${fingerprint.slice(0, 12)}… already extracted for another user`);
+        completed = true;
         continue;
       }
       // Fetch image data for vision extraction (only when images present)
@@ -4692,12 +4777,31 @@ async function processNewGmailEmails(email, refreshToken, newHistoryId) {
         });
         console.log(`[gmail-process] STORED event "${ev.title}" on ${ev.date} for ${email} status=${calEventId ? 'added' : (calDup ? 'duplicate' : 'pending')} (id=${evId})`);
       }
+      completed = true;
     } catch (err) {
       console.error(`[gmail-process] ERROR messageId=${messageId} email=${email}:`, err.message, err.stack?.split('\n')[1]);
+    } finally {
+      if (completed) {
+        await redis.set(`gmailMsgDone:${email}:${messageId}`, '1', 'EX', 30 * 24 * 60 * 60);
+      } else {
+        // Hand the message back. A failure here must leave no trace that would
+        // make a later run mistake it for work already done.
+        await redis.del(lockKey);
+        allProcessed = false;
+      }
     }
   }
-  await advanceHistoryCursor();
-  console.log(`[gmail-process] DONE email=${email}`);
+  // The cursor moves only when the whole range is genuinely consumed. Moving it
+  // past work we did not do is how three days of mail disappeared.
+  if (allProcessed) {
+    await advanceHistoryCursor();
+    await redis.del(`gmailBacklog:${email}`);
+  } else {
+    await redis.set(`gmailBacklog:${email}`, String(newHistoryId || ''), 'EX', 7 * 24 * 60 * 60);
+    console.warn(`[gmail-process] email=${email} INCOMPLETE — cursor held at ${startHistoryId}, backlog flagged`);
+  }
+  console.log(`[gmail-process] DONE email=${email} complete=${allProcessed}`);
+  return { done: allProcessed };
 }
 
 // Send a Resend email notification about pending items in the review queue.
@@ -4955,6 +5059,7 @@ app.get('/api/cron/gmail', async (req, res) => {
   const oneDayMs = 24 * 60 * 60 * 1000;
   let renewedCount = 0;
   let notifiedCount = 0;
+  let drainedCount = 0;
 
   for (const email of watchedEmails) {
     try {
@@ -4984,6 +5089,19 @@ app.get('/api/cron/gmail', async (req, res) => {
         }
       }
 
+      // Drain anything a previous run had to defer. Without this a mailbox
+      // that stopped mid-batch waits for the next incoming email to nudge it,
+      // which on a quiet weekend can be days.
+      const backlog = await redis.get(`gmailBacklog:${email}`);
+      if (backlog) {
+        const refreshToken = await redis.get(`refreshToken:${email}`);
+        if (refreshToken) {
+          console.log(`[cron] draining Gmail backlog for ${email}`);
+          await processNewGmailEmails(email, refreshToken, backlog || undefined);
+          drainedCount++;
+        }
+      }
+
       // Send notification if user has pending Gmail events
       const eventsStore = getUserEvents(email);
       const pendingGmail = (await eventsStore.values()).filter(e => (e.status === 'pending' || (e.status === 'added' && !e.reviewed)) && e.source === 'gmail');
@@ -4996,7 +5114,7 @@ app.get('/api/cron/gmail', async (req, res) => {
     }
   }
 
-  res.json({ ok: true, watchedUsers: watchedEmails.length, renewedCount, notifiedCount });
+  res.json({ ok: true, watchedUsers: watchedEmails.length, renewedCount, notifiedCount, drainedCount });
 });
 
 // Exposes non-secret client-side configuration. The Places API key is

@@ -3107,7 +3107,10 @@ async function runBackfill(days, dryRun = false) {
     }
 
     if (!res.ok) {
-      result.textContent = data?.error || 'Scan failed — try again';
+      // 409 (already running) and 429 (cooldown) are not failures and must not
+      // read like one — a "try again" here is what produced the duplicates.
+      const calm = res.status === 409 || res.status === 429;
+      result.innerHTML = `<span style="color:${calm ? '#6b7280' : '#ef4444'}">${escHtml(data?.error || 'Scan failed — reload and try once more.')}</span>`;
       return;
     }
 

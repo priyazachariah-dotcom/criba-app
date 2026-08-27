@@ -5975,6 +5975,51 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const refreshToken = await redis.get(`refreshToken:${email}`);
   if (!refreshToken) return res.status(400).json({ error: 'No refresh token — please sign out and sign back in' });
 
+  // Identifies every trace line this run writes. Two overlapping runs used to
+  // be distinguishable only by guessing from millisecond gaps; now they are
+  // simply two different ids in the same timeline.
+  const runId = randomUUID().slice(0, 8);
+
+  // One scan per mailbox at a time.
+  //
+  // knownEvents below is a single snapshot taken at run start, so two
+  // overlapping runs each hold a picture of the world from before either
+  // wrote and neither can dedup against the other. The email fingerprint does
+  // not help: it is written only after extraction succeeds, so both runs pass
+  // it before either commits. The result was the same practice inserted into
+  // Google Calendar twice, in two different children's colours, because two
+  // independent extractions tagged attendees differently.
+  //
+  // Held for 70s — longer than the 42s budget plus its trailing writes, and
+  // longer than the client's 55s abort, so a user who gives up and retries
+  // cannot overlap the run they are still waiting on.
+  const lockKey = `backfillLock:${email}`;
+  if (!(await redis.set(lockKey, runId, 'EX', 70, 'NX'))) {
+    console.log(`[backfill] REJECTED email=${email} — scan already running`);
+    return res.status(409).json({ error: 'A scan is already running — it will finish on its own. Check back in a minute.', alreadyRunning: true });
+  }
+
+  // Release on every exit, including the thrown ones. A lock that outlives its
+  // run would lock the mailbox out for its full TTL.
+  let lockReleased = false;
+  const releaseLock = async () => {
+    if (lockReleased) return;
+    lockReleased = true;
+    // Only if it is still ours: a run that overran the TTL must not delete the
+    // lock belonging to whichever run legitimately started afterwards.
+    if (await redis.get(lockKey) === runId) await redis.del(lockKey);
+  };
+
+  // Dry runs write nothing, so they are neither rate-limited nor recorded.
+  if (!dryRun) {
+    const lastRun = await redis.get(`backfillLastRun:${email}`);
+    if (lastRun && (Date.now() - parseInt(lastRun, 10)) < BACKFILL_COOLDOWN_SEC * 1000) {
+      await releaseLock();
+      const nextAt = new Date(parseInt(lastRun, 10) + BACKFILL_COOLDOWN_SEC * 1000).toISOString();
+      return res.status(429).json({ error: 'Already scanned in the last 24 hours. Clear the cooldown in Settings to scan again now.', cooldownUntil: nextAt });
+    }
+  }
+
   const auth = getOAuthClientFromRefreshToken(refreshToken);
   const gmail = google.gmail({ version: 'v1', auth });
   const eventsStore = getUserEvents(email);
@@ -5993,6 +6038,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     messageIds = (listRes.data.messages || []).map(m => m.id);
   } catch (err) {
     console.error('[backfill] messages.list failed:', err.message);
+    await releaseLock();
     return res.status(500).json({ error: 'Failed to list Gmail messages: ' + err.message });
   }
 
@@ -6041,7 +6087,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     // Reserve most of the budget for the extraction waves that follow.
     if (!dryRun && Date.now() - startedAt > TIME_BUDGET_MS * 0.4) {
       console.log(`[backfill] collect phase deadline after ${scanned} msgs (${Date.now() - startedAt}ms)`);
-      await traceEmail(email, { stage: 'TIMING', note: 'deadline-in-collect', scanned, elapsedMs: Date.now() - startedAt });
+      await traceEmail(email, { runId, stage: 'TIMING', note: 'deadline-in-collect', scanned, elapsedMs: Date.now() - startedAt });
       hitLimit = true;
       break;
     }
@@ -6092,7 +6138,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     const fpKey = emailFingerprintKey(senderEmail, subject, dateSent);
     if (await redis.exists(fpKey)) {
       skippedDedup++;
-      await traceEmail(email, { stage: 'SKIP-DEDUP', messageId, subject, from });
+      await traceEmail(email, { runId, stage: 'SKIP-DEDUP', messageId, subject, from });
       if (dryRun) dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'already-processed' });
       continue;
     }
@@ -6121,7 +6167,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       const bodyScan = scanForDateContent(`${subject} ${body.slice(0, 5000)}`);
       if (!bodyScan.pass) {
         skippedPreFilter++;
-        await traceEmail(email, { stage: 'SKIP-BODY', messageId, subject, from, bodyLen: body.length });
+        await traceEmail(email, { runId, stage: 'SKIP-BODY', messageId, subject, from, bodyLen: body.length });
         if (dryRun) dryRunMessages.push({ messageId, subject, sizeEstimate, snippetPreview: snippet.slice(0, 100), verdict: 'SKIP', reason: 'no-date-signal-body', escalated: true });
         continue;
       }
@@ -6141,7 +6187,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       messageId, subject, from, dateSent, senderName, senderEmail,
       body, imageParts, payload: fullRes.data.payload, fpKey,
     });
-    await traceEmail(email, { stage: 'TIMING', messageId, subject, msgMs: Date.now() - msgStart, elapsedMs: Date.now() - startedAt });
+    await traceEmail(email, { runId, stage: 'TIMING', messageId, subject, msgMs: Date.now() - msgStart, elapsedMs: Date.now() - startedAt });
   }
 
   // ── Parallel extraction ────────────────────────────────────────────────────
@@ -6173,7 +6219,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     const elapsed = now - startedAt;
     if (elapsed + waveEstimateMs > TIME_BUDGET_MS) {
       hitLimit = true;
-      await traceEmail(email, { stage: 'TIMING', note: 'deadline-before-wave', scanned: candidates.length - i, elapsedMs: elapsed, estimateMs: waveEstimateMs });
+      await traceEmail(email, { runId, stage: 'TIMING', note: 'deadline-before-wave', scanned: candidates.length - i, elapsedMs: elapsed, estimateMs: waveEstimateMs });
       break;
     }
     const wave = candidates.slice(i, i + CONCURRENCY);
@@ -6192,12 +6238,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       claudeCalls++;
       if (r.status === 'rejected') {
         console.error(`[backfill] extraction failed msg=${c.messageId}:`, r.reason?.message);
-        await traceEmail(email, { stage: 'ERROR', messageId: c.messageId, subject: c.subject, from: c.from, error: r.reason?.message || 'extraction failed' });
+        await traceEmail(email, { runId, stage: 'ERROR', messageId: c.messageId, subject: c.subject, from: c.from, error: r.reason?.message || 'extraction failed' });
         continue;
       }
       const { extracted, claudeMs, imageCount } = r.value;
       const { messageId, subject, from, dateSent, senderName, senderEmail, fpKey } = c;
-      await traceEmail(email, {
+      await traceEmail(email, { runId,
         stage: 'SENT-TO-AI', messageId, subject, from, claudeEvents: extracted.length,
         claudeMs, preClaudeMs: 0, elapsedMs: Date.now() - startedAt,
         // An events=0 result is ambiguous without these: it can mean the email
@@ -6225,9 +6271,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // Normalize partial dates (e.g. "August 12" → "2026-08-12")
           if (ev.date && !/^\d{4}-\d{2}-\d{2}$/.test(ev.date)) {
             const norm = normalizeEventDate(ev.date, dateSent);
-            if (norm) { await traceEmail(email, { stage: 'DATE-NORM', messageId, subject, rawDate: ev.date, normalized: norm }); ev.date = norm; }
+            if (norm) { await traceEmail(email, { runId, stage: 'DATE-NORM', messageId, subject, rawDate: ev.date, normalized: norm }); ev.date = norm; }
           }
-          if (!ev.title || !ev.date) { await traceEmail(email, { stage: 'DROPPED', messageId, subject, reason: !ev.title ? 'no-title' : 'bad-date', rawDate: ev.date }); continue; }
+          if (!ev.title || !ev.date) { await traceEmail(email, { runId, stage: 'DROPPED', messageId, subject, reason: !ev.title ? 'no-title' : 'bad-date', rawDate: ev.date }); continue; }
           // Deadlines come back as midnight; move them to 6am here as well as in
           // buildCalendarTimes so the stored record and the UI agree with the
           // calendar rather than showing "12:00 AM".
@@ -6305,7 +6351,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             const act = resolveAttribution(familyMembers, attrText, senderEmail);
             if (act.ambiguous) {
               bfAmbiguity = act.ambiguityReason;
-              await traceEmail(email, { stage: 'AMBIGUOUS', messageId, subject, from, title: ev.title, reason: act.ambiguityReason });
+              await traceEmail(email, { runId, stage: 'AMBIGUOUS', messageId, subject, from, title: ev.title, reason: act.ambiguityReason });
             } else if (act.memberId) {
               const am = familyMembers.find(x => x.id === act.memberId);
               if (am) bfColorId = am.eventColor || am.color || null;
@@ -6364,12 +6410,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           await eventsStore.set(evId, stored);
           // Keep the cache current so later events in this same run still see it.
           knownEvents.push(stored);
-          await traceEmail(email, { stage: 'STORED', messageId, subject, from, title: ev.title, date: ev.date, calEventId, status: calEventId ? 'added' : 'pending' });
+          await traceEmail(email, { runId, stage: 'STORED', messageId, subject, from, title: ev.title, date: ev.date, calEventId, status: calEventId ? 'added' : 'pending' });
           eventsStored++;
         }
       } catch (err) {
         console.error(`[backfill] store error msg=${messageId}:`, err.message);
-        await traceEmail(email, { stage: 'ERROR', messageId, subject, from, error: err.message });
+        await traceEmail(email, { runId, stage: 'ERROR', messageId, subject, from, error: err.message });
       }
     }
   }
@@ -6379,6 +6425,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
   if (dryRun) {
     const wouldSend = dryRunMessages.filter(m => m.verdict === 'WOULD_SEND').length;
+    await releaseLock();
     return res.json({
       dryRun: true, days, query: q,
       totalFound: messageIds.length, scanned,
@@ -6389,7 +6436,11 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     });
   }
 
-  res.json({ ok: true, days, scanned, skippedCategory, skippedPreFilter, skippedDedup, claudeCalls, eventsStored, totalFound: messageIds.length, hitLimit });
+  // Recorded only on a real run that reached the end, so a scan that failed
+  // early does not spend the user's 24 hours.
+  await redis.set(`backfillLastRun:${email}`, String(Date.now()), 'EX', BACKFILL_COOLDOWN_SEC);
+  await releaseLock();
+  res.json({ ok: true, runId, days, scanned, skippedCategory, skippedPreFilter, skippedDedup, claudeCalls, eventsStored, totalFound: messageIds.length, hitLimit });
 });
 
 app.get('*', (req, res) => {

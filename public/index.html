@@ -735,6 +735,34 @@
   .undo-toast-btn { background: none; border: 1.5px solid var(--bg); color: var(--bg); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif; flex-shrink: 0; }
   .undo-toast-btn:hover { background: var(--bg); color: var(--ink); }
 
+  /* ── Dismiss-reason prompt ──────────────────────────────────────────────
+     Deliberately quieter than the undo toast: this one is an offer, not a
+     deadline. It fades itself out and ignoring it is the expected answer. */
+  #dismiss-reason {
+    display: none; position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+    background: var(--bg); color: var(--ink); padding: 12px 16px;
+    z-index: 9998; flex-direction: column; gap: 8px; max-width: min(560px, 92vw);
+    font-size: 13px; border: 1.5px solid var(--ink); box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+  }
+  #dismiss-reason.visible { display: flex; }
+  .dr-head { display: flex; align-items: baseline; gap: 10px; }
+  .dr-q { font-weight: 600; flex: 1; }
+  .dr-skip { background: none; border: none; color: var(--text2); font-size: 12px; cursor: pointer; text-decoration: underline; padding: 0; font-family: inherit; }
+  .dr-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .dr-opt { background: none; border: 1px solid var(--border, #ddd); color: var(--ink); padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: inherit; border-radius: 4px; }
+  .dr-opt:hover { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .dr-note { display: none; gap: 6px; }
+  .dr-note.visible { display: flex; }
+  .dr-note input { flex: 1; padding: 5px 8px; font-size: 12px; font-family: inherit; border: 1px solid var(--border, #ddd); border-radius: 4px; }
+
+  /* ── Exclusion rules list ───────────────────────────────────────────────── */
+  .excl-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border, #eee); font-size: 0.875rem; }
+  .excl-label { flex: 1; }
+  .excl-why { color: var(--text2); font-size: 12px; }
+  .excl-off { color: var(--text2); font-size: 12px; font-style: italic; }
+  .excl-x { background: none; border: 1px solid var(--border, #ddd); color: var(--ink); font-size: 12px; padding: 3px 9px; cursor: pointer; font-family: inherit; border-radius: 4px; flex-shrink: 0; }
+  .excl-x:hover { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
 </style>
 </head>
 <body>
@@ -943,6 +971,14 @@
         </div>
       </div>
     </div>
+    <!-- The answer to "why did that sender's events stop appearing". A filter
+         you cannot see is indistinguishable from a bug, so every rule is listed
+         in the words it was agreed to and removed with one click. -->
+    <div class="settings-section">
+      <div class="settings-section-title">What Criba is not showing</div>
+      <div class="page-desc" style="margin:0 0 0.75rem">Rules you agreed to when dismissing an event. Nothing is deleted — events matching a rule still reach Review with the reason attached, one click from being added. Remove a rule any time.</div>
+      <div id="exclusion-list"></div>
+    </div>
     <!-- Moved here from the Tools panel. Setting up who events go to belongs
          next to setting up whose events they are — both are things a new user
          does once, and neither is a debugging tool. -->
@@ -1046,6 +1082,27 @@
     <div class="undo-toast-msg" id="undo-toast-msg">Event removed from calendar</div>
     <button class="undo-toast-btn" onclick="undoDismiss()">Undo</button>
     <div class="undo-toast-bar" id="undo-toast-bar" style="width:100%"></div>
+  </div>
+  <!-- Why was that dismissed? Shown only after the dismissal has already
+       completed, so it can never slow one down. Skipping is the default and
+       costs nothing: no answer means nothing is written, exactly as before. -->
+  <div id="dismiss-reason">
+    <div class="dr-head">
+      <span class="dr-q" id="dr-q">Why not this one?</span>
+      <button class="dr-skip" onclick="hideDismissReason()">Skip</button>
+    </div>
+    <div class="dr-opts">
+      <button class="dr-opt" onclick="sendDismissReason('wrong-grade-tier')">Wrong grade/tier</button>
+      <button class="dr-opt" onclick="sendDismissReason('wrong-sender-activity')">Wrong sender / not our activity</button>
+      <button class="dr-opt" onclick="sendDismissReason('duplicate')">Already on my calendar</button>
+      <button class="dr-opt" onclick="sendDismissReason('not-interested')">Not interested</button>
+      <button class="dr-opt" onclick="showDismissNote()">Something else</button>
+    </div>
+    <div class="dr-note" id="dr-note">
+      <input id="dr-note-input" placeholder="What was wrong with it?" maxlength="500"
+             onkeydown="if(event.key==='Enter')sendDismissReason('other')" />
+      <button class="dr-opt" onclick="sendDismissReason('other')">Send</button>
+    </div>
   </div>
 </div><!-- /#app-screen -->
 
@@ -1265,6 +1322,50 @@ function renderMemberActivities(m) {
       <button class="act-add" onclick="addMemberActivity('${m.id}')">Save</button>
     </div>
   </div>`;
+}
+
+// ── Exclusion rules ───────────────────────────────────────────────────────
+
+let exclusionRules = [];
+
+async function loadExclusions() {
+  try {
+    const res = await fetch('/api/exclusions');
+    exclusionRules = res.ok ? await res.json() : [];
+  } catch { exclusionRules = []; }
+  renderExclusions();
+}
+
+function renderExclusions() {
+  const el = document.getElementById('exclusion-list');
+  if (!el) return;
+  if (!exclusionRules.length) {
+    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">Nothing is being held back. Rules appear here when you dismiss an event and tell Criba why.</div>';
+    return;
+  }
+  el.innerHTML = exclusionRules.map(r => `
+    <div class="excl-row">
+      <span class="excl-label">Not showing: ${escHtml(r.label)}
+        ${r.overridden ? '<span class="excl-off"> — no longer applies, someone in your family matches it now</span>' : ''}
+      </span>
+      <button class="excl-x" title="Start showing these again" onclick="removeExclusion('${escHtml(r.id)}')">Remove</button>
+    </div>`).join('');
+}
+
+// Undoing a rule has to be exactly as cheap as making one, so there is no
+// confirmation here. The optimistic removal is reverted if the server refuses.
+async function removeExclusion(id) {
+  const previous = exclusionRules.slice();
+  exclusionRules = exclusionRules.filter(r => r.id !== id);
+  renderExclusions();
+  try {
+    const res = await fetch(`/api/exclusions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed');
+  } catch {
+    exclusionRules = previous;
+    renderExclusions();
+    alert('Could not remove that rule — please try again.');
+  }
 }
 
 function toggleActivityForm(id) {
@@ -1792,8 +1893,84 @@ async function commitDismiss() {
   try {
     await fetch('/api/events/delete-from-calendar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
   } catch {}
+  const title = (pendingEvents.find(e => e.id === id) || {}).title;
   pendingEvents = pendingEvents.filter(e => e.id !== id);
   renderReview();
+  // Only once the dismissal is final. Two toasts competing for the same corner
+  // would turn a safety net into a pile-up.
+  showDismissReason(id, title);
+}
+
+// ── Why was that dismissed? ───────────────────────────────────────────────
+//
+// The everyday action is one tap and stays one tap. This appears afterwards,
+// answers nothing by itself, and expires on its own. Only the two reasons that
+// can become a standing rule ask a second question, and only then.
+
+let _drEventId = null;
+let _drTimer = null;
+
+function showDismissReason(id, title) {
+  _drEventId = id;
+  const box = document.getElementById('dismiss-reason');
+  const q = document.getElementById('dr-q');
+  if (!box || !q) return;
+  q.textContent = title ? `Why not "${title}"?` : 'Why not that one?';
+  document.getElementById('dr-note')?.classList.remove('visible');
+  const input = document.getElementById('dr-note-input');
+  if (input) input.value = '';
+  box.classList.add('visible');
+  clearTimeout(_drTimer);
+  // Long enough to notice, short enough that ignoring it is comfortable.
+  _drTimer = setTimeout(hideDismissReason, 12000);
+}
+
+function hideDismissReason() {
+  clearTimeout(_drTimer);
+  _drEventId = null;
+  document.getElementById('dismiss-reason')?.classList.remove('visible');
+}
+
+function showDismissNote() {
+  clearTimeout(_drTimer);
+  document.getElementById('dr-note')?.classList.add('visible');
+  document.getElementById('dr-note-input')?.focus();
+}
+
+async function sendDismissReason(reason) {
+  const id = _drEventId;
+  if (!id) return;
+  const note = reason === 'other' ? (document.getElementById('dr-note-input')?.value || '').trim() : '';
+  hideDismissReason();
+  let data;
+  try {
+    const res = await fetch('/api/events/dismiss-reason', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, reason, note }),
+    });
+    if (!res.ok) return;
+    data = await res.json();
+  } catch { return; }
+
+  // Nothing the text supports a rule about. Silence is the right outcome —
+  // guessing a rule here is precisely the failure this design exists to avoid.
+  const candidates = (data && data.candidates) || [];
+  if (!candidates.length) return;
+
+  // The one place friction belongs: a standing rule is about to exist, and the
+  // user has to read what it says before it does.
+  if (!confirm(`${data.prompt}\n\nThey'll still reach Review with the reason shown — one click to add. You can remove this rule any time under Family.`)) return;
+
+  try {
+    const res = await fetch('/api/exclusions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rules: candidates.map(c => ({ ...c, source_event_id: id })) }),
+    });
+    if (!res.ok) throw new Error('Failed');
+    await loadExclusions();
+  } catch {
+    alert('Could not save that rule — please try again.');
+  }
 }
 
 // Clear the whole queue in one action. Nothing is removed from Google Calendar
@@ -2129,7 +2306,7 @@ function showPage(page, btn) {
   if (page === 'recent') renderRecent();
   // renderSettingsPage returns early when there are no members, so the
   // recipient list is painted separately rather than chained onto it.
-  if (page === 'settings') { renderSettingsPage(); renderRecipients(); }
+  if (page === 'settings') { renderSettingsPage(); renderRecipients(); loadExclusions(); }
 }
 
 let lastScanDays = null; // set after a successful backfill so the header reflects the window
@@ -2627,6 +2804,7 @@ async function showScanTrace() {
       'ERROR':      '#ef4444',
       'TIMING':     '#0891b2',
       'AMBIGUOUS':  '#f59e0b',
+      'DUPLICATE-MISSED': '#a855f7',
     };
 
     const rows = entries.map(e => {
@@ -2636,6 +2814,7 @@ async function showScanTrace() {
       const from = e.from ? escHtml(e.from.replace(/<.*>/, '').trim().slice(0, 30)) : '—';
       const extra = e.stage === 'SKIP-CAT'  ? ` label=${escHtml(e.label||'')}` :
                     e.stage === 'AMBIGUOUS' ? ` "${escHtml(e.title||'')}" — ${escHtml(e.reason||'')}` :
+                    e.stage === 'DUPLICATE-MISSED' ? ` "${escHtml(e.title||'')}" — dedup missed a copy already on the calendar` :
                     e.stage === 'DATE-NORM'  ? ` "${escHtml(e.rawDate||'')}"→"${escHtml(e.normalized||'')}"` :
                     e.stage === 'DROPPED'    ? ` reason=${escHtml(e.reason||'')} raw="${escHtml(e.rawDate||'null')}"` :
                     e.stage === 'SENT-TO-AI' ? ` events=${e.claudeEvents} claude=${e.claudeMs}ms body=${e.bodyLen ?? '?'}${e.truncated ? ' TRUNCATED' : ''}${e.imgs ? ` imgs=${e.imgs}` : ''} @${e.elapsedMs}ms` :
@@ -3368,9 +3547,12 @@ async function approveReviewEvent(id) {
 }
 
 async function dismissReviewEvent(id) {
+  const title = (pendingEvents.find(e => e.id === id) || {}).title;
   try { await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
   pendingEvents = pendingEvents.filter(e => e.id !== id);
   renderReview();
+  // A draft was never on the calendar, so there is no undo toast to wait for.
+  showDismissReason(id, title);
 }
 
 async function approveCancellation(id) {

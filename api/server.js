@@ -72,6 +72,13 @@ function getUserSettings(email) {
   return new RedisHashMap(`settings:${email}`);
 }
 
+// Exclusion rules — the things the user has explicitly told Criba to stop
+// showing. Keyed by the rule's canonical id, so confirming the same rule twice
+// updates one record instead of growing a duplicate.
+function getUserExclusions(email) {
+  return new RedisHashMap(`exclusions:${email}`);
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // People who are routinely invited to events — a co-parent, a grandparent, an
@@ -220,6 +227,152 @@ function gradeRelevance(text, members) {
     relevant: false,
     reason: `For grade ${[...mentioned].sort((a, b) => a - b).map(label).join(', ')} — nobody in your family is in that grade`,
   };
+}
+
+// ── Negative facts (exclusion rules) ──────────────────────────────────────
+//
+// Everything else Criba stores is an association that exists: this child plays
+// this sport, this domain means this person. Nothing could say "not this", so
+// dismissing an event taught it nothing and the same wrong event arrived again
+// the following week, forever.
+//
+// A rule is only ever written from an explicit answer to an explicit question
+// ("Stop showing grade 3 events?"), never inferred from the dismissal itself.
+// Dismissing is a discard; a rule is a decision, and the two must not be the
+// same gesture — otherwise a tired thumb builds a filter nobody chose.
+//
+// Rules are household-level rather than per-member because that is what they
+// actually mean: "nobody here is in 3rd grade" is a fact about the family.
+const EXCLUSION_TYPES = new Set(['grade', 'tier', 'sender', 'activity']);
+
+function exclusionLabel(type, value) {
+  if (type === 'grade') {
+    const g = Number(value);
+    return g === -1 ? 'TK events' : g === 0 ? 'Kindergarten events' : `grade ${g} events`;
+  }
+  if (type === 'sender') return `events from ${value}`;
+  return `${value} events`;
+}
+
+// Canonicalises a rule so the same exclusion cannot be stored twice under two
+// spellings. Returns null for anything it cannot make sense of rather than
+// storing a rule that will never match — an inert rule in the list would read
+// as "Criba is hiding this" while hiding nothing.
+function normalizeExclusion(raw) {
+  const type = String(raw?.type || '').toLowerCase().trim();
+  if (!EXCLUSION_TYPES.has(type)) return null;
+  let value = String(raw?.value ?? '').toLowerCase().trim();
+  if (!value) return null;
+
+  if (type === 'grade') {
+    // Accepts both what the user types ("3rd", "K") and what gradesMentionedIn
+    // already returns (a number, where TK is -1 and K is 0).
+    const n = Number(value);
+    const g = Number.isInteger(n) && n >= -1 && n <= 12 ? n : normalizeGrade(value);
+    if (g === null) return null;
+    value = String(g);
+  } else if (type === 'tier') {
+    const t = normalizeTier(value);
+    if (!t) return null;
+    value = t;
+  } else if (type === 'sender') {
+    value = value.replace(/^@/, '').split('@').pop();
+    if (!value.includes('.')) return null;
+  }
+
+  return {
+    id: `${type}:${value}`,
+    type,
+    value,
+    label: exclusionLabel(type, value),
+    confidence: 'confirmed',
+    created_at: new Date().toISOString(),
+  };
+}
+
+// A confirmed positive fact always beats a negative one. Grades change, teams
+// change, and a stale exclusion that outlives the truth would silently hide a
+// real child's real event — the one failure this whole feature must not cause.
+function familyHasPositive(members, type, value) {
+  const list = Array.isArray(members) ? members : [];
+  const acts = m => (Array.isArray(m.activities) ? m.activities : []);
+  if (type === 'grade') return list.some(m => normalizeGrade(m.grade) === Number(value));
+  if (type === 'sender') return list.some(m => (Array.isArray(m.senders) ? m.senders : [])
+    .some(s => s.domain === value && s.confidence === 'confirmed'));
+  if (type === 'activity') return list.some(m => acts(m)
+    .some(a => a.sport_or_type === value && a.confidence === 'confirmed'));
+  if (type === 'tier') return list.some(m => acts(m)
+    .some(a => a.team_tier === value && a.confidence === 'confirmed'));
+  return false;
+}
+
+// What could this dismissal honestly become a rule about?
+//
+// Returns the narrowest defensible group, or [] when the text supports nothing
+// — in which case the user is never asked at all. A question whose only honest
+// answer is "I can't tell what you meant" is worse than no question.
+function exclusionCandidates(event, reason, members) {
+  const text = [event?.title, event?.location, event?.notes, event?.subject].filter(Boolean).join(' ');
+  const mk = (type, value) => normalizeExclusion({ type, value });
+  // Never offer to exclude something the family is confirmed to be part of.
+  const ok = c => !!c && !familyHasPositive(members, c.type, c.value);
+
+  if (reason === 'wrong-grade-tier') {
+    // Grade first: it is the more concrete of the two and the one the existing
+    // relevance check already understands.
+    const grades = [...gradesMentionedIn(text)].map(g => mk('grade', String(g))).filter(ok);
+    if (grades.length) return grades;
+    return [...tiersMentionedIn(text)].map(t => mk('tier', t)).filter(ok);
+  }
+  if (reason === 'wrong-sender-activity') {
+    const domain = String(event?.sender_email || '').toLowerCase().split('@').pop();
+    const sender = domain && domain.includes('.') ? mk('sender', domain) : null;
+    if (ok(sender)) return [sender];
+    // No usable sender, or the sender is one we have confirmed belongs to a
+    // child — an upload, or the school both kids attend. Fall back to the
+    // activity, which is narrower than the domain anyway.
+    return [...activityTypesIn(text)].map(t => mk('activity', t)).filter(ok);
+  }
+  return [];
+}
+
+function exclusionPrompt(candidates) {
+  const labels = candidates.map(c => c.label);
+  const list = labels.length > 1
+    ? `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
+    : labels[0];
+  return `Stop showing ${list}?`;
+}
+
+// The relevance gate, now answering two questions instead of one: is anyone in
+// this family in the grade this event is for, and has the user asked Criba to
+// stop showing events like it. Both hold the event back rather than discard it
+// — it still reaches the queue with the reason attached, one click from added.
+function eventRelevance(text, members, exclusions = [], senderEmail = null) {
+  const base = gradeRelevance(text, members);
+  if (!base.relevant) return base;
+
+  const rules = Array.isArray(exclusions) ? exclusions : [];
+  if (!rules.length) return base;
+
+  const held = rule => ({ relevant: false, reason: `you asked Criba to stop showing ${rule.label}` });
+  const hit = (type, values) => rules.find(r =>
+    r.type === type && values.has(r.value) && !familyHasPositive(members, r.type, r.value));
+
+  const g = hit('grade', new Set([...gradesMentionedIn(text)].map(String)));
+  if (g) return held(g);
+
+  const domain = String(senderEmail || '').toLowerCase().split('@').pop();
+  const s = domain && domain.includes('.') ? hit('sender', new Set([domain])) : null;
+  if (s) return held(s);
+
+  const t = hit('tier', tiersMentionedIn(text));
+  if (t) return held(t);
+
+  const a = hit('activity', activityTypesIn(text));
+  if (a) return held(a);
+
+  return base;
 }
 
 // Who is an event about, when nobody's name appears in it?
@@ -1745,6 +1898,114 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
   const event = await events.get(req.body.id);
   if (event) { event.status = 'dismissed'; await events.set(req.body.id, event); }
   res.json({ ok: true });
+});
+
+// ── Why was that dismissed? ───────────────────────────────────────────────
+//
+// Strictly after the fact. The dismissal has already completed by the time this
+// is called, and skipping the prompt is the default: no answer means exactly
+// today's behaviour, nothing written, nothing inferred.
+//
+// This endpoint never writes an exclusion. It returns candidates and the
+// sentence the user has to agree to; POST /api/exclusions writes. Splitting the
+// two is the whole safeguard — a rule cannot come into existence without the
+// user having read what it says.
+const DISMISS_FEEDBACK_MAX = 300;
+
+async function logDismissFeedback(email, entry) {
+  const key = `dismissFeedback:${email}`;
+  await redis.lpush(key, JSON.stringify({ ts: Date.now(), ...entry }));
+  await redis.ltrim(key, 0, DISMISS_FEEDBACK_MAX - 1);
+  await redis.expire(key, 90 * 24 * 60 * 60);
+}
+
+const DISMISS_REASONS = new Set(['wrong-grade-tier', 'wrong-sender-activity', 'duplicate', 'not-interested', 'other']);
+
+app.post('/api/events/dismiss-reason', requireAuth, async (req, res) => {
+  const { id, reason } = req.body || {};
+  const note = String(req.body?.note || '').slice(0, 500).trim();
+  if (!DISMISS_REASONS.has(reason)) return res.status(400).json({ error: 'Unknown reason' });
+  const event = await getUserEvents(req.user.email).get(id);
+  if (!event) return res.status(404).json({ error: 'Not found' });
+
+  // Everything is logged, including the reasons that deliberately write no
+  // fact. "Not interested" fifty times about the same sender is a pattern worth
+  // seeing later, even though no single instance justifies a rule.
+  await logDismissFeedback(req.user.email, {
+    eventId: id, reason, note: note || null,
+    title: event.title || null, sender: event.sender_email || null, subject: event.subject || null,
+  });
+
+  // Not a relevance signal at all — the event was wanted, dedup just failed to
+  // spot the copy already on the calendar. Recorded where the scan pipeline's
+  // other decisions are, so it shows up next to the run that let it through.
+  if (reason === 'duplicate') {
+    await traceEmail(req.user.email, {
+      stage: 'DUPLICATE-MISSED', title: event.title || null, date: event.date || null,
+      messageId: event.gmail_message_id || null, from: event.sender_email || null,
+      subject: event.subject || null, calEventId: event.calEventId || null,
+      note: 'user says this was already on their calendar',
+    });
+    return res.json({ ok: true, candidates: [] });
+  }
+
+  // Too ambiguous to convert. A dismissal can mean wrong child, wrong grade,
+  // bad extraction or a bad week, and the text cannot tell those apart.
+  if (reason === 'not-interested' || reason === 'other') return res.json({ ok: true, candidates: [] });
+
+  const members = await getUserFamily(req.user.email).values();
+  const candidates = exclusionCandidates(event, reason, members);
+  if (!candidates.length) return res.json({ ok: true, candidates: [] });
+  res.json({ ok: true, candidates, prompt: exclusionPrompt(candidates) });
+});
+
+// ── Exclusion rules ───────────────────────────────────────────────────────
+//
+// Listed in plain language and removable in one tap, because undoing a rule has
+// to be exactly as easy as making one. This list is also the answer to "why did
+// this sender's events stop appearing" — that has to be visible state in the
+// product, not something you can only find by reading a log.
+app.get('/api/exclusions', requireAuth, async (req, res) => {
+  const rules = await getUserExclusions(req.user.email).values();
+  const members = await getUserFamily(req.user.email).values();
+  // A rule contradicted by a confirmed fact is shown as already overridden
+  // rather than quietly dropped, so the user can see why it stopped biting.
+  res.json(rules
+    .map(r => ({ ...r, overridden: familyHasPositive(members, r.type, r.value) }))
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))));
+});
+
+app.post('/api/exclusions', requireAuth, async (req, res) => {
+  const raw = Array.isArray(req.body?.rules) ? req.body.rules : [req.body];
+  const store = getUserExclusions(req.user.email);
+  const written = [];
+  for (const r of raw) {
+    const rule = normalizeExclusion(r);
+    if (!rule) continue;
+    // Preserve the original creation date if this rule already exists, so
+    // re-confirming does not make an old rule look new.
+    const existing = await store.get(rule.id);
+    if (existing?.created_at) rule.created_at = existing.created_at;
+    rule.source_event_id = r?.source_event_id || existing?.source_event_id || null;
+    await store.set(rule.id, rule);
+    written.push(rule);
+  }
+  if (!written.length) return res.status(400).json({ error: 'No usable rule in that request' });
+  res.json({ ok: true, rules: written });
+});
+
+app.delete('/api/exclusions/:id', requireAuth, async (req, res) => {
+  await getUserExclusions(req.user.email).delete(req.params.id);
+  res.json({ ok: true });
+});
+
+// Read-only view of the reasons that deliberately wrote nothing. The point is
+// to notice, by hand and later, that a shape of dismissal keeps recurring — and
+// then to design a real category for it rather than guessing one now.
+app.get('/api/dismiss-feedback', requireAuth, async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit || '100', 10), DISMISS_FEEDBACK_MAX);
+  const raw = await redis.lrange(`dismissFeedback:${req.user.email}`, 0, limit - 1);
+  res.json(raw.map(r => JSON.parse(r)));
 });
 
 // Mark event as reviewed — removes from Review queue but keeps on calendar
@@ -5393,6 +5654,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Loaded once per request rather than three times per extracted event.
   const knownEvents = dryRun ? [] : await eventsStore.values();
   const familyMembers = dryRun ? [] : await getUserFamily(email).values();
+  const exclusionRules = dryRun ? [] : await getUserExclusions(email).values();
   // Built from knownEvents, which is every event already stored for this user —
   // including the ones they have coloured by hand. Computed once per scan.
   const learnedAttribution = dryRun ? new Map() : learnSenderAttribution(knownEvents);
@@ -5708,8 +5970,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // Held back rather than discarded: it still appears in the queue with
           // the reason shown, and one click adds it. Criba guessing wrong about
           // your family should cost you a click, not an event.
-          const relevance = gradeRelevance(
-            [ev.title, ev.notes, subject].filter(Boolean).join(' '), familyMembers);
+          const relevance = eventRelevance(
+            [ev.title, ev.notes, subject].filter(Boolean).join(' '), familyMembers,
+            exclusionRules, senderEmail);
 
           let calEventId = null;
           // The check above only saw the target calendar; autoWriteToCalendar

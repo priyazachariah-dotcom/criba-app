@@ -4943,7 +4943,22 @@ app.get('/api/gmail/watch/status', requireAuth, async (req, res) => {
   const expMs = watchData.expiration ? parseInt(watchData.expiration) : null;
   const expiresAt = expMs ? new Date(expMs).toISOString() : null;
   const expiredAlready = expMs ? expMs < Date.now() : null;
-  res.json({ ok: true, email, registered: true, historyId: watchData.historyId, expiresAt, expiredAlready, hasRefreshToken: !!refreshToken, inWatchedSet: !!inWatchedSet, disconnectedAt });
+  // The topic is configured only as an env var, so it appears nowhere in the
+  // repo. Surfacing it here is the difference between "check Pub/Sub" and
+  // knowing which project and topic to open. It is a resource path, not a
+  // secret, and this route already requires a session.
+  const topic = process.env.PUBSUB_TOPIC || null;
+  const topicMatch = /^projects\/([^/]+)\/topics\/(.+)$/.exec(topic || '');
+  const lastWebhookAt = await redis.get(`lastWebhookAt:${email}`);
+  const backlog = await redis.get(`gmailBacklog:${email}`);
+  res.json({ ok: true, email, registered: true, historyId: watchData.historyId, expiresAt, expiredAlready, hasRefreshToken: !!refreshToken, inWatchedSet: !!inWatchedSet, disconnectedAt,
+    pubsubTopic: topic,
+    pubsubProject: topicMatch ? topicMatch[1] : null,
+    pubsubTopicId: topicMatch ? topicMatch[2] : null,
+    // A live watch with no delivery ever recorded means Gmail is publishing
+    // into a topic nobody is subscribed to.
+    lastWebhookAt: lastWebhookAt || null,
+    backlogPending: backlog || null });
 });
 
 // POST /api/gmail/webhook — receives Google Pub/Sub push notifications.
@@ -5000,6 +5015,9 @@ app.post('/api/gmail/webhook', async (req, res) => {
   }
 
   console.log(`[webhook] Pub/Sub message for emailAddress=${emailAddress} historyId=${historyId} messageId=${message.messageId}`);
+  // Proof of delivery, readable without Vercel log access. Its absence is the
+  // single clearest signal that the push subscription is missing.
+  if (emailAddress) await redis.set(`lastWebhookAt:${emailAddress}`, new Date().toISOString());
 
   if (!emailAddress) {
     console.error('[webhook] No emailAddress in decoded payload');

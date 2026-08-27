@@ -3301,7 +3301,191 @@ app.get('/api/settings', requireAuth, async (req, res) => {
   const settings = getUserSettings(req.user.email);
   const testCalendarId = (await settings.get('testCalendarId')) || null;
   const partnerEmail = (await settings.get('partnerEmail')) || null;
-  res.json({ testCalendarId, partnerEmail, recipients: await getSavedRecipients(req.user.email) });
+  const aheadDays = normalizeAheadDays(await settings.get('aheadDays'));
+  res.json({ testCalendarId, partnerEmail, aheadDays, recipients: await getSavedRecipients(req.user.email) });
+});
+
+// ── What's Ahead ──────────────────────────────────────────────────────────
+//
+// Read live from Google Calendar, never from Criba's own event records.
+//
+// That is the whole point of this screen. People move a practice, shorten a
+// dinner, delete the thing that got cancelled — all of it in Google, none of it
+// back through Criba. A view built on what Criba once wrote would show a
+// confident, tidy, wrong week, which is worse than showing nothing.
+//
+// Criba's records are still consulted, but only ever to answer "whose is this",
+// which is a question about learning rather than about what is happening.
+const AHEAD_WINDOWS = [7, 14, 30];
+const AHEAD_DEFAULT_DAYS = 14;
+// Only how much of the calendar this one screen displays. It has no effect on
+// what gets extracted or written, which is deliberately uncapped.
+function normalizeAheadDays(raw) {
+  const n = parseInt(raw, 10);
+  return AHEAD_WINDOWS.includes(n) ? n : AHEAD_DEFAULT_DAYS;
+}
+
+async function fetchCalendarWindow(calendarApi, cal, timeMin, timeMax) {
+  try {
+    const resp = await calendarApi.events.list({
+      calendarId: cal.id,
+      timeMin: timeMin.toISOString(),
+      timeMax: timeMax.toISOString(),
+      singleEvents: true,      // a weekly practice should appear on each of its
+      orderBy: 'startTime',    // dates, not once as a rule
+      maxResults: 250,
+      fields: 'items(id,summary,location,start,end,colorId,status,htmlLink)',
+    });
+    return (resp.data.items || [])
+      .filter(it => it.status !== 'cancelled')
+      .map(it => ({
+        id: it.id,
+        title: it.summary || '(no title)',
+        location: it.location || '',
+        date: it.start?.date || (it.start?.dateTime || '').slice(0, 10),
+        time: it.start?.dateTime ? it.start.dateTime.slice(11, 16) : '',
+        end_time: it.end?.dateTime ? it.end.dateTime.slice(11, 16) : '',
+        is_all_day: !!it.start?.date,
+        colorId: it.colorId ? String(it.colorId) : null,
+        htmlLink: it.htmlLink || null,
+        calendarId: cal.id,
+        calendarName: cal.name || cal.id,
+      }))
+      .filter(e => e.date);
+  } catch (err) {
+    // One unreadable calendar must not blank the whole screen.
+    console.error(`[ahead] events.list failed for ${cal.id}:`, err.message);
+    return [];
+  }
+}
+
+// The same fixture published by a club feed and written by Criba is one thing
+// happening, not two. Showing both would make a calm view look like a mess and
+// would invent a conflict with itself.
+function dedupeAheadEvents(events) {
+  const out = [];
+  for (const ev of events) {
+    const twin = out.find(x => x.date === ev.date
+      && x.is_all_day === ev.is_all_day
+      && titlesLooselyMatch(x.title, ev.title)
+      && (!x.time || !ev.time || Math.abs(timeToMinutes(x.time) - timeToMinutes(ev.time)) <= 30));
+    if (!twin) { out.push({ ...ev, alsoOn: [] }); continue; }
+    // Prefer the copy that carries a colour: that is the one Criba attributed,
+    // and it is the only copy that can be shown against a person. Identity has
+    // to move as a whole — keeping one copy's id beside the other's calendar
+    // name would produce a row that links somewhere it says it is not.
+    const swap = !twin.colorId && !!ev.colorId;
+    const displaced = swap ? twin.calendarName : ev.calendarName;
+    if (swap) {
+      twin.colorId = ev.colorId;
+      twin.id = ev.id;
+      twin.htmlLink = ev.htmlLink;
+      twin.calendarId = ev.calendarId;
+      twin.calendarName = ev.calendarName;
+    }
+    if (displaced !== twin.calendarName && !twin.alsoOn.includes(displaced)) twin.alsoOn.push(displaced);
+  }
+  return out;
+}
+
+// Whose is it? Three signals, strongest first, and no new attribution logic:
+// what the user explicitly filed, what colour it is wearing, and whether their
+// name is written in it.
+function attributeCalendarEvent(ev, members, storedByCalEventId) {
+  const stored = storedByCalEventId.get(ev.id);
+  if (stored?.member_id && members.some(m => m.id === stored.member_id)) {
+    return { memberId: stored.member_id, basis: 'filed' };
+  }
+  if (ev.colorId) {
+    const hits = members.filter(m => String(m.eventColor || m.color || '') === ev.colorId);
+    // Two people sharing one colour makes the colour meaningless as evidence.
+    if (hits.length === 1) return { memberId: hits[0].id, basis: 'colour' };
+  }
+  const named = matchFamilyMember(members, [], [ev.title, ev.location].filter(Boolean).join(' '));
+  if (named) return { memberId: named.id, basis: 'named' };
+  return { memberId: null, basis: null };
+}
+
+// Two timed things overlapping on the same day. Reported as pairs rather than
+// as a note stuck on one event, because a clash belongs to both halves of it.
+function findAheadConflicts(events) {
+  const byDate = new Map();
+  for (const ev of events) {
+    if (ev.is_all_day || !ev.time) continue;   // an all-day marker clashes with nothing
+    if (!byDate.has(ev.date)) byDate.set(ev.date, []);
+    byDate.get(ev.date).push(ev);
+  }
+  const out = [];
+  for (const [date, list] of byDate) {
+    const sorted = list.slice().sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
+      const aEnd = a.end_time ? timeToMinutes(a.end_time) : timeToMinutes(a.time) + 60;
+      for (let j = i + 1; j < sorted.length; j++) {
+        const b = sorted[j];
+        const bStart = timeToMinutes(b.time);
+        if (bStart >= aEnd) break;             // sorted, so nothing later can overlap either
+        const bEnd = b.end_time ? timeToMinutes(b.end_time) : bStart + 60;
+        if (timeToMinutes(a.time) < bEnd && aEnd > bStart) {
+          out.push({ date, a: { id: a.id, title: a.title, time: a.time, memberId: a.memberId },
+                            b: { id: b.id, title: b.title, time: b.time, memberId: b.memberId } });
+        }
+      }
+    }
+  }
+  return out.sort((x, y) => x.date.localeCompare(y.date));
+}
+
+// Builds the view. Shared verbatim with the digest — one query, two renderings,
+// because a digest that can disagree with the screen is worse than no digest.
+async function buildAheadView(user, days) {
+  const auth = await getUserOAuthClient(user);
+  const calendarApi = google.calendar({ version: 'v3', auth });
+  const targetCalId = await resolveTargetCalendar(user.email);
+  const timezone = await getUserTimezone(user.email);
+
+  const now = new Date();
+  const timeMax = new Date(now.getTime() + days * 86400000);
+  // Capped: a household with forty subscribed feeds should not turn one screen
+  // into forty API calls on every visit.
+  const cals = (await visibleCalendars(calendarApi, targetCalId)).slice(0, 12);
+  const raw = (await Promise.all(cals.map(c => fetchCalendarWindow(calendarApi, c, now, timeMax)))).flat();
+
+  const members = await getUserFamily(user.email).values();
+  const stored = await getUserEvents(user.email).values();
+  const storedByCalEventId = new Map(stored.filter(e => e.calEventId).map(e => [e.calEventId, e]));
+
+  const events = dedupeAheadEvents(raw)
+    .map(ev => ({ ...ev, ...attributeCalendarEvent(ev, members, storedByCalEventId) }))
+    .sort((a, b) => (a.date + (a.is_all_day ? '' : a.time)).localeCompare(b.date + (b.is_all_day ? '' : b.time)));
+
+  const people = members.map(m => ({
+    id: m.id, name: m.name, color: m.eventColor || m.color || null,
+    count: events.filter(e => e.memberId === m.id).length,
+  }));
+  const unassigned = events.filter(e => !e.memberId).length;
+
+  return {
+    days, timezone,
+    from: now.toISOString(), to: timeMax.toISOString(), generatedAt: now.toISOString(),
+    calendarsRead: cals.length,
+    people, unassigned,
+    events,
+    conflicts: findAheadConflicts(events),
+  };
+}
+
+app.get('/api/ahead', requireAuth, async (req, res) => {
+  const settings = getUserSettings(req.user.email);
+  const days = req.query.days !== undefined
+    ? normalizeAheadDays(req.query.days)
+    : normalizeAheadDays(await settings.get('aheadDays'));
+  try {
+    res.json(await buildAheadView(req.user, days));
+  } catch (err) {
+    console.error('[ahead] failed:', err.message);
+    res.status(502).json({ error: 'Could not read your calendar: ' + err.message });
+  }
 });
 
 // ── Saved recipients ──────────────────────────────────────────────────────
@@ -3336,7 +3520,10 @@ app.delete('/api/recipients/:email', requireAuth, async (req, res) => {
 
 app.patch('/api/settings', requireAuth, async (req, res) => {
   const settings = getUserSettings(req.user.email);
-  const { testCalendarId, partnerEmail } = req.body;
+  const { testCalendarId, partnerEmail, aheadDays } = req.body;
+  // Purely a display preference for the What's Ahead screen. Nothing about
+  // extraction or calendar writing reads it.
+  if (aheadDays !== undefined) await settings.set('aheadDays', normalizeAheadDays(aheadDays));
   if (testCalendarId === null || testCalendarId === '') {
     await settings.delete('testCalendarId');
   } else if (typeof testCalendarId === 'string') {

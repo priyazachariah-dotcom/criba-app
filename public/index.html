@@ -755,6 +755,32 @@
   .dr-note.visible { display: flex; }
   .dr-note input { flex: 1; padding: 5px 8px; font-size: 12px; font-family: inherit; border: 1px solid var(--border, #ddd); border-radius: 4px; }
 
+  /* ── What's Ahead ────────────────────────────────────────────────────────
+     Deliberately plain. The value of this screen is that a fortnight fits on
+     it and reads calmly; anything decorative works against that. */
+  .ahead-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .ahead-windows, .ahead-modes { display: flex; gap: 4px; }
+  .ahead-win, .ahead-mode, .ahead-refresh {
+    background: none; border: 1px solid var(--border, #ddd); color: var(--ink);
+    padding: 5px 11px; font-size: 12px; cursor: pointer; font-family: inherit; border-radius: 4px;
+  }
+  .ahead-win.on, .ahead-mode.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .ahead-win:hover, .ahead-mode:hover, .ahead-refresh:hover { border-color: var(--ink); }
+  .ahead-refresh { margin-left: auto; }
+  .ahead-meta { color: var(--text2); font-size: 12px; margin-bottom: 14px; }
+  .ahead-group { margin-bottom: 22px; }
+  .ahead-group-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 0.9rem; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1.5px solid var(--ink); }
+  .ahead-group-count { color: var(--text2); font-weight: 400; font-size: 12px; }
+  .ahead-row { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border, #eee); font-size: 0.875rem; }
+  .ahead-when { flex-shrink: 0; width: 132px; color: var(--text2); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .ahead-title { flex: 1; }
+  .ahead-where { color: var(--text2); font-size: 12px; }
+  .ahead-clash { color: #b45309; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .ahead-empty { color: var(--text2); font-size: 0.875rem; padding: 1.5rem 0; }
+  .ahead-conflict-band { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; margin-bottom: 18px; font-size: 0.875rem; }
+  .ahead-conflict-band .acb-title { color: #92400e; font-weight: 600; margin-bottom: 6px; }
+  .ahead-conflict-band .acb-row { color: #92400e; padding: 2px 0; }
+
   /* ── Exclusion rules list ───────────────────────────────────────────────── */
   .excl-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border, #eee); font-size: 0.875rem; }
   .excl-label { flex: 1; }
@@ -790,6 +816,7 @@
     </div>
     <nav class="header-nav-section">
       <button class="nav-btn active" id="nav-review-btn" onclick="showPage('review', this)">Review<span id="review-count-label"></span></button>
+      <button class="nav-btn" id="nav-ahead-btn" onclick="showPage('ahead', this)">What's Ahead</button>
       <button class="nav-btn" id="nav-recent-btn" onclick="showPage('recent', this)">Edit Calendar Events</button>
       <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
       <!-- The Family page was built but never linked, so members could never be
@@ -839,6 +866,27 @@
   </div>
 
   <!-- Edit Calendar Events (recently approved events) -->
+  <!-- What's Ahead — a place to look, never something pushed at you, and never
+       an editing surface. Read live from Google Calendar on every visit: people
+       move practices and delete things without telling Criba, and a tidy view
+       of what Criba once wrote would be confidently wrong. -->
+  <div class="page" id="page-ahead">
+    <div class="page-title-block">
+      <div class="page-headline page-headline-sm">WHAT'S AHEAD</div>
+      <div class="page-desc">Live from your Google Calendar — whatever it says right now, including anything you changed by hand. Nothing here can be edited; that stays in Edit Calendar Events.</div>
+    </div>
+    <div class="ahead-bar">
+      <div class="ahead-windows" id="ahead-windows"></div>
+      <div class="ahead-modes">
+        <button class="ahead-mode on" id="ahead-mode-person" onclick="setAheadMode('person')">By person</button>
+        <button class="ahead-mode" id="ahead-mode-day" onclick="setAheadMode('day')">By day</button>
+      </div>
+      <button class="ahead-refresh" onclick="loadAhead(true)" title="Read the calendar again">Refresh</button>
+    </div>
+    <div class="ahead-meta" id="ahead-meta"></div>
+    <div id="ahead-conflicts"></div>
+    <div id="ahead-body"></div>
+  </div>
   <div class="page" id="page-recent">
     <div class="page-title-block">
       <div class="page-headline page-headline-sm">APPROVED</div>
@@ -1716,8 +1764,9 @@ async function loadTestModeSettings() {
   try {
     const res = await fetch('/api/settings');
     if (!res.ok) return;
-    const { testCalendarId, recipients } = await res.json();
+    const { testCalendarId, recipients, aheadDays: savedAheadDays } = await res.json();
     applyTestModeUI(testCalendarId || '');
+    if ([7, 14, 30].includes(savedAheadDays)) { aheadDays = savedAheadDays; renderAheadControls(); }
     savedRecipients = Array.isArray(recipients) ? recipients : [];
     renderRecipients();
     // Cards built before this resolved have no tick boxes on them yet.
@@ -2293,6 +2342,167 @@ function pageIsActive(page) {
   return !!document.getElementById(`page-${page}`)?.classList.contains('active');
 }
 
+// ── What's Ahead ──────────────────────────────────────────────────────────
+//
+// Read-only by construction: there is no edit or delete control anywhere on
+// this screen, and no invite or sharing control either. It answers one
+// question — what is coming up, and does any of it collide.
+
+const AHEAD_WINDOW_LABELS = { 7: '1 week', 14: '2 weeks', 30: '1 month' };
+let aheadData = null;
+let aheadDays = 14;
+let aheadMode = 'person';
+let _aheadLoading = false;
+
+function aheadDayLabel(iso) {
+  // Parsed as local noon so a date-only string cannot slide to the previous day.
+  const d = new Date(`${iso}T12:00:00`);
+  if (isNaN(d)) return iso;
+  const today = new Date(); today.setHours(12, 0, 0, 0);
+  const delta = Math.round((d - today) / 86400000);
+  const name = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  if (delta === 0) return `Today · ${name}`;
+  if (delta === 1) return `Tomorrow · ${name}`;
+  return name;
+}
+
+function aheadTimeLabel(ev) {
+  if (ev.is_all_day || !ev.time) return 'All day';
+  const [h, m] = ev.time.split(':').map(Number);
+  const suffix = h < 12 ? 'am' : 'pm';
+  const hh = h % 12 === 0 ? 12 : h % 12;
+  return m ? `${hh}:${String(m).padStart(2, '0')}${suffix}` : `${hh}${suffix}`;
+}
+
+async function loadAhead(force) {
+  if (_aheadLoading) return;
+  _aheadLoading = true;
+  const body = document.getElementById('ahead-body');
+  if (body && (force || !aheadData)) body.innerHTML = '<div class="ahead-empty">Reading your calendar…</div>';
+  renderAheadControls();
+  try {
+    const res = await fetch(`/api/ahead?days=${aheadDays}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not read your calendar');
+    aheadData = await res.json();
+    renderAhead();
+  } catch (e) {
+    aheadData = null;
+    if (body) body.innerHTML = `<div class="ahead-empty">${escHtml(e.message)}</div>`;
+    const meta = document.getElementById('ahead-meta'); if (meta) meta.textContent = '';
+    const con = document.getElementById('ahead-conflicts'); if (con) con.innerHTML = '';
+  } finally {
+    _aheadLoading = false;
+  }
+}
+
+function renderAheadControls() {
+  const el = document.getElementById('ahead-windows');
+  if (el) {
+    el.innerHTML = [7, 14, 30].map(d =>
+      `<button class="ahead-win ${d === aheadDays ? 'on' : ''}" onclick="setAheadDays(${d})">${AHEAD_WINDOW_LABELS[d]}</button>`).join('');
+  }
+  const p = document.getElementById('ahead-mode-person');
+  const dm = document.getElementById('ahead-mode-day');
+  if (p) p.classList.toggle('on', aheadMode === 'person');
+  if (dm) dm.classList.toggle('on', aheadMode === 'day');
+}
+
+// The window governs this screen and nothing else. Saved so it survives a
+// reload, but it never reaches the scanner — what gets extracted and added is
+// uncapped and stays that way.
+async function setAheadDays(d) {
+  if (d === aheadDays) return;
+  aheadDays = d;
+  renderAheadControls();
+  loadAhead(true);
+  try {
+    await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aheadDays: d }) });
+  } catch {}
+}
+
+function setAheadMode(mode) {
+  aheadMode = mode;
+  renderAheadControls();
+  renderAhead();
+}
+
+function renderAhead() {
+  const body = document.getElementById('ahead-body');
+  const meta = document.getElementById('ahead-meta');
+  const con = document.getElementById('ahead-conflicts');
+  if (!body || !aheadData) return;
+
+  const evs = aheadData.events || [];
+  const conflicts = aheadData.conflicts || [];
+  if (meta) {
+    const read = aheadData.calendarsRead === 1 ? '1 calendar' : `${aheadData.calendarsRead} calendars`;
+    meta.textContent = `${evs.length} event${evs.length === 1 ? '' : 's'} across ${read}, read just now.`;
+  }
+
+  // Conflicts sit above everything. They are the one thing on this screen that
+  // is worth interrupting a glance for.
+  if (con) {
+    con.innerHTML = conflicts.length ? `
+      <div class="ahead-conflict-band">
+        <div class="acb-title">${conflicts.length} clash${conflicts.length === 1 ? '' : 'es'} in the next ${AHEAD_WINDOW_LABELS[aheadDays]}</div>
+        ${conflicts.map(c => `<div class="acb-row">${escHtml(aheadDayLabel(c.date))} — “${escHtml(c.a.title)}” at ${escHtml(aheadTimeLabel(c.a))} overlaps “${escHtml(c.b.title)}” at ${escHtml(aheadTimeLabel(c.b))}</div>`).join('')}
+      </div>` : '';
+  }
+
+  if (!evs.length) {
+    body.innerHTML = `<div class="ahead-empty">Nothing on your calendar in the next ${AHEAD_WINDOW_LABELS[aheadDays]}.</div>`;
+    return;
+  }
+
+  // An event in a clash is marked in place too, so it is obvious which row the
+  // band at the top is talking about.
+  const clashing = new Set();
+  conflicts.forEach(c => { clashing.add(c.a.id); clashing.add(c.b.id); });
+
+  const row = (ev, showDay) => `
+    <div class="ahead-row">
+      <span class="ahead-when">${escHtml(showDay ? `${aheadDayLabel(ev.date)}, ${aheadTimeLabel(ev)}` : aheadTimeLabel(ev))}</span>
+      <span class="ahead-title">${escHtml(ev.title)}${ev.location ? ` <span class="ahead-where">· ${escHtml(ev.location)}</span>` : ''}</span>
+      ${clashing.has(ev.id) ? '<span class="ahead-clash">clash</span>' : ''}
+    </div>`;
+
+  if (aheadMode === 'day') {
+    const days = [];
+    for (const ev of evs) {
+      const last = days[days.length - 1];
+      if (last && last.date === ev.date) last.events.push(ev);
+      else days.push({ date: ev.date, events: [ev] });
+    }
+    body.innerHTML = days.map(d => `
+      <div class="ahead-group">
+        <div class="ahead-group-head">${escHtml(aheadDayLabel(d.date))}
+          <span class="ahead-group-count">${d.events.length}</span></div>
+        ${d.events.map(ev => row(ev, false)).join('')}
+      </div>`).join('');
+    return;
+  }
+
+  // By person. Someone with nothing on is still listed — "Arin has a clear
+  // fortnight" is a real answer, and a missing name reads like a bug.
+  const groups = (aheadData.people || []).map(p => ({
+    key: p.id, name: p.name, color: p.color,
+    events: evs.filter(e => e.memberId === p.id),
+  }));
+  const unassigned = evs.filter(e => !e.memberId);
+  if (unassigned.length) groups.push({ key: null, name: 'Not assigned to anyone', color: null, events: unassigned });
+
+  body.innerHTML = groups.map(g => `
+    <div class="ahead-group">
+      <div class="ahead-group-head">
+        ${g.color ? `<span class="quick-dot" style="background:${memberColor(g.color)}"></span>` : ''}
+        ${escHtml(g.name)}
+        <span class="ahead-group-count">${g.events.length ? g.events.length : 'nothing scheduled'}</span>
+      </div>
+      ${g.events.map(ev => row(ev, true)).join('')}
+    </div>`).join('');
+}
+
 function showPage(page, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
@@ -2307,6 +2517,9 @@ function showPage(page, btn) {
   // renderSettingsPage returns early when there are no members, so the
   // recipient list is painted separately rather than chained onto it.
   if (page === 'settings') { renderSettingsPage(); renderRecipients(); loadExclusions(); }
+  // Always re-read on entry. A cached fortnight is exactly the stale snapshot
+  // this screen exists to avoid.
+  if (page === 'ahead') loadAhead(true);
 }
 
 let lastScanDays = null; // set after a successful backfill so the header reflects the window

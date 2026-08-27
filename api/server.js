@@ -4987,8 +4987,18 @@ app.post('/api/gmail/webhook', async (req, res) => {
     // practice the endpoint was open to anyone who could mint a Google ID token,
     // letting them force-process any mailbox Criba holds a refresh token for and
     // burn the Claude budget. Requiring the push service account closes it.
+    //
+    // Two different identities get confused here. Gmail publishes to the topic
+    // as gmail-api-push. But a push subscription signs its OIDC token as
+    // whatever service account is configured on the SUBSCRIPTION — so a
+    // correctly created subscription can still be rejected here, with a 401
+    // that looks like a security problem rather than a configuration one.
+    // PUBSUB_PUSH_SA lets that account be allowlisted without a code change.
     const validEmails = ['gmail-api-push@system.gserviceaccount.com'];
+    const extraSa = String(process.env.PUBSUB_PUSH_SA || '').trim();
+    if (extraSa) validEmails.push(...extraSa.split(',').map(v => v.trim()).filter(Boolean));
     if (!payload.email_verified || !validEmails.includes(payload.email)) {
+      console.error(`[webhook] token email "${payload.email}" — allowlist is [${validEmails.join(', ')}]. If the subscription is new, set PUBSUB_PUSH_SA to its push service account.`);
       console.error(`[webhook] REJECTED — token issuer "${payload.email}" not in allowlist`);
       return res.status(401).json({ error: 'Invalid token issuer' });
     }

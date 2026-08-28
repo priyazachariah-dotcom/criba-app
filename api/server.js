@@ -997,9 +997,23 @@ function normalizeExtractedEvent(ev) {
   // attaches school hours to one anyway, honouring them turns "Christmas Break"
   // into a 9am-2:50pm appointment on a single day.
   const allDayType = type === 'break' || type === 'holiday';
-  const time = allDayType ? '' : (ev.time || '');
+  // The extraction prompt asks for "start_time". This read "time" only, so the
+  // clock time was never found and every timed event from an upload was stored
+  // with no time — which downstream means all-day. An invitation stating
+  // "EVENT START TIME: 10:30 AM" landed on the calendar as an all-day banner.
+  // The two names are a known wart, documented and handled in
+  // shiftMidnightToMorning; the normalizer simply never got the same treatment.
+  const rawStart = ev.start_time ?? ev.time ?? '';
+  const time = allDayType ? '' : (rawStart || '');
   let endTime = allDayType ? '' : (ev.end_time || '');
-  if (time && !endTime && (type === 'timed' || type === 'minimum_day')) {
+  // The model was explicit that this is an all-day event. Believe it over any
+  // stray clock time it also emitted.
+  if (ev.is_all_day === true) { return normalizeExtractedEvent({ ...ev, is_all_day: false, start_time: '', time: '', end_time: '', type: 'holiday' }); }
+  // FULL_EXTRACTION_PROMPT returns no "type" field at all, so everything from
+  // an upload normalizes to "other" — and "other" used to have its end time
+  // stripped and no fallback applied. A 10:30 start with a stated 12:00 finish
+  // therefore lost its end. Anything with a clock time gets an end time.
+  if (time && !endTime && type !== 'break' && type !== 'holiday') {
     const [h, m] = time.split(':').map(Number);
     const endHour = h + 1 > 23 ? 23 : h + 1;
     endTime = `${String(endHour).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
@@ -1011,7 +1025,7 @@ function normalizeExtractedEvent(ev) {
     // one all-day span too. Keep an end date whenever there is no clock time.
     end_date: type === 'break' ? (ev.end_date || ev.date) : (!time && ev.end_date ? ev.end_date : ''),
     time,
-    end_time: (type === 'timed' || type === 'minimum_day') ? endTime : '',
+    end_time: time ? endTime : '',
     location: ev.location || '',
     recurring_note: type === 'recurring' ? (ev.recurring_note || '') : '',
     notes: ev.notes || null,

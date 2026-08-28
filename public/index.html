@@ -4155,7 +4155,14 @@ function renderCalendars() {
           <h3 class="cal-section-title">Uploaded files</h3>
           <p class="cal-section-sub">Read once from a PDF or screenshot. You approve these before they reach your calendar.</p>
         </div>
-        ${uploads.map((cal, i) => calRow(cal, i, `${cal.event_count || 0} events · ${escHtml(memberNameFor(cal.memberId))}`)).join('')}
+        ${uploads.map((cal, i) => calRow(cal, i, `${cal.event_count
+          ? `${cal.event_count} events`
+          // event_count only counts events the user has APPROVED. A file that
+          // was read perfectly but never approved showed "0 events", which is
+          // the same words a file Criba could not read would show — except
+          // that case creates no row at all. The count was being read as
+          // "Criba found nothing" when it meant "nothing approved yet".
+          : 'read — nothing approved yet'} · ${escHtml(memberNameFor(cal.memberId))}`)).join('')}
       </div>`);
   }
 

@@ -1591,7 +1591,21 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
   };
   const all = await events.values();
   const pending = all.filter(e => {
-    if (e.status === 'pending_cancellation' || e.status === 'pending_reschedule') return true;
+    // A change notice ages out like anything else. These used to be exempt, so
+    // a cancellation for a date three days gone sat in the queue permanently
+    // and could only be cleared by hand — the queue filled with notices about
+    // events that had already happened. Judge it on the date it concerns:
+    // the original date for a cancellation, the new one for a reschedule.
+    if (e.status === 'pending_cancellation' || e.status === 'pending_reschedule') {
+      const when = e.status === 'pending_cancellation'
+        ? { date: e.old_date || e.date, time: e.old_time || e.time }
+        : { date: e.date || e.old_date, time: e.time || e.old_time };
+      // isPast treats a missing date as past. That is right for an event, but
+      // here it would silently swallow a notice we could not date — better to
+      // show it and let the user judge than to hide it.
+      if (!when.date) return true;
+      return !isPast(when);
+    }
     // Post-write review: 'added' events not yet reviewed and not yet past
     if ((e.status === 'added' || e.status === 'pending') && !e.reviewed && !isPast(e)) return true;
     // Found on the calendar already and deliberately not written. Shown so the
@@ -6241,6 +6255,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const bfCalApi = google.calendar({ version: 'v3', auth: getOAuthClientFromRefreshToken(refreshToken) });
   // Loaded once per request rather than three times per extracted event.
   const knownEvents = dryRun ? [] : await eventsStore.values();
+  // Cancellation and reschedule notices already waiting in the queue, so a
+  // second notice for the same event does not become a second card.
+  const knownPendingChanges = knownEvents.filter(e =>
+    e.status === 'pending_cancellation' || e.status === 'pending_reschedule');
   const familyMembers = dryRun ? [] : await getUserFamily(email).values();
   const exclusionRules = dryRun ? [] : await getUserExclusions(email).values();
   // Built from knownEvents, which is every event already stored for this user —
@@ -6471,6 +6489,27 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
           const intent = ev.intent || 'new_event';
           if (intent === 'cancellation' || intent === 'reschedule') {
+            // "Rescheduled from Aug 25 3:30pm to Aug 25 3:30pm" is not a
+            // reschedule. The model reports one whenever an email restates an
+            // existing time, and the card that results asks the user to approve
+            // moving an event to where it already is. Only queue a change when
+            // something actually changed.
+            if (intent === 'reschedule' && ev.old_date && ev.old_date === ev.date
+                && (ev.old_time || '') === (ev.start_time || '')) {
+              await traceEmail(email, { runId, stage: 'DROPPED', messageId, subject, reason: 'reschedule-no-change', rawDate: ev.date });
+              continue;
+            }
+            // Two emails about one cancellation, or two extractions of the same
+            // email, produced two identical cards the user had to dismiss twice.
+            // One notice per event is enough.
+            const already = knownPendingChanges.find(p =>
+              p.intent === intent
+              && (p.old_date || p.date || '') === (ev.old_date || ev.date || '')
+              && titlesLooselyMatch(p.old_title || p.title || '', ev.old_title || ev.title || ''));
+            if (already) {
+              await traceEmail(email, { runId, stage: 'DROPPED', messageId, subject, reason: 'duplicate-change-notice', rawDate: ev.date });
+              continue;
+            }
             const matchResult = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
             const evId = randomUUID();
             await eventsStore.set(evId, {
@@ -6486,6 +6525,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
               sender_name: senderName, sender_email: senderEmail, subject,
               status: intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule',
               type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),
+            });
+            // Visible to the rest of this same run, or two notices arriving in
+            // one scan both pass the check above and both get stored.
+            knownPendingChanges.push({
+              intent, title: ev.title, date: ev.date,
+              old_title: ev.old_title || null, old_date: ev.old_date || null,
             });
             eventsStored++; continue;
           }

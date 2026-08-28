@@ -4036,6 +4036,14 @@ const VISION_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'ima
 
 // Recursively collect image parts from the MIME tree (inline + attached).
 // Returns raw descriptor objects — no data fetching here.
+// An email whose real content is a flyer image. The threshold used to be 300
+// characters, which almost no real email clears: a school flyer arrives with
+// a greeting, a sign-off and an unsubscribe footer wrapped around the image,
+// and that boilerplate alone runs past 300. Such mail failed the text filter
+// (no date in the words) AND failed this bypass (too much boilerplate), so it
+// was dropped without the picture ever being looked at.
+const IMAGE_HEAVY_BODY_MAX = 1500;
+
 function collectImageParts(payload, parts = []) {
   const mime = (payload.mimeType || '').toLowerCase().split(';')[0].trim();
   if (VISION_IMAGE_TYPES.has(mime) && (payload.body?.data || payload.body?.attachmentId)) {
@@ -4856,7 +4864,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       // An "image-heavy" email has images but minimal text — the calendar info is
       // likely in a visual flyer (e.g. sports schedules, school newsletters as images).
       const imageParts = collectImageParts(msg.payload);
-      const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
+      const isImageHeavy = imageParts.length > 0 && body.trim().length < IMAGE_HEAVY_BODY_MAX;
       console.log(`[gmail-process] msg=${messageId} from="${senderEmail}" subject="${subject}" bodyLen=${body.length} images=${imageParts.length} imageHeavy=${isImageHeavy}`);
 
       // Pre-filter. This used to be diagnosePreFilter — a flat keyword list where
@@ -4865,7 +4873,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       // the two filters silently disagreed: mail the scan happily queued, the
       // webhook threw away. Both paths now apply the same test to the same
       // full body, so a manual scan can no longer find what the webhook missed.
-      const wePass = scanForDateContent(`${subject} ${body.slice(0, 5000)}`).pass;
+      const wePass = scanForDateContent(`${subject} ${body}`).pass;
       if (!wePass && !isImageHeavy) {
         console.log(`[prefilter] SKIP msg=${messageId} user=${email} subject="${subject}" — no date signal in body`);
         await traceEmail(email, { stage: 'SKIP-BODY', via: 'webhook', messageId, subject, from, bodyLen: body.length });
@@ -6384,9 +6392,13 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       continue;
     }
 
-    const isImageHeavy = imageParts.length > 0 && body.trim().length < 300;
+    const isImageHeavy = imageParts.length > 0 && body.trim().length < IMAGE_HEAVY_BODY_MAX;
     if (!snippetScan.pass && !isImageHeavy) {
-      const bodyScan = scanForDateContent(`${subject} ${body.slice(0, 5000)}`);
+      // The filter used to judge the first 5000 characters only. The body is
+      // already in memory and this is a regex, so the truncation bought
+      // nothing and cost us any newsletter that carried its date further
+      // down — exactly the shape of mail a school sends.
+      const bodyScan = scanForDateContent(`${subject} ${body}`);
       if (!bodyScan.pass) {
         skippedPreFilter++;
         await traceEmail(email, { runId, stage: 'SKIP-BODY', messageId, subject, from, bodyLen: body.length });

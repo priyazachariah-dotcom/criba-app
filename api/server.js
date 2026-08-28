@@ -2639,8 +2639,30 @@ async function writeCalendarEvents(user, calendarId, eventIds, { auth: presetAut
     const ev = await events.get(id);
     if (!ev || ev.status === 'added') continue;
     try {
+      // Feed imports and the nightly sync used to insert without ever asking
+      // whether the event was already on the calendar — they bypassed the
+      // duplicate check that every other write path goes through. Re-importing
+      // a feed, or a sync that could not match uids, therefore wrote a second
+      // copy of every game. Adopt what is already there instead of adding to it.
+      const already = await findExistingOnAnyCalendar(calendar, targetCalId, {
+        title: ev.title, date: ev.date, time: ev.time || '',
+      });
+      if (already?.id) {
+        ev.status = 'added';
+        ev.reviewed = false;
+        ev.calEventId = already.recurringEventId || already.id;
+        ev.gcalId = already.calendarId || targetCalId;
+        ev.approved_at = new Date().toISOString();
+        updates.push([id, ev]);
+        console.log(`[calendar-dedup] SKIP (writeCalendarEvents) "${ev.title}" on ${ev.date} — already on ${already.calendarName || already.calendarId}`);
+        continue;
+      }
       const resource = buildGoogleResource(ev, { colorId, tz });
       const created = await calendar.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
+      noteWrittenToCache(targetCalId, ev.date, {
+        id: created.data.id, recurringEventId: null, title: ev.title, date: ev.date,
+        time: ev.time || '', end_time: ev.end_time || '', is_all_day: !ev.time,
+      });
       ev.status = 'added';
       ev.reviewed = false;
       ev.calEventId = created.data.id;
@@ -2727,15 +2749,34 @@ async function syncIcalCalendar(userEmail, cal) {
     const updates = [];
     for (let i = 0; i < changed.length; i++) {
       const { id, ev } = changed[i];
+      const priorTitle = ev.title, priorDate = ev.date, priorTime = ev.time || '';
       Object.assign(ev, reclassified[i], { ical_fingerprint: icalFingerprint(changed[i].f) });
       try {
-        if (ev.calEventId) {
-          await calendar.events.patch({
-            calendarId: ev.gcalId || targetCalId, eventId: ev.calEventId,
-            sendUpdates: 'none', resource: buildGoogleResource(ev, { colorId, tz }),
+        // An event Criba adopted rather than wrote has no calEventId. This used
+        // to skip the Google patch and still stamp the new fingerprint — so the
+        // event was permanently recorded as in sync while the calendar still
+        // showed the old time, and no later sync would ever try again. Look it
+        // up by what is ON the calendar (the values before this change), and if
+        // it genuinely cannot be found, leave the fingerprint alone so the next
+        // sync retries instead of declaring victory.
+        if (!ev.calEventId) {
+          const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
+            title: priorTitle, date: priorDate, time: priorTime,
           });
-          updated++;
+          if (found?.id) {
+            ev.calEventId = found.recurringEventId || found.id;
+            ev.gcalId = found.calendarId || targetCalId;
+          }
         }
+        if (!ev.calEventId) {
+          console.error(`[ical sync] cannot locate "${priorTitle}" on ${priorDate} — leaving unsynced for retry`);
+          continue;
+        }
+        await calendar.events.patch({
+          calendarId: ev.gcalId || targetCalId, eventId: ev.calEventId,
+          sendUpdates: 'none', resource: buildGoogleResource(ev, { colorId, tz }),
+        });
+        updated++;
         updates.push([id, ev]);
       } catch (err) {
         console.error(`[ical sync] patch failed for ${id}:`, err.message);
@@ -3273,7 +3314,28 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
       // Ticking an invitee is a request to notify them — silent invites defeat
       // the point. Without invitees, stay quiet as before.
       const sendUpdates = groupRecipients.length ? 'all' : 'none';
+      // Approving a whole category is still a write, and it skipped the
+      // duplicate check every other write path performs — so approving the
+      // same group twice put two of everything on the calendar. If it is
+      // already there, adopt the existing event rather than adding a rival.
+      const already = await findExistingOnAnyCalendar(calendar, targetCalId, {
+        title: ev.title, date: ev.date, time: ev.time || '',
+      });
+      if (already?.id) {
+        ev.status = 'added';
+        ev.reviewed = false;
+        ev.calEventId = already.recurringEventId || already.id;
+        ev.gcalId = already.calendarId || targetCalId;
+        ev.approved_at = new Date().toISOString();
+        updates.push([id, ev]);
+        console.log(`[calendar-dedup] SKIP (group-approve) "${ev.title}" on ${ev.date}`);
+        continue;
+      }
       const calEvent = await calendar.events.insert({ calendarId: targetCalId, sendUpdates, resource });
+      noteWrittenToCache(targetCalId, ev.date, {
+        id: calEvent.data.id, recurringEventId: null, title: ev.title, date: ev.date,
+        time: ev.time || '', end_time: ev.end_time || '', is_all_day: !ev.time,
+      });
       ev.status = 'added';
       ev.reviewed = false;
       ev.calEventId = calEvent.data.id;

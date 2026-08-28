@@ -4069,7 +4069,17 @@ function collectImageParts(payload, parts = []) {
 // for the Claude vision API. Caps at 3 images × 1 MB each to bound API call size.
 async function fetchEmailImages(payload, gmail, messageId) {
   const MAX_IMAGES = 3;
-  const MAX_SIZE_BYTES = 1024 * 1024; // 1 MB
+  // 1 MB was chosen to reject large marketing graphics, on the assumption that
+  // anything big is decoration. That is wrong for the case this feature exists
+  // to serve: a phone screenshot of an invitation, or a photographed flyer, is
+  // routinely 2-4 MB and is the entire content of the email. Such a message was
+  // correctly identified as image-heavy, correctly bypassed the text filter,
+  // and then had its only image dropped here for size — so Claude was handed an
+  // empty body and no picture, returned nothing, and the trace recorded a
+  // successful extraction that found no events. Anthropic accepts 5 MB per
+  // image; base64 inflates by a third, so 3.5 MB of raw attachment is the
+  // practical ceiling.
+  const MAX_SIZE_BYTES = 3.5 * 1024 * 1024;
   // A one-megabyte ceiling suits inline images, where anything larger is almost
   // always a marketing graphic. A PDF newsletter is routinely bigger than that
   // and is exactly the thing worth reading, so it gets its own headroom.
@@ -4102,7 +4112,12 @@ async function fetchEmailImages(payload, gmail, messageId) {
       console.error(`[vision] Failed to fetch image for msg=${messageId}:`, err.message);
     }
   }
-  console.log(`[vision] msg=${messageId} fetched ${images.length} image(s) for vision extraction`);
+  const droppedForSize = rawParts.length - eligible.length;
+  console.log(`[vision] msg=${messageId} fetched ${images.length} image(s) for vision extraction`
+    + (droppedForSize ? ` — ${droppedForSize} attachment(s) skipped as oversized` : ''));
+  // The caller needs to tell "there was nothing to read" apart from "there was
+  // something and we threw it away", because those look identical downstream.
+  images.droppedForSize = droppedForSize;
   return images;
 }
 
@@ -4916,6 +4931,13 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       const images = imageParts.length > 0
         ? await fetchEmailImages(msg.payload, gmail, messageId)
         : [];
+      // Without this the trace shows SENT-TO-AI followed by DROPPED, which reads
+      // as "Claude looked at the picture and found nothing" when in fact Claude
+      // was handed an empty body and no picture at all.
+      if (isImageHeavy && !images.length) {
+        await traceEmail(email, { stage: 'NO-IMAGE-DATA', via: 'webhook', messageId, subject, from,
+          attachments: imageParts.length, droppedForSize: images.droppedForSize || 0 });
+      }
 
       console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude subject="${subject}" images=${images.length}`);
       await traceEmail(email, { stage: 'SENT-TO-AI', via: 'webhook', messageId, subject, from, bodyLen: body.length, images: images.length });
@@ -6258,7 +6280,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     if (lastRun && (Date.now() - parseInt(lastRun, 10)) < BACKFILL_COOLDOWN_SEC * 1000) {
       await releaseLock();
       const nextAt = new Date(parseInt(lastRun, 10) + BACKFILL_COOLDOWN_SEC * 1000).toISOString();
-      return res.status(429).json({ error: 'Already scanned in the last 24 hours. Clear the cooldown in Settings to scan again now.', cooldownUntil: nextAt });
+      return res.status(429).json({ error: 'Already scanned in the last 24 hours. Click "Reset lock" below to scan again now.', cooldownUntil: nextAt });
     }
   }
 
@@ -6435,7 +6457,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     // candidates here; extract them concurrently after the loop.
     candidates.push({
       messageId, subject, from, dateSent, senderName, senderEmail,
-      body, imageParts, payload: fullRes.data.payload, fpKey,
+      body, imageParts, payload: fullRes.data.payload, fpKey, isImageHeavy,
     });
     await traceEmail(email, { runId, stage: 'TIMING', messageId, subject, msgMs: Date.now() - msgStart, elapsedMs: Date.now() - startedAt });
   }
@@ -6476,6 +6498,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     const waveStart = Date.now();
     const results = await Promise.allSettled(wave.map(async (c) => {
       const images = c.imageParts.length > 0 ? await fetchEmailImages(c.payload, gmail, c.messageId) : [];
+      // An image-heavy email that reaches Claude with no image is not a
+      // "Claude found nothing" result — Claude was handed an empty body and
+      // nothing to look at. Without this the trace shows SENT-TO-AI then
+      // DROPPED and the two cases are indistinguishable.
+      if (c.isImageHeavy && !images.length) {
+        await traceEmail(email, { runId, stage: 'NO-IMAGE-DATA', messageId: c.messageId, subject: c.subject,
+          from: c.from, attachments: c.imageParts.length, droppedForSize: images.droppedForSize || 0 });
+      }
       const t0 = Date.now();
       const extracted = await extractGmailEvents(c.body, c.senderName, c.senderEmail, c.subject, images, c.dateSent, familyMembers.map(m => m.name).filter(Boolean));
       return { extracted, claudeMs: Date.now() - t0, imageCount: images.length };

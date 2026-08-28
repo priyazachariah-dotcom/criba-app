@@ -86,6 +86,21 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // the same person in contact search on every card. Any address saved here is
 // read back as an existing record, so a stored one is migrated in place rather
 // than stranded when the setting became a list.
+// Anthropic errors arrive as a raw 400 with a JSON blob inside the message.
+// Shown verbatim they are unreadable; swallowed entirely they leave a silent
+// zero. Translate the ones a user can actually act on, and pass anything else
+// through trimmed rather than inventing a reassuring summary for it.
+function summariseApiError(msg) {
+  const m = String(msg || '');
+  if (!m) return '';
+  if (/credit balance is too low/i.test(m)) return 'Anthropic credits exhausted — top up at console.anthropic.com under Plans & Billing.';
+  if (/rate.?limit|429/i.test(m)) return 'Anthropic rate limit reached — wait a minute and scan again.';
+  if (/overloaded|529/i.test(m)) return 'Anthropic is overloaded right now — try again shortly.';
+  if (/authentication|invalid x-api-key|401/i.test(m)) return 'Anthropic API key rejected — check ANTHROPIC_API_KEY.';
+  if (/not_found_error|model/i.test(m) && /404/.test(m)) return 'The configured AI model was not found — check the model name.';
+  return m.length > 160 ? `${m.slice(0, 160)}…` : m;
+}
+
 async function getSavedRecipients(email) {
   const settings = getUserSettings(email);
   const list = await settings.get('recipients');
@@ -3203,7 +3218,10 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
   const calSrc = await cals.get(calendarId);
   const colorId = await resolveEventColor(req.user.email, null, calSrc);
   const catTz = await getUserTimezone(req.user.email);
-  let addedCount = 0;
+  // A write that throws left the event as 'pending' and was reported nowhere:
+  // the user approved ten events, was told ten were added, and found nine on
+  // the calendar. Duplicates were equally invisible. Count both and say so.
+  let addedCount = 0, failedCount = 0, duplicateCount = 0, lastWriteError = '';
   const updates = [];
   for (const [id, ev] of await events.entries()) {
     if (ev.calendar_id === calendarId && ev.status === 'draft') {
@@ -3216,6 +3234,7 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
             ev.duplicate_of_calendar = true;
             ev.conflict_note = `Already on your calendar as "${ev.duplicate_of?.title || ev.title}" — not added again`;
             ev.calEventId = null; ev.gcalId = null;
+            duplicateCount++;
           } else {
             ev.status = 'added'; ev.reviewed = false;
             ev.calEventId = calEventId; ev.gcalId = targetCalId;
@@ -3226,6 +3245,8 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
         } catch (err) {
           console.error(`confirm-categories GCal write failed for "${ev.title}":`, err.message);
           ev.status = 'pending'; // fallback if GCal write fails
+          failedCount++;
+          lastWriteError = err.message || 'calendar write failed';
         }
       } else {
         ev.status = 'rejected';
@@ -3236,7 +3257,7 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
   await events.setMany(updates);
   const cal = await cals.get(calendarId);
   if (cal) { cal.event_count = addedCount; await cals.set(calendarId, cal); }
-  res.json({ ok: true, addedCount });
+  res.json({ ok: true, addedCount, failedCount, duplicateCount, lastWriteError: summariseApiError(lastWriteError) });
 });
 
 // Returns the full draft event list for a calendar (not just name+count), so
@@ -3424,7 +3445,7 @@ app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
   const calSrc = await cals.get(calendarId);
   const targetCalId = await resolveTargetCalendar(req.user.email);
   const colorId = await resolveEventColor(req.user.email, null, calSrc);
-  let count = 0;
+  let count = 0, failedCount = 0, lastWriteError = '';
   const updates = [];
   for (const [id, ev] of groupEvents) {
     try {
@@ -3446,6 +3467,11 @@ app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
       updates.push([id, ev]); count++;
     } catch (err) {
       console.error(`group-review write failed for "${ev.title}":`, err.message);
+      // Logged to a console the user cannot see and reported nowhere, so a
+      // write that failed was indistinguishable from an event that was never
+      // selected. Count it and hand back the reason.
+      failedCount++;
+      lastWriteError = err.message || 'calendar write failed';
     }
   }
   await events.setMany(updates);
@@ -3453,7 +3479,7 @@ app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
     const cal = await cals.get(calendarId);
     if (cal) { cal.event_count = (cal.event_count || 0) + count; await cals.set(calendarId, cal); }
   }
-  res.json({ ok: true, count });
+  res.json({ ok: true, count, failedCount, lastWriteError: summariseApiError(lastWriteError) });
 });
 
 // Dismisses every draft event in one category at once (category-level
@@ -6337,7 +6363,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   console.log(`[backfill] found ${messageIds.length} messages`);
 
   let scanned = 0, skippedCategory = 0, skippedDedup = 0, skippedPreFilter = 0;
-  let claudeCalls = 0, eventsStored = 0, hitLimit = false;
+  // Counted and reported because a failed extraction is invisible otherwise.
+  // With credits exhausted every call 400s, and the run still reported
+  // "8 sent to AI, 0 new events" — the exact words a mailbox with nothing in
+  // it produces. The user checked her inbox three times before the trace
+  // revealed the API had never run.
+  let claudeCalls = 0, claudeErrors = 0, lastClaudeError = '', eventsStored = 0, hitLimit = false;
   const dryRunMessages = [];
 
   // Built once, not per extracted event — this was a redundant OAuth client
@@ -6547,6 +6578,8 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       if (r.status === 'rejected') {
         console.error(`[backfill] extraction failed msg=${c.messageId}:`, r.reason?.message);
         await traceEmail(email, { runId, stage: 'ERROR', messageId: c.messageId, subject: c.subject, from: c.from, error: r.reason?.message || 'extraction failed' });
+        claudeErrors++;
+        lastClaudeError = r.reason?.message || 'extraction failed';
         continue;
       }
       const { extracted, claudeMs, imageCount } = r.value;
@@ -6775,7 +6808,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // early does not spend the user's 24 hours.
   await redis.set(`backfillLastRun:${email}`, String(Date.now()), 'EX', BACKFILL_COOLDOWN_SEC);
   await releaseLock();
-  res.json({ ok: true, runId, days, scanned, skippedCategory, skippedPreFilter, skippedDedup, claudeCalls, eventsStored, totalFound: messageIds.length, hitLimit });
+  res.json({ ok: true, runId, days, scanned, skippedCategory, skippedPreFilter, skippedDedup, claudeCalls, claudeErrors, lastClaudeError: summariseApiError(lastClaudeError), eventsStored, totalFound: messageIds.length, hitLimit });
 });
 
 app.get('*', (req, res) => {

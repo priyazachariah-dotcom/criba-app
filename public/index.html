@@ -1131,6 +1131,7 @@
         <button class="btn-filled btn-sm" id="cat-add-all-btn" onclick="catAddAllGroups()">Add All to Calendar</button>
       </div>
       <div class="page-desc" id="cat-page-sub" style="text-align:left;max-width:none">Review events by group and add them to your calendar.</div>
+      <div id="cat-add-all-status" style="text-align:left"></div>
     </div>
     <div id="category-groups-container"></div>
   </div>
@@ -3162,7 +3163,15 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
     } else {
       const eventsStored = data.eventsStored || 0;
       if (eventsStored > 0) await loadPendingEvents();
-      let msg = `Scanned ${data.scanned}/${data.totalFound} emails · ${data.claudeCalls} sent to AI · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
+      const failed = data.claudeErrors || 0;
+      // "8 sent to AI · 0 new events added" was shown when all 8 calls had
+      // failed. It is the same sentence a genuinely empty mailbox produces, so
+      // there was no way to tell a broken scan from a quiet one. A failure is
+      // never reported as a zero again: it is named, counted, and given the
+      // reason in words the user can act on.
+      let msg = `Scanned ${data.scanned}/${data.totalFound} emails · ${data.claudeCalls} sent to AI`;
+      if (failed) msg += ` · ${failed} failed`;
+      msg += ` · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
       lastScanDays = days;
       updateReviewHeader(days);
       // A scan that stops at its time budget has left real emails unread — the
@@ -3180,8 +3189,21 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
         return;
       }
       if (data.hitLimit) msg += ' — still more to read, click Scan now to carry on';
-      if (result) result.textContent = msg;
-      if (btn2) btn2.textContent = data.hitLimit ? 'Scan now' : '✓ Done';
+      if (result) {
+        result.textContent = msg;
+        // The reason belongs next to the count. Without it the user is told
+        // something failed and left to go digging in the scan trace for why.
+        if (failed && data.lastClaudeError) {
+          const why = document.createElement('div');
+          why.className = 'error-msg';
+          why.style.marginTop = '0.35rem';
+          why.textContent = data.lastClaudeError;
+          result.appendChild(why);
+        }
+      }
+      // A run in which everything failed did not finish. Saying "Done" invites
+      // the user to walk away from a scan that read nothing at all.
+      if (btn2) btn2.textContent = (data.hitLimit || (failed && !eventsStored)) ? 'Scan now' : '✓ Done';
     }
   } finally {
     if (btn2) { btn2.disabled = false; if (btn2.textContent === 'Scanning…') btn2.textContent = 'Scan now'; }
@@ -4863,7 +4885,7 @@ async function catAddAllGroups() {
   const btn = document.getElementById('cat-add-all-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
   const indices = groupsState.categories.map((_, i) => i);
-  let totalAdded = 0;
+  let totalAdded = 0, totalFailed = 0, lastError = '';
   for (const ci of indices) {
     const cat = groupsState.categories[ci];
     if (!cat || !cat.events.length) continue;
@@ -4873,13 +4895,36 @@ async function catAddAllGroups() {
         body: JSON.stringify({ calendarId: groupsState.calendarId, category: cat.name, recipientEmails: catRecipientEmails(ci) }),
       });
       const data = await res.json();
-      if (res.ok) totalAdded += data.addedCount || 0;
-    } catch {}
+      // Every failure here used to vanish: a non-ok response was ignored and
+      // an exception was swallowed by a bare catch. The button then showed a
+      // green "✓ Added 0" whether nothing needed adding or nothing worked.
+      if (res.ok) {
+        totalAdded += data.addedCount || 0;
+        totalFailed += (data.failed?.length || 0) + (data.failedCount || 0);
+        if (data.lastWriteError) lastError = data.lastWriteError;
+      } else {
+        totalFailed += cat.events.length;
+        lastError = data.error || 'Could not add these events';
+      }
+    } catch {
+      totalFailed += cat.events.length;
+      lastError = 'Network error';
+    }
   }
   await loadCalendars();
-  groupsState.categories = [];
+  // Only clear the page when everything landed. Wiping the list after a
+  // failure destroys the only record of what still needs adding.
+  if (!totalFailed) groupsState.categories = [];
   renderCategoryPage();
-  if (btn) { btn.disabled = false; btn.textContent = `✓ Added ${totalAdded}`; }
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = totalFailed
+      ? `Added ${totalAdded} · ${totalFailed} failed — try again`
+      : `✓ Added ${totalAdded}`;
+  }
+  const allStatus = document.getElementById('cat-add-all-status');
+  if (allStatus) allStatus.innerHTML = totalFailed && lastError
+    ? `<span style="color:var(--red)">${escHtml(lastError)}</span>` : '';
 }
 
 // "Add all" — bulk-approves every remaining draft event in the category.
@@ -4899,11 +4944,24 @@ async function catAddAll(ci) {
     });
     const data = await res.json();
     if (res.ok) {
-      const msg = `✓ Added ${data.addedCount}${data.failed?.length ? ` · ${data.failed.length} failed` : ''}`;
-      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">${msg}</span>`;
+      const nFailed = (data.failed?.length || 0) + (data.failedCount || 0);
+      const nDup = data.duplicateCount || 0;
+      // Green with a tick regardless of how many failed, and the group removed
+      // from the page either way — so a partial failure looked like a clean
+      // success and the events that did not make it were gone from view.
+      const msg = `${nFailed ? '' : '✓ '}Added ${data.addedCount}`
+        + (nDup ? ` · ${nDup} already on your calendar` : '')
+        + (nFailed ? ` · ${nFailed} failed` : '');
+      if (statusEl) statusEl.innerHTML = `<span style="color:${nFailed ? 'var(--red)' : 'var(--green)'}">${msg}</span>`
+        + (nFailed && data.lastWriteError ? `<div class="error-msg">${escHtml(data.lastWriteError)}</div>` : '');
       await loadCalendars();
-      groupsState.categories.splice(ci, 1);
-      setTimeout(renderCategoryPage, 900);
+      if (nFailed) {
+        if (addBtn) addBtn.disabled = false;
+        if (disBtn) disBtn.disabled = false;
+      } else {
+        groupsState.categories.splice(ci, 1);
+        setTimeout(renderCategoryPage, 900);
+      }
     } else {
       if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">${data.error || 'Failed'}</span>`;
       if (addBtn) addBtn.disabled = false;

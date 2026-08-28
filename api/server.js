@@ -3063,6 +3063,15 @@ If they gave a time, a duration, or said the event repeats, use that. If they na
     // people they have already saved; never invent an address for a name we do
     // not recognise, because that is a real email to a possibly wrong person.
     const savedPeople = await getSavedRecipients(req.user.email);
+    // The account owner is not a guest. An invitation addressed to her comes
+    // back with her own name as an attendee, which matched nobody in Family
+    // (she is not in her own family list) and produced a warning that she had
+    // not been invited to her own event — alarming, wrong, and it buried the
+    // real problem underneath it. Never treat the owner as an unmatched name.
+    const ownerNames = new Set([
+      String(req.user.name || '').trim().toLowerCase(),
+      String(req.user.email || '').split('@')[0].toLowerCase(),
+    ].filter(Boolean));
     const unmatchedNames = new Set();
     const resolveAttendees = (list) => {
       if (!Array.isArray(list)) return [];
@@ -3076,6 +3085,7 @@ If they gave a time, a duration, or said the event repeats, use that. If they na
           String(p.name || '').trim().toLowerCase() === name ||
           String(p.email || '').split('@')[0].toLowerCase() === name);
         if (hit) out.push({ email: hit.email, name: hit.name || '' });
+        else if (ownerNames.has(name)) out.push({ email: req.user.email, name: req.user.name || '' });
         else unmatchedNames.add(String(a?.name || a || '').trim());
       }
       return out;

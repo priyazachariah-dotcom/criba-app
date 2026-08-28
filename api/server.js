@@ -2348,7 +2348,12 @@ app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
 app.post('/api/events/dismiss-cancellation', requireAuth, async (req, res) => {
   const eventsStore = getUserEvents(req.user.email);
   const ev = await eventsStore.get(req.body.id);
-  if (ev) { ev.status = 'dismissed'; await eventsStore.set(req.body.id, ev); }
+  // Reporting ok for an id that does not exist tells the caller the card
+  // was dismissed when nothing was written, so it returns on the next
+  // refresh and Dismiss looks broken. Say what actually happened.
+  if (!ev) return res.status(404).json({ error: 'That notice no longer exists — refresh the page.' });
+  ev.status = 'dismissed';
+  await eventsStore.set(req.body.id, ev);
   res.json({ ok: true });
 });
 
@@ -2399,7 +2404,12 @@ app.post('/api/events/approve-reschedule', requireAuth, async (req, res) => {
 app.post('/api/events/dismiss-reschedule', requireAuth, async (req, res) => {
   const eventsStore = getUserEvents(req.user.email);
   const ev = await eventsStore.get(req.body.id);
-  if (ev) { ev.status = 'dismissed'; await eventsStore.set(req.body.id, ev); }
+  // Reporting ok for an id that does not exist tells the caller the card
+  // was dismissed when nothing was written, so it returns on the next
+  // refresh and Dismiss looks broken. Say what actually happened.
+  if (!ev) return res.status(404).json({ error: 'That notice no longer exists — refresh the page.' });
+  ev.status = 'dismissed';
+  await eventsStore.set(req.body.id, ev);
   res.json({ ok: true });
 });
 app.get('/api/calendars', requireAuth, async (req, res) => {
@@ -6213,7 +6223,13 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   };
 
   // Dry runs write nothing, so they are neither rate-limited nor recorded.
-  if (!dryRun) {
+  // A continuation is not a new scan either. The cooldown exists to stop the
+  // same mailbox being re-read all day; it must not stop a run that is only
+  // finishing emails an earlier run hit its time budget before reaching.
+  // Blocking those meant the leftovers waited 24 hours to be read at best,
+  // and in practice were never read at all.
+  const isContinuation = req.body?.continuation === true;
+  if (!dryRun && !isContinuation) {
     const lastRun = await redis.get(`backfillLastRun:${email}`);
     if (lastRun && (Date.now() - parseInt(lastRun, 10)) < BACKFILL_COOLDOWN_SEC * 1000) {
       await releaseLock();

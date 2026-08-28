@@ -1953,7 +1953,7 @@ async function commitDismiss() {
   } catch {}
   const title = (pendingEvents.find(e => e.id === id) || {}).title;
   pendingEvents = pendingEvents.filter(e => e.id !== id);
-  renderReview();
+  renderReviewNow();
   // Only once the dismissal is final. Two toasts competing for the same corner
   // would turn a safety net into a pile-up.
   showDismissReason(id, title);
@@ -2060,7 +2060,7 @@ async function markReviewedAndDismiss(id) {
   try {
     await fetch('/api/events/mark-reviewed', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
     pendingEvents = pendingEvents.filter(e => e.id !== id);
-    renderReview();
+    renderReviewNow();
   } catch {}
 }
 
@@ -2788,7 +2788,7 @@ async function deleteReminder(id) {
   try {
     await fetch('/api/events/delete-from-calendar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
     pendingEvents = pendingEvents.filter(e => e.id !== id);
-    renderReview();
+    renderReviewNow();
   } catch (e) {
     if (card) card.style.opacity = '1';
     alert('Failed to delete — please try again.');
@@ -2833,7 +2833,16 @@ function anyEditorOpen() {
 }
 let reviewRenderDeferred = false;
 
-function renderReview() {
+// Removing a card is not the same as the 30-second poller arriving uninvited.
+// The deferral exists to stop a background refresh destroying a form the user
+// is typing into — but Dismiss, Keep and Remove are all clicked from INSIDE an
+// open editor, so they tripped that same guard and the repaint never happened.
+// The card stayed on screen, the user pressed Dismiss again, and Dismiss looked
+// broken when the server had done exactly what it was asked. A repaint the user
+// themselves triggered must never be deferred.
+function renderReviewNow() { renderReview({ force: true }); }
+
+function renderReview({ force = false } = {}) {
   const container = document.getElementById('review-list');
   if (!container) return;
   // The first-run scan owns this container until it finishes.
@@ -2844,7 +2853,7 @@ function renderReview() {
   // the user was typing, closing the card and discarding the edit. New data is
   // never worth destroying work in progress: hold the repaint until the form
   // is closed, and run it then.
-  if (anyEditorOpen()) { reviewRenderDeferred = true; return; }
+  if (!force && anyEditorOpen()) { reviewRenderDeferred = true; return; }
   reviewRenderDeferred = false;
 
   // Separate cancellation/reschedule from regular post-write review
@@ -3093,7 +3102,11 @@ async function showScanTrace() {
   } catch { result.textContent = 'Network error loading trace'; }
 }
 
-async function runBackfill(days, dryRun = false) {
+// `continuation` marks a run that is finishing work an earlier run ran out of
+// time for. It is not a new scan: it must not be blocked by the cooldown, and
+// it chains itself until the queue is actually empty.
+const MAX_SCAN_CONTINUATIONS = 6;
+async function runBackfill(days, dryRun = false, continuation = 0) {
   const btn2 = document.getElementById('backfill-btn-2');
   const btnDry = document.getElementById('backfill-btn-dry');
   const result = document.getElementById('backfill-result');
@@ -3113,7 +3126,7 @@ async function runBackfill(days, dryRun = false) {
       res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ days }),
+        body: JSON.stringify({ days, continuation: continuation > 0 }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -3150,11 +3163,25 @@ async function runBackfill(days, dryRun = false) {
       const eventsStored = data.eventsStored || 0;
       if (eventsStored > 0) await loadPendingEvents();
       let msg = `Scanned ${data.scanned}/${data.totalFound} emails · ${data.claudeCalls} sent to AI · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
-      if (data.hitLimit) msg += ' — more emails remain, click Scan now again';
-      if (result) result.textContent = msg;
-      if (btn2) btn2.textContent = data.hitLimit ? 'Scan now' : '✓ Done';
       lastScanDays = days;
       updateReviewHeader(days);
+      // A scan that stops at its time budget has left real emails unread — the
+      // ones at the back of the queue, every time. Telling the user to click
+      // again put the burden of noticing on them, and an email nobody notices
+      // was missed is indistinguishable from one Criba cannot read at all.
+      // Finish the job. The cap is there so a pathological mailbox cannot loop
+      // forever; emails already handled are skipped in milliseconds by the
+      // dedup fingerprint, so each pass reaches further than the last.
+      if (data.hitLimit && continuation < MAX_SCAN_CONTINUATIONS) {
+        msg += ` — more to read, continuing (${continuation + 2})…`;
+        if (result) result.textContent = msg;
+        if (btn2) { btn2.disabled = false; btn2.textContent = 'Scanning…'; }
+        setTimeout(() => runBackfill(days, false, continuation + 1), 800);
+        return;
+      }
+      if (data.hitLimit) msg += ' — still more to read, click Scan now to carry on';
+      if (result) result.textContent = msg;
+      if (btn2) btn2.textContent = data.hitLimit ? 'Scan now' : '✓ Done';
     }
   } finally {
     if (btn2) { btn2.disabled = false; if (btn2.textContent === 'Scanning…') btn2.textContent = 'Scan now'; }
@@ -3789,7 +3816,7 @@ async function approveReviewEvent(id) {
     if (res.ok) {
       if (status) status.innerHTML = '<span class="success-msg">✓ Added</span>';
       await loadRecentEvents();
-      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
+      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReviewNow(); }, 3000);
     } else {
       const err = await res.json();
       status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;
@@ -3805,7 +3832,7 @@ async function dismissReviewEvent(id) {
   const title = (pendingEvents.find(e => e.id === id) || {}).title;
   try { await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
   pendingEvents = pendingEvents.filter(e => e.id !== id);
-  renderReview();
+  renderReviewNow();
   // A draft was never on the calendar, so there is no undo toast to wait for.
   showDismissReason(id, title);
 }
@@ -3819,7 +3846,7 @@ async function approveCancellation(id) {
     if (res.ok) {
       if (status) status.innerHTML = '<span class="success-msg">✓ Removed from Calendar</span>';
       await loadRecentEvents();
-      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
+      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReviewNow(); }, 3000);
     } else {
       const err = await res.json().catch(() => ({}));
       showActionError(status, btn, err.error || 'Failed');
@@ -3830,9 +3857,23 @@ async function approveCancellation(id) {
 }
 
 async function dismissCancellation(id) {
-  try { await fetch('/api/events/dismiss-cancellation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
+  // The result used to be discarded: a failed dismiss still removed the card
+  // locally, and the next refresh brought it straight back. Only drop the card
+  // once the server confirms it is gone; otherwise leave it and say why.
+  const status = document.getElementById(`rv-status-${id}`);
+  try {
+    const res = await fetch('/api/events/dismiss-cancellation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (status) status.innerHTML = `<span class="error-msg">${escHtml(err.error || 'Could not dismiss')}</span>`;
+      return;
+    }
+  } catch {
+    if (status) status.innerHTML = '<span class="error-msg">Network error — not dismissed</span>';
+    return;
+  }
   pendingEvents = pendingEvents.filter(e => e.id !== id);
-  renderReview();
+  renderReviewNow();
 }
 
 async function approveReschedule(id) {
@@ -3844,7 +3885,7 @@ async function approveReschedule(id) {
     if (res.ok) {
       if (status) status.innerHTML = '<span class="success-msg">✓ Calendar updated</span>';
       await loadRecentEvents();
-      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
+      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReviewNow(); }, 3000);
     } else {
       const err = await res.json().catch(() => ({}));
       showActionError(status, btn, err.error || 'Failed');
@@ -3855,9 +3896,23 @@ async function approveReschedule(id) {
 }
 
 async function dismissReschedule(id) {
-  try { await fetch('/api/events/dismiss-reschedule', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
+  // The result used to be discarded: a failed dismiss still removed the card
+  // locally, and the next refresh brought it straight back. Only drop the card
+  // once the server confirms it is gone; otherwise leave it and say why.
+  const status = document.getElementById(`rv-status-${id}`);
+  try {
+    const res = await fetch('/api/events/dismiss-reschedule', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (status) status.innerHTML = `<span class="error-msg">${escHtml(err.error || 'Could not dismiss')}</span>`;
+      return;
+    }
+  } catch {
+    if (status) status.innerHTML = '<span class="error-msg">Network error — not dismissed</span>';
+    return;
+  }
   pendingEvents = pendingEvents.filter(e => e.id !== id);
-  renderReview();
+  renderReviewNow();
 }
 
 // For no-match reschedules: add as a brand-new pending event and dismiss the reschedule notice
@@ -3876,7 +3931,7 @@ async function promoteRescheduleAsNew(id) {
     if (res.ok) {
       if (status) status.innerHTML = '<span class="success-msg">✓ Added</span>';
       await loadRecentEvents();
-      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReview(); }, 3000);
+      setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReviewNow(); }, 3000);
     } else {
       const err = await res.json();
       if (status) status.innerHTML = `<span class="error-msg">${err.error || 'Failed'}</span>`;

@@ -825,7 +825,34 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
   };
   if (ev.recurrence_rule) resource.recurrence = [ensureRecurrenceEnd(ev.recurrence_rule, ev.date, span.recurrenceEndDate)];
   if (colorId) resource.colorId = String(colorId);
+
+  // Last look before writing, deliberately uncached and against the calendar we
+  // are about to write to. The check above may have been answered from a
+  // snapshot taken up to a minute ago — which is exactly how two overlapping
+  // runs both concluded an event was absent and both added it. One extra read
+  // per write is a cheap price for not putting a second copy on a real
+  // calendar, and this is the only moment the answer is authoritative.
+  if (!opts.skipDuplicateCheck) {
+    const fresh = await eventsOnDate(calendarApi, targetCalId, ev.date, { fresh: true });
+    const late = findCalendarDuplicate(fresh, ev.title, ev.date, ev.time || '');
+    if (late) {
+      ev.duplicate_of = { ...late, calendarId: targetCalId, calendarName: targetCalId };
+      console.log(`[calendar-dedup] LATE-SKIP "${ev.title}" on ${ev.date} — appeared between the first check and the write`);
+      return null;
+    }
+  }
+
   const result = await calendarApi.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
+  // Make this write visible to the next check in this process immediately.
+  noteWrittenToCache(targetCalId, ev.date, {
+    id: result.data.id,
+    recurringEventId: null,
+    title: ev.title,
+    date: ev.date,
+    time: ev.time || '',
+    end_time: ev.end_time || '',
+    is_all_day: !ev.time,
+  });
   return result.data.id;
 }
 
@@ -2116,11 +2143,26 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
   const event = await events.get(id);
   if (!event) return res.status(404).json({ error: 'Event not found' });
   try {
-    if (event.calEventId) {
-      const auth = await getUserOAuthClient(req.user);
-      const calendar = google.calendar({ version: 'v3', auth });
-      await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
+    const auth = await getUserOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    // An event Criba found already on the calendar has no calEventId, because
+    // Criba did not write it. This used to skip the Google call entirely and
+    // still return ok — so the card vanished and the event stayed on the
+    // calendar. Deleting must mean deleting.
+    if (!event.calEventId) {
+      const targetCalId = await resolveTargetCalendar(req.user.email);
+      const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
+        title: event.title, date: event.date, time: event.time || '',
+      });
+      if (!found?.id) {
+        return res.status(404).json({
+          error: 'Could not find this event on your Google Calendar — nothing was deleted.',
+        });
+      }
+      event.calEventId = found.recurringEventId || found.id;
+      event.gcalId = found.calendarId || targetCalId;
     }
+    await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
     event.status = 'dismissed';
     event.calEventId = null;
     await events.set(id, event);
@@ -4309,13 +4351,25 @@ async function visibleCalendars(calendarApi, targetCalId) {
 // Per-invocation cache of one calendar's events on one date. Without it, a scan
 // writing ten events across eight calendars would make eighty events.list calls.
 const _calDayCache = new Map();
-async function eventsOnDate(calendarApi, calId, date) {
+async function eventsOnDate(calendarApi, calId, date, opts = {}) {
   const key = `${calId}|${date}`;
-  const hit = _calDayCache.get(key);
-  if (hit && Date.now() - hit.at < 60000) return hit.events;
+  if (!opts.fresh) {
+    const hit = _calDayCache.get(key);
+    if (hit && Date.now() - hit.at < 60000) return hit.events;
+  }
   const events = await fetchExistingCalendarEvents(calendarApi, calId, [date, date]);
   _calDayCache.set(key, { events, at: Date.now() });
   return events;
+}
+
+// A write we just made must be visible to the very next duplicate check.
+// Without this, a run writing two extractions of the same event moments apart
+// checked a cache captured before either existed and wrote both.
+function noteWrittenToCache(calId, date, written) {
+  const key = `${calId}|${date}`;
+  const hit = _calDayCache.get(key);
+  if (hit) hit.events = [...hit.events, written];
+  else _calDayCache.set(key, { events: [written], at: Date.now() });
 }
 
 // Is this event already on ANY calendar the user can see?

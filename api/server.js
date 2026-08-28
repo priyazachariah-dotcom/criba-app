@@ -306,6 +306,19 @@ function familyHasPositive(members, type, value) {
   return false;
 }
 
+// A consumer mailbox domain identifies no organisation. "Events from gmail.com"
+// is not a rule about a school or a club — it is a rule that hides every friend,
+// every relative and every note the user sends herself. One such rule was
+// created and only failed to empty the inbox because an unrelated confirmed
+// sender chip happened to override it; removing that chip would have armed it.
+// These must never be offered as exclusions, however the dismissal is worded.
+const FREEMAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'yahoo.co.uk', 'outlook.com',
+  'hotmail.com', 'hotmail.co.uk', 'live.com', 'msn.com', 'icloud.com',
+  'me.com', 'mac.com', 'aol.com', 'proton.me', 'protonmail.com', 'gmx.com',
+  'zoho.com', 'yandex.com', 'mail.com',
+]);
+
 // What could this dismissal honestly become a rule about?
 //
 // Returns the narrowest defensible group, or [] when the text supports nothing
@@ -326,7 +339,8 @@ function exclusionCandidates(event, reason, members) {
   }
   if (reason === 'wrong-sender-activity') {
     const domain = String(event?.sender_email || '').toLowerCase().split('@').pop();
-    const sender = domain && domain.includes('.') ? mk('sender', domain) : null;
+    const sender = domain && domain.includes('.') && !FREEMAIL_DOMAINS.has(domain)
+      ? mk('sender', domain) : null;
     if (ok(sender)) return [sender];
     // No usable sender, or the sender is one we have confirmed belongs to a
     // child — an upload, or the school both kids attend. Fall back to the
@@ -363,7 +377,11 @@ function eventRelevance(text, members, exclusions = [], senderEmail = null) {
   if (g) return held(g);
 
   const domain = String(senderEmail || '').toLowerCase().split('@').pop();
-  const s = domain && domain.includes('.') ? hit('sender', new Set([domain])) : null;
+  // Rules of this shape should never have been creatable, but one already
+  // exists in production. Refuse to honour it rather than waiting for the
+  // accident that currently neutralises it to be tidied away.
+  const s = domain && domain.includes('.') && !FREEMAIL_DOMAINS.has(domain)
+    ? hit('sender', new Set([domain])) : null;
   if (s) return held(s);
 
   const t = hit('tier', tiersMentionedIn(text));

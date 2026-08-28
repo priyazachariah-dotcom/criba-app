@@ -2823,6 +2823,16 @@ async function deleteApproved(id) {
   }
 }
 
+// Is the user part-way through editing a card right now? Re-rendering would
+// throw away an open form and everything typed into it.
+function anyEditorOpen() {
+  return [...document.querySelectorAll('.review-card-editor, .reminder-editor-wrap')]
+    .some(el => el.style.display !== 'none')
+    || [...document.querySelectorAll('[id^="edit-"]')]
+      .some(el => el.style.display && el.style.display !== 'none');
+}
+let reviewRenderDeferred = false;
+
 function renderReview() {
   const container = document.getElementById('review-list');
   if (!container) return;
@@ -2830,6 +2840,12 @@ function renderReview() {
   if (onboardingScanRunning) return;
   // Same reason as renderRecent: only the visible page may hold rv-* ids.
   if (!pageIsActive('review')) { container.innerHTML = ''; return; }
+  // The 30-second live refresh used to rebuild this list with innerHTML while
+  // the user was typing, closing the card and discarding the edit. New data is
+  // never worth destroying work in progress: hold the repaint until the form
+  // is closed, and run it then.
+  if (anyEditorOpen()) { reviewRenderDeferred = true; return; }
+  reviewRenderDeferred = false;
 
   // Separate cancellation/reschedule from regular post-write review
   const cancellations = pendingEvents.filter(e => e.status === 'pending_cancellation');
@@ -3259,6 +3275,11 @@ function toggleCancelCard(id) {
     editor.style.display = 'block';
     if (row) row.classList.add('open');
     if (chevron) chevron.style.transform = 'rotate(180deg)';
+  } else if (reviewRenderDeferred && !anyEditorOpen()) {
+    // The card just closed and a refresh was held back while it was open.
+    // Paint it now, or events that arrived meanwhile would sit unseen until
+    // the next 30-second tick.
+    renderReview();
   }
 }
 
@@ -3911,7 +3932,12 @@ function toggleEdit(id) {
   const el = document.getElementById(`edit-${id}`);
   const opening = el.style.display === 'none';
   el.style.display = opening ? 'block' : 'none';
-  if (!opening) return;
+  if (!opening) {
+    // Same as the review cards: a repaint held back while this form was open
+    // must run once it closes.
+    if (reviewRenderDeferred && !anyEditorOpen()) renderReview();
+    return;
+  }
   initLocationAutocomplete(`rv-loc-${id}`);
   // Seed the guest chips from the stored event, the same way the review queue
   // does. Without this, saving an edit would silently strip every attendee.

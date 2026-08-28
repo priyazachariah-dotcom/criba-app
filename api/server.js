@@ -4138,9 +4138,24 @@ function ensureRecurrenceEnd(rule, startDate, endDate) {
   if (!rule) return rule;
   const up = String(rule).toUpperCase();
   if (!/FREQ=/.test(up)) return rule;
+
+  const explicit = endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? endDate : null;
+
+  // An end date we were given beats one already on the rule. Every recurring
+  // event gets a 12-month UNTIL stamped on first write, so "already has an
+  // end" was true for essentially every event — and this returned early,
+  // silently discarding every end date the user set. A date the user typed
+  // must win over one Criba guessed.
+  if (explicit) {
+    const stripped = String(rule)
+      .replace(/;?\b(UNTIL|COUNT)=[^;]*/gi, '')
+      .replace(/;+/g, ';')
+      .replace(/^;|;$/g, '');
+    return `${stripped};UNTIL=${explicit.replace(/-/g, '')}T235959Z`;
+  }
   if (/UNTIL=|COUNT=/.test(up)) return rule;
 
-  let until = endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? endDate : null;
+  let until = null;
   if (!until) {
     const base = /^\d{4}-\d{2}-\d{2}$/.test(startDate || '') ? new Date(startDate + 'T00:00:00Z') : new Date();
     base.setUTCMonth(base.getUTCMonth() + DEFAULT_RECURRENCE_MONTHS);

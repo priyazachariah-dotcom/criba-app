@@ -1764,8 +1764,15 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
         });
       }
     } else {
+      // Look the event up by what is ON the calendar, not by what the user is
+      // changing it to. Searching with the edited title/date/time could never
+      // match — the matcher requires the stored date and a loose title match —
+      // so any edit fell through to insert and put a SECOND copy on the
+      // calendar. Renaming an event is not the same as creating one.
       const dup = await findExistingOnAnyCalendar(calendar, targetCalId, {
-        title: calEventResource.summary, date, time: time || '',
+        title: event.title || calEventResource.summary,
+        date: event.date || date,
+        time: event.time || '',
       });
       if (dup?.id) {
         event.gcalId = dup.calendarId || targetCalId;

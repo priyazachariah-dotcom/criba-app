@@ -1743,10 +1743,30 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
       if (dup?.id) {
         event.gcalId = dup.calendarId || targetCalId;
         if (dup.recurringEventId) {
-          // A single instance of a series. Patching it would detach that one
-          // occurrence and leave the rest untouched, which is worse than
-          // leaving it alone — adopt it and change nothing.
-          calEvent = { data: { id: dup.recurringEventId } };
+          // events.list(singleEvents:true) hands back one expanded occurrence,
+          // but recurringEventId is the series itself. Patching THAT applies
+          // every field to every occurrence, which is what the edit card
+          // promises. This used to adopt the id and change nothing, so an edit
+          // to a recurring event — an end date, a title, a location — was
+          // accepted, reported as saved, and silently thrown away.
+          //
+          // The start/end of a series is the FIRST occurrence, not the one that
+          // happened to match. Sending this occurrence's date would drag the
+          // whole series forward, so date/time are only sent when the user
+          // actually changed them.
+          const seriesResource = { ...calEventResource };
+          const dateUnchanged = !!event.date && event.date === date;
+          const timeUnchanged = (event.time || '') === (time || '');
+          if (dateUnchanged && timeUnchanged) {
+            delete seriesResource.start;
+            delete seriesResource.end;
+          }
+          calEvent = await calendar.events.patch({
+            calendarId: event.gcalId,
+            eventId: dup.recurringEventId,
+            sendUpdates: 'all',
+            resource: seriesResource,
+          });
         } else {
           calEvent = await calendar.events.patch({
             calendarId: event.gcalId,
@@ -1834,10 +1854,30 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
   const { id, title, date, time, endDate, endTime, location, attendees } = req.body;
   const events = getUserEvents(req.user.email);
   const event = await events.get(id);
-  if (!event || !event.calEventId) return res.status(404).json({ error: 'Event not found' });
+  if (!event) return res.status(404).json({ error: 'Event not found' });
   try {
     const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
+    // An event Criba found already on the calendar is stored with calEventId
+    // null, because Criba did not write it. This used to 404 here, so the card
+    // offered an edit form that could never save. Look the real event up and
+    // edit that instead — preferring the series id over one expanded
+    // occurrence, so the change lands on every occurrence.
+    let adoptedSeries = false;
+    if (!event.calEventId) {
+      const targetCalId = await resolveTargetCalendar(req.user.email);
+      const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
+        title: event.title, date: event.date, time: event.time || '',
+      });
+      if (!found?.id) {
+        return res.status(404).json({
+          error: 'Could not find this event on your Google Calendar — it may have been deleted or renamed there.',
+        });
+      }
+      adoptedSeries = !!found.recurringEventId;
+      event.calEventId = found.recurringEventId || found.id;
+      event.gcalId = found.calendarId || targetCalId;
+    }
     // A field the client sent must win even when blank — that is how the user
     // clears an end date or turns a timed event into an all-day one. Falling
     // back to the stored value on every falsy input, which is what this did,
@@ -1855,6 +1895,16 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     const eventAttendees = (attendees || []).filter(a => a.email).map(a => ({ email: a.email }));
 
     const resource = { summary: title, location: location || '', start, end, attendees: eventAttendees };
+
+    // When the id we hold is a whole series, its start/end describe the FIRST
+    // occurrence — not whichever one the user happened to open. Resending an
+    // unchanged date would drag the entire series to that date, so start/end
+    // go only when the user actually moved the event. Every other field still
+    // applies to every occurrence, which is the point of editing a series.
+    if (adoptedSeries && event.date === date && (event.time || '') === (time || '')) {
+      delete resource.start;
+      delete resource.end;
+    }
 
     // Recolouring after the fact. Editing an event used to strip the person it
     // belonged to — the patch omitted colorId entirely, so Google kept whatever

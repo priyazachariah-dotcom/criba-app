@@ -4033,6 +4033,13 @@ function extractEmailBody(payload) {
 
 // Image MIME types Claude's vision API accepts
 const VISION_IMAGE_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp']);
+// Claude reads a PDF as well as it reads a photo — the upload path has sent
+// them as document blocks all along. Only the email path was image-only, so a
+// school that attached its calendar as a PDF (most of them) had that PDF
+// ignored, and if the covering note carried no date the whole mail was dropped
+// without anything being read. The media type was the entire blind spot.
+const VISION_DOC_TYPES = new Set(['application/pdf']);
+const VISION_PART_TYPES = new Set([...VISION_IMAGE_TYPES, ...VISION_DOC_TYPES]);
 
 // Recursively collect image parts from the MIME tree (inline + attached).
 // Returns raw descriptor objects — no data fetching here.
@@ -4046,7 +4053,7 @@ const IMAGE_HEAVY_BODY_MAX = 1500;
 
 function collectImageParts(payload, parts = []) {
   const mime = (payload.mimeType || '').toLowerCase().split(';')[0].trim();
-  if (VISION_IMAGE_TYPES.has(mime) && (payload.body?.data || payload.body?.attachmentId)) {
+  if (VISION_PART_TYPES.has(mime) && (payload.body?.data || payload.body?.attachmentId)) {
     parts.push({
       mimeType: mime === 'image/jpg' ? 'image/jpeg' : mime,
       inlineData: payload.body.data || null,
@@ -4063,10 +4070,17 @@ function collectImageParts(payload, parts = []) {
 async function fetchEmailImages(payload, gmail, messageId) {
   const MAX_IMAGES = 3;
   const MAX_SIZE_BYTES = 1024 * 1024; // 1 MB
+  // A one-megabyte ceiling suits inline images, where anything larger is almost
+  // always a marketing graphic. A PDF newsletter is routinely bigger than that
+  // and is exactly the thing worth reading, so it gets its own headroom.
+  const MAX_DOC_BYTES = 4 * 1024 * 1024;
   const rawParts = collectImageParts(payload);
-  // Prefer smaller images; skip oversized ones (large marketing graphics rarely help)
+  const limitFor = (p) => VISION_DOC_TYPES.has(p.mimeType) ? MAX_DOC_BYTES : MAX_SIZE_BYTES;
   const eligible = rawParts
-    .filter(p => p.size === 0 || p.size <= MAX_SIZE_BYTES)
+    .filter(p => p.size === 0 || p.size <= limitFor(p))
+    // A document is the likelier place for a schedule than a signature logo, so
+    // if both are attached the document must not lose its slot to the logo.
+    .sort((a, b) => (VISION_DOC_TYPES.has(b.mimeType) ? 1 : 0) - (VISION_DOC_TYPES.has(a.mimeType) ? 1 : 0))
     .slice(0, MAX_IMAGES);
   if (!eligible.length) return [];
 
@@ -4164,13 +4178,15 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
 
   const context = [dateContext, rosterContext].filter(Boolean).join('\n\n');
   const promptText = images.length > 0
-    ? `${FULL_EXTRACTION_PROMPT}\n\n${context}\n\nEmail text (may be minimal — event details may be in the attached image(s)):\n${textContent}`
+    ? `${FULL_EXTRACTION_PROMPT}\n\n${context}\n\nEmail text (may be minimal — event details may be in the attached image(s) or PDF):\n${textContent}`
     : `${FULL_EXTRACTION_PROMPT}\n\n${context}\n\nEmail:\n${textContent}`;
 
   const messageContent = images.length > 0
     ? [
         { type: 'text', text: promptText },
-        ...images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.base64data } })),
+        ...images.map(img => (VISION_DOC_TYPES.has(img.mimeType)
+          ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: img.base64data } }
+          : { type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.base64data } })),
       ]
     : promptText;
 

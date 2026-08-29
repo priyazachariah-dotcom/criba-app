@@ -377,7 +377,16 @@ function exclusionPrompt(candidates) {
 // this family in the grade this event is for, and has the user asked Criba to
 // stop showing events like it. Both hold the event back rather than discard it
 // — it still reaches the queue with the reason attached, one click from added.
-function eventRelevance(text, members, exclusions = [], senderEmail = null) {
+function eventRelevance(text, members, exclusions = [], senderEmail = null, audience = 'you') {
+  // A digest carries other people's business next to the reader's own. The two
+  // previous questions could not tell them apart: a neighbour's ticket sale
+  // mentions no grade and comes from a newsletter the user deliberately
+  // subscribes to, so it passed both checks and was written straight to her
+  // calendar. Ownership is a third question, and it has to be asked first —
+  // an event that is not hers is not made hers by matching a grade.
+  if (audience === 'third_party') {
+    return { relevant: false, reason: 'this looks like someone else\u2019s event, mentioned in a newsletter' };
+  }
   const base = gradeRelevance(text, members);
   if (!base.relevant) return base;
 
@@ -982,6 +991,27 @@ For each extracted item return a JSON object with:
 - old_title (string | null) — for cancellation/reschedule: the title of the event being cancelled or changed, as stated in the email; null for new_event
 - old_date (YYYY-MM-DD | null) — for cancellation/reschedule: the original date of the event being changed; null if not stated or new_event
 - old_time (HH:MM 24hr | null) — for cancellation/reschedule: the original time of the event being changed; null if not stated or new_event
+- audience ("you" | "open" | "third_party") — see Rule 10. Default to "you" when unsure.
+
+Rule 10: Whose event is this? A newsletter, digest or mailing list carries
+other people's business alongside the reader's own. A neighbourhood digest
+saying "I have two tickets to sell for a show tomorrow at 16:00" is a real
+timed item — for the person selling them. It is not the reader's event and
+must never land on the reader's calendar as though it were.
+
+Still extract it. Do not skip it. Label it instead, with the "audience" field:
+- "you" — the reader or their family is invited, expected, affected, or
+  responsible. Anything addressed to them, their child, their class, their
+  team, their household, or their subscription. This is the normal case.
+- "open" — a genuine community happening the reader could choose to attend:
+  a school field day, a town fair, a library event, a public meeting.
+- "third_party" — belongs to a specific OTHER person and involves the reader
+  only as a bystander reading about it. Classified ads and items for sale,
+  someone else's appointment, garage sales, "my daughter's recital", a
+  stranger's request for help at a stated time, another household's plans.
+
+When genuinely unsure between "you" and "third_party", choose "you". Holding
+back one of the reader's own events is worse than showing one extra.
 
 Rule 9: Cancellations and reschedules. If the email says "cancelled", "called off", "postponed", "rescheduled", "moved to", "new date", etc., set intent accordingly. For cancellations, title/date/time should reflect the event as it was (what is being cancelled). For reschedules, title/date/time should reflect the NEW event details, and old_title/old_date/old_time should reflect what it was before.
 
@@ -1030,6 +1060,10 @@ function normalizeExtractedEvent(ev) {
     recurring_note: type === 'recurring' ? (ev.recurring_note || '') : '',
     notes: ev.notes || null,
     source_type: ev.source_type || null,
+    // Anything the model did not label, or labelled with a value we do not
+    // recognise, is treated as the user's own. An unknown value must never be
+    // the reason an event is withheld.
+    audience: ['you', 'open', 'third_party'].includes(ev.audience) ? ev.audience : 'you',
     recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
   };
 }
@@ -6798,7 +6832,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // your family should cost you a click, not an event.
           const relevance = eventRelevance(
             [ev.title, ev.notes, subject].filter(Boolean).join(' '), familyMembers,
-            exclusionRules, senderEmail);
+            exclusionRules, senderEmail, ev.audience);
 
           let calEventId = null;
           // The check above only saw the target calendar; autoWriteToCalendar

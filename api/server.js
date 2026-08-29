@@ -172,6 +172,14 @@ async function callClaude(email, params, label = 'call') {
       // Comfortably longer than a day so the key survives timezone edges,
       // short enough that it cannot accumulate forever.
       await redis.expire(key, 7 * 24 * 60 * 60);
+      // Broken down by call site as well as totalled. "You spent $4 today" is
+      // not actionable; "$3.80 of it was gmail-extract" says which lever to
+      // pull. Counted per label and per call so an unexpectedly chatty path
+      // shows up as a call count, not just a number.
+      const bd = `${key}:by`;
+      await redis.hincrby(bd, `${label}:micro`, micro);
+      await redis.hincrby(bd, `${label}:calls`, 1);
+      await redis.expire(bd, 7 * 24 * 60 * 60);
     }
   } catch (meterErr) {
     // A meter failure must not fail the user's extraction. It is logged loudly
@@ -5424,6 +5432,40 @@ app.post('/api/gmail/reconnect', requireAuth, async (req, res) => {
     console.error('[Gmail reconnect] Failed:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// GET /api/spend — what this account has cost today, and which paths caused it.
+// The cap was shipped without any way to read the meter, which left the user
+// asking "why is today expensive?" with the answer sitting unreadable in Redis.
+app.get('/api/spend', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const days = Math.min(7, Math.max(1, Number(req.query.days) || 7));
+  const out = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    const key = `spendMicroUsd:${String(email).toLowerCase()}:${d}`;
+    const total = Number(await redis.get(key)) || 0;
+    const raw = (await redis.hgetall(`${key}:by`)) || {};
+    const byLabel = {};
+    for (const [k, v] of Object.entries(raw)) {
+      const [label, field] = k.split(':');
+      byLabel[label] = byLabel[label] || { usd: 0, calls: 0 };
+      if (field === 'micro') byLabel[label].usd = Number(v) / 1e6;
+      if (field === 'calls') byLabel[label].calls = Number(v);
+    }
+    out.push({ date: d, usd: total / 1e6, byLabel });
+  }
+  const today = out[0];
+  res.json({
+    email, cap: DAILY_SPEND_CAP_USD,
+    todayUsd: today.usd, remainingUsd: Math.max(0, DAILY_SPEND_CAP_USD - today.usd),
+    capReached: today.usd >= DAILY_SPEND_CAP_USD,
+    // Stated plainly: the meter only knows what it has seen. Spend from before
+    // it shipped is not here, and reading this as a full history would
+    // understate a day that was mostly billed before deploy.
+    meteringSince: 'the daily spend cap deploy — earlier spend is not recorded here',
+    days: out,
+  });
 });
 
 // GET /api/gmail/watch/status — diagnostic: check Redis watch state for the logged-in user

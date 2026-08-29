@@ -5633,6 +5633,32 @@ app.get('/api/cron/gmail', async (req, res) => {
             console.error(`[Gmail disconnect] No refresh token found for ${email} — marking disconnected`);
           }
         }
+      } else {
+        // In the watched set but holding no watch record. Google keeps pushing
+        // notifications because the watch exists on ITS side; Criba just has no
+        // cursor to interpret them with, so every delivery aborts at the top of
+        // runGmailExtraction and returns done. Nothing retries, nothing is
+        // flagged, and the user's screen looks healthy while not one email is
+        // ever processed. The old code tested `if (watchDataStr)` and offered no
+        // else, so this state was permanent: the one case that most needs
+        // re-registering was the only one that could never get it.
+        const refreshToken = await redis.get(`refreshToken:${email}`);
+        if (refreshToken) {
+          try {
+            await registerGmailWatch(email, refreshToken);
+            renewedCount++;
+            await redis.del(`gmailDisconnected:${email}`);
+            console.warn(`[Gmail watch] ${email} was in the watched set with no watch record — re-registered`);
+          } catch (watchErr) {
+            await redis.set(`gmailDisconnected:${email}`, new Date().toISOString());
+            console.error(`[Gmail watch] re-register failed for ${email}:`, watchErr.message);
+          }
+        } else {
+          // Nothing can be rebuilt without a token. Say so on screen rather
+          // than leaving a mailbox that silently processes nothing.
+          await redis.set(`gmailDisconnected:${email}`, new Date().toISOString());
+          console.error(`[Gmail disconnect] ${email} has no watch record and no refresh token`);
+        }
       }
 
       // Drain anything a previous run had to defer. Without this a mailbox

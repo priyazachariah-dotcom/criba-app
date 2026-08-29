@@ -104,12 +104,17 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // roughly 57 emails. A full 150-email scan costs about $13 and WILL hit this —
 // deliberately. A first full scan is a rare, deliberate act that can be raised
 // for; an unattended loop billing $35 per webhook fire is not.
-// How old an email may be and still be worth extracting on the webhook path.
-// The webhook exists to catch new mail; anything older arrived through a gap
-// in the cursor, which is a fault to be recovered from cheaply, not a backlog
-// worth paying full extraction price for. A deliberate historical sweep is
-// what the backfill scan is for, and that one the user starts on purpose.
-const WEBHOOK_MAX_EMAIL_AGE_DAYS = Number(process.env.WEBHOOK_MAX_EMAIL_AGE_DAYS || 3);
+// How old an email may be and still be extracted on the webhook path.
+//
+// 24 hours, and it is a hard product rule rather than a tuning knob. The
+// webhook exists to catch NEW mail. Anything older reached it through a gap in
+// the cursor, which is a fault to recover from cheaply — not a backlog worth
+// paying full extraction price for, and not something to crowd the user's
+// review queue with events she dealt with weeks ago.
+//
+// A deliberate historical sweep is what the backfill scan is for, and the user
+// starts that one on purpose, knowing what it costs.
+const WEBHOOK_MAX_EMAIL_AGE_DAYS = Number(process.env.WEBHOOK_MAX_EMAIL_AGE_DAYS || 1);
 
 const DAILY_SPEND_CAP_USD = Number(process.env.DAILY_SPEND_CAP_USD || 5);
 

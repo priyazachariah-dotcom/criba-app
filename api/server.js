@@ -90,9 +90,102 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Shown verbatim they are unreadable; swallowed entirely they leave a silent
 // zero. Translate the ones a user can actually act on, and pass anything else
 // through trimmed rather than inventing a reassuring summary for it.
+// ── Daily spend cap ───────────────────────────────────────────────────────
+//
+// Every cost bug found so far failed the same way: it spent money silently.
+// A pinned history cursor re-walked 399 messages every few minutes for hours
+// and nothing anywhere said so; the first signal was the bill. This is the
+// backstop that does not depend on having found every such bug. It measures
+// real usage returned by the API — not estimates — and refuses to start more
+// work once a user has cost more than the ceiling in a day.
+
+// $5 is a runaway-loop backstop, not a normal-usage budget. For scale: at the
+// current EXTRACTION_CHAR_LIMIT one extraction costs about $0.09, so this is
+// roughly 57 emails. A full 150-email scan costs about $13 and WILL hit this —
+// deliberately. A first full scan is a rare, deliberate act that can be raised
+// for; an unattended loop billing $35 per webhook fire is not.
+const DAILY_SPEND_CAP_USD = Number(process.env.DAILY_SPEND_CAP_USD || 5);
+
+// Dollars per million tokens. An unrecognised model is priced at the most
+// expensive tier we know of: an unknown model must never be silently cheap,
+// because that turns the cap into a no-op exactly when it is most needed.
+const MODEL_PRICING = {
+  'claude-opus-4-7': { in: 5, out: 25 },
+  'claude-opus-4-6': { in: 5, out: 25 },
+  'claude-opus-4-5': { in: 5, out: 25 },
+  'claude-sonnet-4-6': { in: 3, out: 15 },
+  'claude-haiku-4-5': { in: 1, out: 5 },
+};
+const FALLBACK_PRICING = { in: 5, out: 25 };
+
+// Marker string. The webhook aborts a whole run on this rather than retrying
+// per message, and summariseApiError turns it into something a user can read.
+const SPEND_CAP_ERROR = 'DAILY_SPEND_CAP_REACHED';
+
+function spendKey(email) {
+  const day = new Date().toISOString().slice(0, 10);
+  return `spendMicroUsd:${String(email || 'unattributed').toLowerCase()}:${day}`;
+}
+
+// Micro-dollars as an integer, so Redis INCRBY stays exact. Floating-point
+// cents accumulated over thousands of calls drift.
+function costMicroUsd(model, usage) {
+  const p = MODEL_PRICING[model] || FALLBACK_PRICING;
+  const cacheRead = Number(usage?.cache_read_input_tokens || 0);
+  const cacheWrite = Number(usage?.cache_creation_input_tokens || 0);
+  const inTok = Number(usage?.input_tokens || 0);
+  const outTok = Number(usage?.output_tokens || 0);
+  // Cache reads bill at ~0.1x and cache writes at ~1.25x. Neither is in use
+  // yet, but counting them now means enabling caching later cannot quietly
+  // desynchronise the meter from the invoice.
+  const inCost = (inTok + cacheWrite * 1.25 + cacheRead * 0.1) * p.in;
+  const outCost = outTok * p.out;
+  return Math.ceil((inCost + outCost));
+}
+
+async function getSpendTodayUsd(email) {
+  const v = Number(await redis.get(spendKey(email))) || 0;
+  return v / 1e6;
+}
+
+// Called before work starts, not per call, so a user who is already over
+// budget is told once rather than discovering it mid-run.
+async function spendBudgetState(email) {
+  const spent = await getSpendTodayUsd(email);
+  return { spent, cap: DAILY_SPEND_CAP_USD, exceeded: spent >= DAILY_SPEND_CAP_USD };
+}
+
+// The only path to Claude. Every call site goes through here so that adding a
+// new feature cannot accidentally create an unmetered one.
+async function callClaude(email, params, label = 'call') {
+  const { exceeded, spent } = await spendBudgetState(email);
+  if (exceeded) {
+    console.error(`[spend] BLOCKED ${label} for ${email} — $${spent.toFixed(2)} of $${DAILY_SPEND_CAP_USD} used today`);
+    throw new Error(`${SPEND_CAP_ERROR}: $${spent.toFixed(2)} of $${DAILY_SPEND_CAP_USD.toFixed(2)} daily limit used`);
+  }
+  const response = await anthropic.messages.create(params);
+  try {
+    const micro = costMicroUsd(params.model, response?.usage);
+    if (micro > 0) {
+      const key = spendKey(email);
+      await redis.incrby(key, micro);
+      // Comfortably longer than a day so the key survives timezone edges,
+      // short enough that it cannot accumulate forever.
+      await redis.expire(key, 7 * 24 * 60 * 60);
+    }
+  } catch (meterErr) {
+    // A meter failure must not fail the user's extraction. It is logged loudly
+    // because an unmetered call is exactly what this whole mechanism exists to
+    // prevent, but the work that already succeeded still stands.
+    console.error(`[spend] failed to record usage for ${email}:`, meterErr.message);
+  }
+  return response;
+}
+
 function summariseApiError(msg) {
   const m = String(msg || '');
   if (!m) return '';
+  if (m.includes(SPEND_CAP_ERROR)) return `Criba paused itself — ${m.split(': ').slice(1).join(': ')}. This resets at midnight UTC. Raise DAILY_SPEND_CAP_USD if you need a bigger allowance.`;
   if (/credit balance is too low/i.test(m)) return 'Anthropic credits exhausted — top up at console.anthropic.com under Plans & Billing.';
   if (/rate.?limit|429/i.test(m)) return 'Anthropic rate limit reached — wait a minute and scan again.';
   if (/overloaded|529/i.test(m)) return 'Anthropic is overloaded right now — try again shortly.';
@@ -2603,7 +2696,7 @@ function getResponseText(response) {
   return textBlock.text;
 }
 
-async function classifyIcalEventsWithAI(rawEvents) {
+async function classifyIcalEventsWithAI(rawEvents, ownerEmail = null) {
   const compact = rawEvents.map((r, index) => ({
     index,
     title: r.title,
@@ -2622,11 +2715,11 @@ Events:
 ${JSON.stringify(compact)}
 
 Return ONLY valid JSON, no markdown, in this shape: {"results":[{"index":0,"type":"holiday|break|timed|minimum_day|recurring|other","category":"Category name for grouping in the review queue","recurring_note":"string or null (only for type=recurring)"}]}. Include every index exactly once.`;
-  const response = await anthropic.messages.create({
+  const response = await callClaude(ownerEmail, {
     model: 'claude-opus-4-5',
     max_tokens: Math.min(8192, 1000 + rawEvents.length * 40),
     messages: [{ role: 'user', content: prompt }],
-  });
+  }, 'ical-classify');
   const text = getResponseText(response);
   const parsed = JSON.parse(text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim());
   if (!Array.isArray(parsed.results)) throw new Error('AI classification response missing results array');
@@ -2706,10 +2799,10 @@ function icalFingerprint(ev) {
 // Classification is best-effort. If Anthropic is down the import still
 // succeeds using the feed's own categories — a previously non-AI path should
 // not start failing just because it gained an AI step.
-async function classifyIcalEvents(rawEvents) {
+async function classifyIcalEvents(rawEvents, ownerEmail = null) {
   let classifications;
   try {
-    classifications = await classifyIcalEventsWithAI(rawEvents);
+    classifications = await classifyIcalEventsWithAI(rawEvents, ownerEmail);
   } catch (aiErr) {
     console.error('iCal AI classification failed, falling back to raw categories:', aiErr.message);
     classifications = rawEvents.map((r, index) => ({ index, type: 'other', category: r.source_category, recurring_note: null }));
@@ -2850,7 +2943,7 @@ async function syncIcalCalendar(userEmail, cal) {
     changed.push({ f, ...match });
   }
   if (changed.length) {
-    const reclassified = await classifyIcalEvents(changed.map(c => c.f));
+    const reclassified = await classifyIcalEvents(changed.map(c => c.f), userEmail);
     const updates = [];
     for (let i = 0; i < changed.length; i++) {
       const { id, ev } = changed[i];
@@ -2893,7 +2986,7 @@ async function syncIcalCalendar(userEmail, cal) {
   // 2. New events — classify, store, write.
   const fresh = feed.filter(f => f.uid && !oursByUid.has(f.uid));
   if (fresh.length) {
-    const classified = await classifyIcalEvents(fresh);
+    const classified = await classifyIcalEvents(fresh, userEmail);
     const pairs = classified.map(ev => {
       const evId = randomUUID();
       return [evId, {
@@ -2942,7 +3035,7 @@ app.post('/api/calendars/add-ical', requireAuth, async (req, res) => {
     const rawEvents = await fetchIcalEvents(url);
     if (rawEvents.length === 0) return res.status(400).json({ error: 'No upcoming events found in this calendar' });
 
-    const finalEvents = await classifyIcalEvents(rawEvents);
+    const finalEvents = await classifyIcalEvents(rawEvents, req.user.email);
 
     const categoryMap = new Map();
     for (const ev of finalEvents) {
@@ -3007,13 +3100,13 @@ Rules:
 - Do NOT include events that simply happen on a date. Only dates when the regular activity is NOT running.
 - If the document lists no closures at all, return {"closures":[]}.`;
 
-async function extractClosures(contentBlock, todayStr) {
+async function extractClosures(contentBlock, todayStr, ownerEmail = null) {
   try {
-    const resp = await anthropic.messages.create({
+    const resp = await callClaude(ownerEmail, {
       model: 'claude-fable-5',
       max_tokens: 2048,
       messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: `Today is ${todayStr}.\n\n${CLOSURES_PROMPT}` }] }],
-    });
+    }, 'closures');
     const raw = JSON.parse(getResponseText(resp).replace(/```json\n?/g, '').replace(/```\n?/g, '').trim());
     return Array.isArray(raw?.closures) ? raw.closures : [];
   } catch (err) {
@@ -3094,15 +3187,15 @@ If they gave a time, a duration, or said the event repeats, use that. If they na
     if (pdfBlock) content.push(pdfBlock);
     content.push({ type: 'text', text: `${sourceText}\n\n${FULL_EXTRACTION_PROMPT}` });
 
-    const response = await anthropic.messages.create({
+    const response = await callClaude(req.user.email, {
       model: 'claude-fable-5',
       max_tokens: 4096,
       messages: [{ role: 'user', content }],
-    });
+    }, 'upload-extract');
     // Closure detection reads a document for "school closed" ranges. With no
     // document there is nothing to read, so skip the call rather than spend a
     // round trip proving a typed sentence contains no closure calendar.
-    const closures = pdfBlock ? await extractClosures(pdfBlock, today) : [];
+    const closures = pdfBlock ? await extractClosures(pdfBlock, today, req.user.email) : [];
     const removals = closures.length
       ? matchClosuresToEvents(closures, await liveCalendarEvents(req.user.email))
       : [];
@@ -4269,7 +4362,7 @@ function processedMessageKey(email, messageId) {
 
 // Call Claude to extract calendar events from a single email.
 // When images are supplied (image-heavy emails / flyers), uses multimodal API.
-async function extractGmailEvents(body, senderName, senderEmail, subject, images = [], dateSent = '', familyNames = []) {
+async function extractGmailEvents(body, senderName, senderEmail, subject, images = [], dateSent = '', familyNames = [], ownerEmail = null) {
   const textContent = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, EXTRACTION_CHAR_LIMIT);
 
   // Anchor relative dates. Without this the model sees "Monday" or "August 12"
@@ -4307,7 +4400,7 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
       ]
     : promptText;
 
-  const response = await anthropic.messages.create({
+  const response = await callClaude(ownerEmail, {
     model: 'claude-fable-5',
     // 2048 was not enough. The budget is shared with the model's thinking
     // tokens, so a multi-event email (a week of practices, a weekly digest)
@@ -4315,7 +4408,7 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
     // reply came back cut off mid-array and the parse below threw.
     max_tokens: 8192,
     messages: [{ role: 'user', content: messageContent }]
-  });
+  }, 'gmail-extract');
   const text = getResponseText(response).trim();
   if (response.stop_reason === 'max_tokens') {
     throw new Error(`Claude response truncated at max_tokens (${text.length} chars) — event list too long to fit`);
@@ -5060,7 +5153,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
 
       console.log(`[gmail-process] EXTRACT msg=${messageId} calling Claude subject="${subject}" images=${images.length}`);
       await traceEmail(email, { stage: 'SENT-TO-AI', via: 'webhook', messageId, subject, from, bodyLen: body.length, images: images.length });
-      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images, dateSent, gpFamilyNames);
+      const extracted = await extractGmailEvents(body, senderName, senderEmail, subject, images, dateSent, gpFamilyNames, email);
       console.log(`[gmail-process] EXTRACT msg=${messageId} Claude returned ${extracted.length} event(s)`);
       if (!extracted.length) {
         await traceEmail(email, { stage: 'DROPPED', via: 'webhook', messageId, subject, from, note: 'no events returned' });
@@ -5184,7 +5277,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         console.warn(`[gmail-process] messageId=${messageId} no longer exists — giving up`);
         await traceEmail(email, { stage: 'DROPPED', via: 'webhook', messageId, reason: 'message-no-longer-in-gmail' });
         permanentlyFailed = true;
-      } else if (/credit balance is too low|invalid x-api-key|authentication_error/i.test(err.message || '')) {
+      } else if (err.message?.includes(SPEND_CAP_ERROR) || /credit balance is too low|invalid x-api-key|authentication_error/i.test(err.message || '')) {
         // Config-level, not message-level: every remaining message will fail
         // the same way, so stop rather than paying for 399 identical errors.
         fatalApiError = summariseApiError(err.message);
@@ -6202,7 +6295,7 @@ app.get('/api/debug/extract', requireAuth, async (req, res) => {
     const preFilter = scanForDateContent(`${subject} ${body.slice(0, 5000)}`);
     let extracted = null, extractError = null;
     try {
-      extracted = await extractGmailEvents(body, h('from'), h('from'), subject, [], dateSent);
+      extracted = await extractGmailEvents(body, h('from'), h('from'), subject, [], dateSent, [], req.user.email);
     } catch (err) {
       extractError = err.message;
     }
@@ -6460,6 +6553,15 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // "8 sent to AI, 0 new events" — the exact words a mailbox with nothing in
   // it produces. The user checked her inbox three times before the trace
   // revealed the API had never run.
+  // Checked before any work, so an over-budget user is told plainly instead of
+  // watching a scan grind through 150 messages and report zero.
+  const budget = await spendBudgetState(email);
+  if (budget.exceeded) {
+    return res.json({ ok: true, runId, days, scanned: 0, skippedCategory: 0, skippedPreFilter: 0,
+      skippedDedup: 0, claudeCalls: 0, claudeErrors: 0, eventsStored: 0, totalFound: 0, hitLimit: false,
+      spendCapReached: true, spentToday: Number(budget.spent.toFixed(4)), spendCap: budget.cap,
+      lastClaudeError: summariseApiError(`${SPEND_CAP_ERROR}: $${budget.spent.toFixed(2)} of $${budget.cap.toFixed(2)} daily limit used`) });
+  }
   let claudeCalls = 0, claudeErrors = 0, lastClaudeError = '', eventsStored = 0, hitLimit = false;
   const dryRunMessages = [];
 
@@ -6658,7 +6760,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           from: c.from, attachments: c.imageParts.length, droppedForSize: images.droppedForSize || 0 });
       }
       const t0 = Date.now();
-      const extracted = await extractGmailEvents(c.body, c.senderName, c.senderEmail, c.subject, images, c.dateSent, familyMembers.map(m => m.name).filter(Boolean));
+      const extracted = await extractGmailEvents(c.body, c.senderName, c.senderEmail, c.subject, images, c.dateSent, familyMembers.map(m => m.name).filter(Boolean), email);
       return { extracted, claudeMs: Date.now() - t0, imageCount: images.length };
     }));
     console.log(`[backfill] wave of ${wave.length} finished in ${Date.now() - waveStart}ms elapsed=${Date.now() - startedAt}`);

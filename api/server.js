@@ -104,6 +104,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // roughly 57 emails. A full 150-email scan costs about $13 and WILL hit this —
 // deliberately. A first full scan is a rare, deliberate act that can be raised
 // for; an unattended loop billing $35 per webhook fire is not.
+// How old an email may be and still be worth extracting on the webhook path.
+// The webhook exists to catch new mail; anything older arrived through a gap
+// in the cursor, which is a fault to be recovered from cheaply, not a backlog
+// worth paying full extraction price for. A deliberate historical sweep is
+// what the backfill scan is for, and that one the user starts on purpose.
+const WEBHOOK_MAX_EMAIL_AGE_DAYS = Number(process.env.WEBHOOK_MAX_EMAIL_AGE_DAYS || 3);
+
 const DAILY_SPEND_CAP_USD = Number(process.env.DAILY_SPEND_CAP_USD || 5);
 
 // Dollars per million tokens. An unrecognised model is priced at the most
@@ -5144,6 +5151,26 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       if (alreadyProcessed) {
         console.log(`[gmail-process] DEDUP SKIP msg=${messageId} fingerprint=${fingerprint.slice(0, 12)}… already extracted for another user`);
         await traceEmail(email, { stage: 'SKIP-DEDUP', via: 'webhook', messageId, subject, from });
+        completed = true;
+        continue;
+      }
+      // A stale cursor is not a licence to bill for ancient mail.
+      //
+      // The history walk starts wherever the stored cursor happens to be, and
+      // that cursor can be hours or days behind after any incident that stopped
+      // it advancing. When it finally moves, every message in the gap is
+      // extracted at full price — mail the user has long since read and dealt
+      // with. Nothing bounded that: the webhook had no notion of age at all.
+      //
+      // Bounded here, after the metadata fetch (cheap) and before the image
+      // fetch and the Claude call (not). An old message is marked done so the
+      // cursor still advances past it rather than sticking again.
+      const sentMs = dateSent ? Date.parse(dateSent) : NaN;
+      const ageDays = Number.isFinite(sentMs) ? (Date.now() - sentMs) / 86400000 : null;
+      if (ageDays !== null && ageDays > WEBHOOK_MAX_EMAIL_AGE_DAYS) {
+        console.warn(`[gmail-process] SKIP-OLD msg=${messageId} age=${ageDays.toFixed(1)}d subject="${subject.slice(0, 60)}"`);
+        await traceEmail(email, { stage: 'SKIP-OLD', via: 'webhook', messageId, subject, from,
+          ageDays: Number(ageDays.toFixed(1)), limitDays: WEBHOOK_MAX_EMAIL_AGE_DAYS });
         completed = true;
         continue;
       }

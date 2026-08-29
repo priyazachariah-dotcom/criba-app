@@ -4903,8 +4903,24 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
 
   const eventsStore = getUserEvents(email);
   let allProcessed = historyComplete;
+  // A failure that can never succeed must not pin the cursor. Holding it back
+  // on ANY failure was meant to stop mail being lost, and it does — but a
+  // deleted message (404) or an exhausted API key fails identically on every
+  // retry, so the cursor stayed put permanently, the history range widened by
+  // the hour, and every webhook re-walked and re-billed the whole thing. Give
+  // up on an individual message after a few honest attempts, and abort the run
+  // outright when the failure is one that will hit every remaining message.
+  const MAX_MESSAGE_ATTEMPTS = 3;
+  let fatalApiError = '';
 
   for (const messageId of messageIds) {
+    // One bad API key or an empty balance fails all 399 messages in exactly
+    // the same way. Grinding through the rest bills for every one of them.
+    if (fatalApiError) {
+      console.error(`[gmail-process] email=${email} ABORT — ${fatalApiError}`);
+      allProcessed = false;
+      break;
+    }
     // Stop before the platform stops us. Whatever is left stays unclaimed and
     // uncommitted, and the cursor stays put, so the next run sees it again.
     if (Date.now() > deadline) {
@@ -4933,6 +4949,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       continue;
     }
     let completed = false;
+    let permanentlyFailed = false;
 
     try {
       const msgRes = await gmail.users.messages.get({
@@ -5127,9 +5144,36 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       completed = true;
     } catch (err) {
       console.error(`[gmail-process] ERROR messageId=${messageId} email=${email}:`, err.message, err.stack?.split('\n')[1]);
+      const status = err.code || err.response?.status;
+      // The message is gone from Gmail. No number of retries brings it back.
+      if (status === 404 || status === 410) {
+        console.warn(`[gmail-process] messageId=${messageId} no longer exists — giving up`);
+        await traceEmail(email, { stage: 'DROPPED', via: 'webhook', messageId, reason: 'message-no-longer-in-gmail' });
+        permanentlyFailed = true;
+      } else if (/credit balance is too low|invalid x-api-key|authentication_error/i.test(err.message || '')) {
+        // Config-level, not message-level: every remaining message will fail
+        // the same way, so stop rather than paying for 399 identical errors.
+        fatalApiError = summariseApiError(err.message);
+      } else {
+        // Transient until proven otherwise — but not forever. Count attempts
+        // so a message that always fails cannot hold the mailbox hostage.
+        const failKey = `gmailMsgFail:${email}:${messageId}`;
+        const attempts = Number(await redis.incr(failKey)) || 1;
+        await redis.expire(failKey, 30 * 24 * 60 * 60);
+        if (attempts >= MAX_MESSAGE_ATTEMPTS) {
+          console.error(`[gmail-process] messageId=${messageId} failed ${attempts}x — giving up`);
+          await traceEmail(email, { stage: 'ERROR', via: 'webhook', messageId,
+            error: `gave up after ${attempts} attempts: ${err.message}`, deadLettered: true });
+          permanentlyFailed = true;
+        }
+      }
     } finally {
-      if (completed) {
+      // Marked done not because it worked, but because retrying it forever
+      // costs money and blocks every message behind it. The trace above records
+      // that it was abandoned, so it is not silently forgotten.
+      if (completed || permanentlyFailed) {
         await redis.set(`gmailMsgDone:${email}:${messageId}`, '1', 'EX', 30 * 24 * 60 * 60);
+        await redis.del(`gmailMsgFail:${email}:${messageId}`);
       } else {
         // Hand the message back. A failure here must leave no trace that would
         // make a later run mistake it for work already done.

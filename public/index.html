@@ -4052,7 +4052,14 @@ async function saveEdit(id) {
   try {
     const res = await fetch('/api/events/update', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (res.ok) {
-      if (status) status.innerHTML = '<span class="success-msg">✓ Updated</span>';
+      // "Updated" is the wrong word when the event was gone from Google and
+      // has just been put back. The user who deleted it by accident needs to
+      // be told it is actually there again, not given the same quiet tick she
+      // gets for a title change.
+      const body = await res.json().catch(() => ({}));
+      if (status) status.innerHTML = body.recreated
+        ? '<span class="success-msg">✓ Re-added to your Google Calendar</span>'
+        : '<span class="success-msg">✓ Updated</span>';
       await loadRecentEvents();
     } else {
       const err = await res.json().catch(() => ({}));

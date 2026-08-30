@@ -2128,19 +2128,32 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     // edit that instead — preferring the series id over one expanded
     // occurrence, so the change lands on every occurrence.
     let adoptedSeries = false;
+    // Set when the event Criba is holding no longer exists on Google. The edit
+    // becomes a create rather than a dead end.
+    let recreateOnCalendar = false;
+    let recreateCalId = null;
     if (!event.calEventId) {
       const targetCalId = await resolveTargetCalendar(req.user.email);
       const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
         title: event.title, date: event.date, time: event.time || '',
       });
       if (!found?.id) {
-        return res.status(404).json({
-          error: 'Could not find this event on your Google Calendar — it may have been deleted or renamed there.',
-        });
+        // Deleting the event in Google used to strand it here permanently:
+        // Criba still listed it as SYNCED, the edit form still opened, and
+        // saving returned "could not find this event" with no way forward. The
+        // user was told what was wrong and offered no means of fixing it.
+        //
+        // Criba is holding every detail needed to put it back, so put it back.
+        // Re-creating something the user is actively trying to save is the
+        // outcome she asked for; the worst case is a duplicate she can delete,
+        // against a best case of a lost reminder she cannot recover.
+        recreateOnCalendar = true;
+        recreateCalId = targetCalId;
+      } else {
+        adoptedSeries = !!found.recurringEventId;
+        event.calEventId = found.recurringEventId || found.id;
+        event.gcalId = found.calendarId || targetCalId;
       }
-      adoptedSeries = !!found.recurringEventId;
-      event.calEventId = found.recurringEventId || found.id;
-      event.gcalId = found.calendarId || targetCalId;
     }
     // A field the client sent must win even when blank — that is how the user
     // clears an end date or turns a timed event into an all-day one. Falling
@@ -2193,12 +2206,24 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
         ? [ensureRecurrenceEnd(recurrenceRule, date, span.recurrenceEndDate)]
         : [];
     }
-    await calendar.events.patch({
-      calendarId: event.gcalId || 'primary',
-      eventId: event.calEventId,
-      sendUpdates: 'all',
-      resource,
-    });
+    if (recreateOnCalendar) {
+      // insert, not patch — there is nothing left on Google to patch. The new
+      // id is stored so the next edit is an ordinary one.
+      const remade = await calendar.events.insert({
+        calendarId: recreateCalId, sendUpdates: 'none', resource,
+      });
+      event.calEventId = remade.data.id;
+      event.gcalId = recreateCalId;
+      event.status = 'added';
+      console.log(`[update] re-created "${title}" on Google — it had been deleted there`);
+    } else {
+      await calendar.events.patch({
+        calendarId: event.gcalId || 'primary',
+        eventId: event.calEventId,
+        sendUpdates: 'all',
+        resource,
+      });
+    }
     event.title = title; event.date = date; event.time = time || '';
     event.end_date = finalEndDate; event.end_time = finalEndTime;
     event.location = location || '';
@@ -2211,7 +2236,7 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
       event.recurrence_end_date = recurrenceRule ? span.recurrenceEndDate : null;
     }
     await events.set(id, event);
-    res.json({ ok: true });
+    res.json({ ok: true, recreated: recreateOnCalendar });
   } catch (err) {
     console.error('Update error:', err.message);
     res.status(500).json({ error: 'Failed to update: ' + err.message });

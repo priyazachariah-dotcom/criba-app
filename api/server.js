@@ -500,6 +500,15 @@ function eventRelevance(text, members, exclusions = [], senderEmail = null, audi
   if (audience === 'third_party') {
     return { relevant: false, reason: 'this looks like someone else\u2019s event, mentioned in a newsletter' };
   }
+  // An opportunity is a date that only matters if she opts in. Three film
+  // festival submission deadlines, a fellowship application and a class action
+  // claim were written to her calendar in one afternoon, none of them anything
+  // she had signed up for. Extraction is asked to miss nothing, which is right
+  // for a school newsletter and catastrophic for an industry one: every issue
+  // carries a fresh crop of real dates that are not hers.
+  if (audience === 'opportunity') {
+    return { relevant: false, reason: 'an opportunity from a newsletter, not something you signed up for' };
+  }
   const base = gradeRelevance(text, members);
   if (!base.relevant) return base;
 
@@ -1104,7 +1113,7 @@ For each extracted item return a JSON object with:
 - old_title (string | null) — for cancellation/reschedule: the title of the event being cancelled or changed, as stated in the email; null for new_event
 - old_date (YYYY-MM-DD | null) — for cancellation/reschedule: the original date of the event being changed; null if not stated or new_event
 - old_time (HH:MM 24hr | null) — for cancellation/reschedule: the original time of the event being changed; null if not stated or new_event
-- audience ("you" | "open" | "third_party") — see Rule 10. Default to "you" when unsure.
+- audience ("you" | "open" | "third_party" | "opportunity") — see Rule 10. Default to "you" when unsure.
 
 Rule 10: Whose event is this? A newsletter, digest or mailing list carries
 other people's business alongside the reader's own. A neighbourhood digest
@@ -1122,6 +1131,19 @@ Still extract it. Do not skip it. Label it instead, with the "audience" field:
   only as a bystander reading about it. Classified ads and items for sale,
   someone else's appointment, garage sales, "my daughter's recital", a
   stranger's request for help at a stated time, another household's plans.
+- "opportunity" — an opening, offer or deadline the reader has NOT signed up
+  for. It is being advertised to them, not required of them. Submission
+  windows and application deadlines from an industry newsletter, fellowship
+  and grant deadlines, contests, webinars and promotional events, early-bird
+  pricing, class-action claim deadlines, "last chance to register".
+
+The test that separates "opportunity" from "you" is whether the reader has
+already committed. Homework for their child, a form their team asked them to
+fill in, an appointment they booked, their school's PE day — committed, so
+"you". A film festival submission deadline in a newsletter they subscribe to
+is an opportunity however real the date is: nothing happens to them if they
+ignore it. When a deadline would only matter if the reader chose to take part,
+and nothing in the content shows they already have, it is "opportunity".
 
 When genuinely unsure between "you" and "third_party", choose "you". Holding
 back one of the reader's own events is worse than showing one extra.
@@ -1176,7 +1198,7 @@ function normalizeExtractedEvent(ev) {
     // Anything the model did not label, or labelled with a value we do not
     // recognise, is treated as the user's own. An unknown value must never be
     // the reason an event is withheld.
-    audience: ['you', 'open', 'third_party'].includes(ev.audience) ? ev.audience : 'you',
+    audience: ['you', 'open', 'third_party', 'opportunity'].includes(ev.audience) ? ev.audience : 'you',
     recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
   };
 }

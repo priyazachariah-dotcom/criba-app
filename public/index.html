@@ -2321,11 +2321,27 @@ async function loadPendingEvents() {
   } catch {}
 }
 
+// Failure here used to be invisible: a non-ok response or a network error was
+// swallowed whole, the list was left exactly as it was, and the page reported
+// "Nothing here yet" — which reads as "you have no events" rather than "Criba
+// could not load them". Those need different answers from the user, so they
+// have to look different on screen.
+let recentLoadError = null;
 async function loadRecentEvents() {
   try {
     const res = await fetch('/api/events/recent');
-    if (res.ok) { recentEvents = await res.json(); renderRecent(); }
-  } catch {}
+    if (res.ok) {
+      recentEvents = await res.json();
+      recentLoadError = null;
+    } else if (res.status === 401) {
+      recentLoadError = 'Your session expired. Sign out and back in.';
+    } else {
+      recentLoadError = `Could not load your events (error ${res.status}).`;
+    }
+  } catch {
+    recentLoadError = 'Could not reach Criba. Check your connection and reload.';
+  }
+  renderRecent();
 }
 
 async function loadCalendars() {
@@ -3971,6 +3987,10 @@ function renderRecent() {
   // held in JS state, so nothing is lost by staying blank until then.
   if (!container) return;
   if (!pageIsActive('recent')) { container.innerHTML = ''; return; }
+  if (recentLoadError) {
+    container.innerHTML = `<div class="empty-state"><h3>Couldn\u2019t load your events</h3><p>${escHtml(recentLoadError)}</p></div>`;
+    return;
+  }
   if (!recentEvents.length) {
     container.innerHTML = `<div class="empty-state"><h3>Nothing here yet</h3><p>Events you approve will appear here for editing.</p></div>`;
     return;

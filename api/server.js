@@ -5547,6 +5547,40 @@ app.get('/api/spend', requireAuth, async (req, res) => {
   });
 });
 
+// GET /api/events/orphans — events Criba dismissed that are still on Google.
+//
+// Dismissing an event in the review queue only ever set status to 'dismissed'.
+// That was written when everything in the queue was a draft, and the comment
+// in dismissReviewEvent still says so. Under auto-write nothing in that queue
+// is a draft: every card is already on the calendar. So the X button left the
+// event sitting on Google while removing Criba's only handle on it — gone from
+// the review queue, gone from the edit feed, uneditable and undeletable from
+// inside Criba.
+//
+// This lists them, so an orphan can be found rather than merely suspected.
+app.get('/api/events/orphans', requireAuth, async (req, res) => {
+  const events = getUserEvents(req.user.email);
+  const all = await events.entries();
+  const orphans = all
+    .filter(([, ev]) => ev.status === 'dismissed' && ev.calEventId)
+    .map(([id, ev]) => ({ id, title: ev.title, date: ev.date, time: ev.time || '',
+      location: ev.location || '', source: ev.source || null, calEventId: ev.calEventId }))
+    .sort((a, b) => (a.date || '') < (b.date || '') ? 1 : -1);
+  res.json({ count: orphans.length, orphans });
+});
+
+// POST /api/events/restore — put a dismissed event back under Criba's control.
+// It never left Google; this only restores Criba's ability to see and edit it.
+app.post('/api/events/restore', requireAuth, async (req, res) => {
+  const events = getUserEvents(req.user.email);
+  const event = await events.get(req.body.id);
+  if (!event) return res.status(404).json({ error: 'Event not found' });
+  event.status = 'reviewed';
+  event.reviewed = true;
+  await events.set(req.body.id, event);
+  res.json({ ok: true, title: event.title, date: event.date });
+});
+
 // GET /api/gmail/watch/status — diagnostic: check Redis watch state for the logged-in user
 app.get('/api/gmail/watch/status', requireAuth, async (req, res) => {
   const email = req.user.email;

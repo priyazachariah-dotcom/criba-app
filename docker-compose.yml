@@ -1,0 +1,47 @@
+# Local dev stack: the Criba app + its Redis, together.
+#
+#   cp .env.example .env      # then fill in ANTHROPIC_API_KEY etc.
+#   docker compose up         # http://localhost:3000
+#
+# Redis runs in-container, so REDIS_URL is set here and overrides whatever is in
+# .env — you never point at a real Redis while developing. Source is bind-mounted
+# for live reload; node_modules stays inside the container.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Persist data across restarts so your queue/family/settings survive a
+    # `docker compose down` (remove this volume to start from a clean slate).
+    volumes:
+      - redis-data:/data
+    # Exposed only so you can inspect it from the host with redis-cli if you want.
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PORT=3000
+      # In-container Redis. Overrides any REDIS_URL in .env on purpose.
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "3000:3000"
+    volumes:
+      # Live-reload: host source over the image's copy...
+      - .:/app
+      # ...but keep the container's own node_modules (built for alpine).
+      - /app/node_modules
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:

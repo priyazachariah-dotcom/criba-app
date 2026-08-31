@@ -1969,12 +1969,16 @@ async function commitDismiss() {
 let _drEventId = null;
 let _drTimer = null;
 
-function showDismissReason(id, title) {
+function showDismissReason(id, title, opts = {}) {
   _drEventId = id;
   const box = document.getElementById('dismiss-reason');
   const q = document.getElementById('dr-q');
   if (!box || !q) return;
-  q.textContent = title ? `Why not "${title}"?` : 'Why not that one?';
+  // When the event was on the calendar, saying so is the whole point — the
+  // question alone reads as "noted" when the truth is "deleted".
+  q.textContent = opts.removed
+    ? (title ? `Removed "${title}" from your calendar. Why not?` : 'Removed from your calendar. Why not?')
+    : (title ? `Why not "${title}"?` : 'Why not that one?');
   document.getElementById('dr-note')?.classList.remove('visible');
   const input = document.getElementById('dr-note-input');
   if (input) input.value = '';
@@ -3874,11 +3878,22 @@ async function approveReviewEvent(id) {
 
 async function dismissReviewEvent(id) {
   const title = (pendingEvents.find(e => e.id === id) || {}).title;
-  try { await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) }); } catch {}
+  // The server decides what dismissal means, because only it knows whether the
+  // event reached Google. A draft is simply forgotten; anything already on the
+  // calendar is removed, and says so.
+  let removed = false;
+  try {
+    const res = await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
+    const body = await res.json().catch(() => ({}));
+    removed = !!body.removedFromCalendar;
+  } catch {}
   pendingEvents = pendingEvents.filter(e => e.id !== id);
   renderReviewNow();
-  // A draft was never on the calendar, so there is no undo toast to wait for.
-  showDismissReason(id, title);
+  // Deliberately not the undo toast: its Undo button is wired to the delete
+  // flow's pending timer, and a button that does nothing is worse than none.
+  // The removal is recoverable from the edit tab, where it now shows as
+  // cancelled rather than disappearing.
+  showDismissReason(id, title, { removed });
 }
 
 async function approveCancellation(id) {

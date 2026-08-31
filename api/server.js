@@ -2243,11 +2243,50 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
   }
 });
 
+// Dismissing meant one thing when this queue held drafts: forget a proposal
+// that was never written anywhere. Under auto-write most cards are already on
+// Google Calendar, and setting status to 'dismissed' on one of those was the
+// worst of both worlds — the event stayed on the calendar and left every screen
+// in Criba, since 'dismissed' appears in neither feed's status filter. Six of
+// them accumulated that way before anyone noticed.
+//
+// So dismissal now branches on the only fact that matters: is this actually on
+// the calendar? If it is, dismissing removes it, because that is what the user
+// pressing the button believes is happening. If it is not, nothing to remove.
 app.post('/api/events/dismiss', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
   const event = await events.get(req.body.id);
-  if (event) { event.status = 'dismissed'; await events.set(req.body.id, event); }
-  res.json({ ok: true });
+  if (!event) return res.json({ ok: true });
+
+  if (!event.calEventId) {
+    // A genuine draft. Nothing was written, so there is nothing to delete.
+    event.status = 'dismissed';
+    await events.set(req.body.id, event);
+    return res.json({ ok: true, removedFromCalendar: false });
+  }
+
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
+  } catch (err) {
+    // Already gone on Google is success, not failure — the end state is the
+    // one the user asked for either way.
+    const gone = err.message?.includes('410') || err.message?.includes('404')
+      || err.message?.includes('Resource has been deleted');
+    if (!gone) {
+      console.error('dismiss delete error:', err.message);
+      return res.status(500).json({ error: 'Could not remove this from your calendar: ' + err.message });
+    }
+  }
+
+  // 'cancelled', not 'dismissed'. Both mean the event is off the calendar, but
+  // 'cancelled' is in the edit feed's filter and 'dismissed' is in nothing. A
+  // removal the user can still see is a removal she can still reverse.
+  event.status = 'cancelled';
+  event.calEventId = null;
+  await events.set(req.body.id, event);
+  res.json({ ok: true, removedFromCalendar: true });
 });
 
 // ── Why was that dismissed? ───────────────────────────────────────────────
@@ -2425,14 +2464,16 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
       event.gcalId = found.calendarId || targetCalId;
     }
     await calendar.events.delete({ calendarId: event.gcalId || 'primary', eventId: event.calEventId });
-    event.status = 'dismissed';
+    // See the note on /api/events/dismiss: 'dismissed' is invisible in both
+    // feeds, so a deleted event became unfindable as well as gone.
+    event.status = 'cancelled';
     event.calEventId = null;
     await events.set(id, event);
     res.json({ ok: true });
   } catch (err) {
     if (err.message?.includes('410') || err.message?.includes('Resource has been deleted') || err.message?.includes('404')) {
-      // Already deleted from GCal — still mark as dismissed in Redis
-      event.status = 'dismissed';
+      // Already deleted from GCal — still record the removal in Redis
+      event.status = 'cancelled';
       event.calEventId = null;
       await events.set(id, event);
       return res.json({ ok: true });

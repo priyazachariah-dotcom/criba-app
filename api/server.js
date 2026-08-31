@@ -674,6 +674,23 @@ function normalizeSenders(raw) {
   return out;
 }
 
+// ── Circles ───────────────────────────────────────────────────────────────
+//
+// A "circle" is which group of people a member belongs to — the household, the
+// friend group, the extended family, work. It is a grouping label on the member
+// record, not a new store: attribution, colour and learning all continue to key
+// on the member, so an event tagged to a member is automatically tagged to that
+// member's circle.
+//
+// Every member predates this field, so the absence of a circle must read as the
+// default rather than as an error — that is why normalizeCircle never returns
+// empty and everything falls back to 'family'.
+const CIRCLE_PRESETS = ['family', 'friends', 'extended', 'work', 'other'];
+function normalizeCircle(raw) {
+  const s = String(raw || '').toLowerCase().trim();
+  return s || 'family';
+}
+
 // Resolve who an event is about, in evidence order.
 //
 // Activities first: they carry the tier discriminators, so they are the only
@@ -1711,6 +1728,10 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
       if (match) {
         ev.suggested_member_id = match.id;
         ev.suggested_color = match.eventColor || match.color || null;
+        // The member carries a circle, so tagging the event to the member tags
+        // it to the circle too — no separate resolution step. Falls back to the
+        // default for members that predate the circle field.
+        ev.suggested_circle = normalizeCircle(match.circle);
         // Shown on the card. A colour that appears with no stated reason is the
         // kind of thing that makes people distrust the whole queue.
         ev.suggested_reason = reason;
@@ -3526,12 +3547,12 @@ app.get('/api/family', requireAuth, async (req, res) => {
 });
 
 app.post('/api/family', requireAuth, async (req, res) => {
-  const { name, color, eventColor, grade, activities, senders } = req.body;
+  const { name, color, eventColor, grade, circle, activities, senders } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
   const id = randomUUID();
   // Grade is stored as the user typed it ("3rd", "K", "TK", "9") and normalised
   // at comparison time, so nothing is lost if they type something unexpected.
-  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, googleCalendarId: null, activities: normalizeActivities(activities), senders: normalizeSenders(senders) };
+  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, circle: normalizeCircle(circle), googleCalendarId: null, activities: normalizeActivities(activities), senders: normalizeSenders(senders) };
   await getUserFamily(req.user.email).set(id, member);
   res.json(member);
 });
@@ -3546,6 +3567,9 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
   // Explicit undefined check: '' is how the UI clears a grade back to unset,
   // and a truthiness test would make clearing impossible.
   if (req.body.grade !== undefined) member.grade = String(req.body.grade).trim() || null;
+  // Same explicit-undefined rule as grade: a member can be moved between circles,
+  // and normalizeCircle keeps the field from ever landing empty.
+  if (req.body.circle !== undefined) member.circle = normalizeCircle(req.body.circle);
   // Same explicit-undefined rule: [] is how the UI removes every activity, and
   // a facts store you cannot empty is a facts store you cannot correct.
   if (req.body.activities !== undefined) member.activities = normalizeActivities(req.body.activities);
@@ -5072,23 +5096,21 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
         const combinedNotes = ev.notes || null;
 
-        // Auto-write to calendar immediately
-        const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
-        const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: ev.recurring_note || null, attendees: [],
-          // Carried purely so buildEventDescription can write the details and
-          // the back-link to the source email into the calendar entry.
-          notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
-        let calEventId = null;
+        // APPROVE-FIRST: nothing is written to Google Calendar automatically.
+        // We only READ the calendar to see whether this event is already there,
+        // so the queue can say "already on your calendar" instead of proposing a
+        // duplicate. The write happens later, and only when the user approves the
+        // event from the review queue (POST /api/events/approve). This is the fix
+        // for events being auto-added — and auto-duplicated — before approval.
+        let calDup = null;
         try {
-          calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz });
-          console.log(`[gmail-process] GCal WRITE "${ev.title}" on ${ev.date} calEventId=${calEventId}`);
-        } catch (calErr) {
-          console.error(`[gmail-process] GCal write failed for "${ev.title}":`, calErr.message);
+          calDup = await findExistingOnAnyCalendar(calendarApi, targetCalId, { title: ev.title, date: ev.date, time: startTime });
+        } catch (dupErr) {
+          console.error(`[gmail-process] dedup lookup failed for "${ev.title}":`, dupErr.message);
         }
-        // Not written because it is already on one of the user's calendars.
-        // Recorded as 'duplicate' rather than 'pending' so the review queue says
-        // "already on your calendar" instead of looking like a failed write.
-        const calDup = evObj.duplicate_of || null;
+        // Never written on the automatic path; the field is kept so the stored
+        // object below reads unchanged (status becomes 'duplicate' or 'pending').
+        const calEventId = null;
         const evId = randomUUID();
         await eventsStore.set(evId, {
           id: evId,
@@ -6756,20 +6778,19 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             [ev.title, ev.notes, subject].filter(Boolean).join(' '), familyMembers,
             exclusionRules, senderEmail);
 
-          let calEventId = null;
-          // The check above only saw the target calendar; autoWriteToCalendar
-          // additionally checks every other calendar the user subscribes to and
-          // returns null (setting duplicate_of) instead of writing a second copy.
-          const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: null, attendees: [],
-            // Carried purely so buildEventDescription can write the details and
-            // the back-link to the source email into the calendar entry.
-            notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
+          // APPROVE-FIRST: never write during a scan. The on-target-calendar
+          // check above catches the common case; this read-only pass also checks
+          // every other calendar the user subscribes to, so a copy living on a
+          // club feed still reads as "already there" rather than being proposed
+          // a second time. The write happens only when the user approves from the
+          // review queue (POST /api/events/approve).
+          const calEventId = null;
+          let otherCalDup = null;
           if (relevance.relevant) {
             try {
-              calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz });
-            } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
+              otherCalDup = await findExistingOnAnyCalendar(bfCalApi, bfCalId, { title: ev.title, date: ev.date, time: startTime });
+            } catch (dupErr) { console.error(`[backfill] dedup lookup failed "${ev.title}":`, dupErr.message); }
           }
-          const otherCalDup = bfWriteObj.duplicate_of || null;
           const evId = randomUUID();
           const stored = {
             id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',

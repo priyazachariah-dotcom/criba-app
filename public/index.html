@@ -2539,7 +2539,13 @@ function showPage(page, btn) {
   if (page !== 'review') { const el = document.getElementById('review-list'); if (el) el.innerHTML = ''; }
   if (page !== 'recent') { const el = document.getElementById('recent-list'); if (el) el.innerHTML = ''; }
   if (page === 'review') renderReview();
-  if (page === 'recent') renderRecent();
+  // Re-read on entry rather than repainting whatever the startup fetch left
+  // behind. That fetch runs once, at load — so if it raced the session, failed,
+  // or simply happened before the events existed, the list stayed empty for the
+  // whole session and clicking the tab just re-rendered the same emptiness.
+  // renderRecent runs first so the page is never blank while the fetch is in
+  // flight; loadRecentEvents repaints when it lands.
+  if (page === 'recent') { renderRecent(); loadRecentEvents(); }
   // renderSettingsPage returns early when there are no members, so the
   // recipient list is painted separately rather than chained onto it.
   if (page === 'settings') { renderSettingsPage(); renderRecipients(); loadExclusions(); }

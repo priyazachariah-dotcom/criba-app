@@ -5547,6 +5547,32 @@ app.get('/api/spend', requireAuth, async (req, res) => {
   });
 });
 
+// GET /api/events/status-breakdown — every event Criba holds, counted by status.
+//
+// Both feeds filter by status and neither says so. /api/events/pending wants
+// added/pending/duplicate; /api/events/recent wants added/reviewed/approved/
+// cancelled. A status in neither list — 'draft', which is what every iCal feed
+// import is stored as until its calendar write succeeds — is invisible across
+// the entire product. A failed write leaves it there permanently, and
+// writeCalendarEvents reports only addedCount, so nothing says it happened.
+//
+// This exists so "I added them and they are nowhere" is answerable.
+app.get('/api/events/status-breakdown', requireAuth, async (req, res) => {
+  const events = getUserEvents(req.user.email);
+  const all = await events.values();
+  const VISIBLE_IN_REVIEW = new Set(['added', 'pending', 'duplicate', 'pending_cancellation', 'pending_reschedule']);
+  const VISIBLE_IN_EDIT = new Set(['added', 'reviewed', 'approved', 'cancelled']);
+  const byStatus = {};
+  for (const ev of all) {
+    const k = ev.status || '(none)';
+    byStatus[k] = byStatus[k] || { count: 0, visibleInReview: VISIBLE_IN_REVIEW.has(k), visibleInEdit: VISIBLE_IN_EDIT.has(k), examples: [] };
+    byStatus[k].count++;
+    if (byStatus[k].examples.length < 5) byStatus[k].examples.push({ title: ev.title, date: ev.date, source: ev.source || null });
+  }
+  const invisible = all.filter(ev => !VISIBLE_IN_REVIEW.has(ev.status) && !VISIBLE_IN_EDIT.has(ev.status));
+  res.json({ total: all.length, byStatus, invisibleCount: invisible.length });
+});
+
 // GET /api/events/orphans — events Criba dismissed that are still on Google.
 //
 // Dismissing an event in the review queue only ever set status to 'dismissed'.

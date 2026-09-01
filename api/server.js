@@ -1523,6 +1523,20 @@ app.get('/api/auth/google', (req, res) => {
   res.redirect(url);
 });
 
+// Read-only diagnostic for sign-in setup: shows the EXACT redirect_uri this
+// deployment sends to Google (register this verbatim on the OAuth client) and
+// which client_id it is using (register it on THAT client). No secrets — the
+// client_id is public, and only its head is shown. Safe to leave in place.
+app.get('/api/auth/debug', (req, res) => {
+  res.json({
+    redirect_uri_to_register: redirectUriFor(req),
+    host_seen: req.headers['x-forwarded-host'] || req.headers.host || null,
+    proto_seen: req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http'),
+    configured_GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || null,
+    client_id_head: (process.env.GOOGLE_CLIENT_ID || '').slice(0, 24) || null,
+  });
+});
+
 app.get('/api/auth/google/callback', async (req, res) => {
   const { code } = req.query;
   try {

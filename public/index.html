@@ -600,7 +600,14 @@
 
   /* ── Responsive ──────────────────────────────────────────────────── */
   @media (max-width: 860px) {
-    header { padding: 0 24px; height: 72px; }
+    /* Below full desktop the header stops trying to fit everything on one line —
+       the nav drops to its own horizontally-scrollable row so it can never
+       collide with the live pill, name or Sign out. */
+    header { padding: 10px 24px; height: auto; flex-wrap: wrap; gap: 8px 16px; }
+    .header-logo-section { flex: 0 0 auto; }
+    .header-user-section { flex: 1 1 auto; }
+    .header-nav-section { order: 3; flex: 1 1 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .header-nav-section, nav { gap: 20px; flex-wrap: nowrap; }
     .page { padding: 32px 24px 56px; }
     #gmail-disconnect-banner { margin: 1rem 24px 0; }
     .page-title-block { flex-direction: column; gap: 1rem; align-items: flex-start; }
@@ -609,7 +616,6 @@
     .cer-title { max-width: 50%; }
     .scan-bar { flex-direction: column; align-items: flex-start; gap: 0.75rem; padding: 16px 18px; }
     .scan-bar-btns { flex-wrap: wrap; }
-    .header-nav-section, nav { gap: 20px; }
     .page-headline { font-size: clamp(32px, 8vw, 64px); }
   }
 

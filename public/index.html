@@ -637,6 +637,9 @@
     .review-card-row { flex-direction: column; align-items: stretch; }
     .review-card-tags { padding-top: 10px; }
     .member-row { flex-wrap: wrap; }
+    .ahead-bar { gap: 8px; }
+    .ahead-refresh { margin-left: 0; }
+    .ahead-when { width: 94px; font-size: 12px; }
   }
 
   .empty-state { text-align: center; padding: 4rem 2rem; color: var(--text2); }
@@ -855,14 +858,19 @@
   .ahead-win:hover, .ahead-mode:hover, .ahead-refresh:hover { border-color: var(--ink); }
   .ahead-refresh { margin-left: auto; }
   .ahead-meta { color: var(--text2); font-size: 12px; margin-bottom: 14px; }
-  .ahead-group { margin-bottom: 22px; }
-  .ahead-group-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 0.9rem; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1.5px solid var(--ink); }
-  .ahead-group-count { color: var(--text2); font-weight: 400; font-size: 12px; }
-  .ahead-row { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border, #eee); font-size: 0.875rem; }
-  .ahead-when { flex-shrink: 0; width: 132px; color: var(--text2); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .ahead-title { flex: 1; }
-  .ahead-where { color: var(--text2); font-size: 12px; }
-  .ahead-clash { color: #b45309; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .ahead-group { margin-bottom: 30px; }
+  .ahead-group-head { display: flex; align-items: center; gap: 9px; font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--ink); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); }
+  .ahead-group-count { margin-left: auto; color: var(--text2); font-family: 'Inter', sans-serif; font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; }
+  .ahead-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 2px; border-bottom: 1px solid rgba(0,0,0,0.09); }
+  .ahead-row:last-child { border-bottom: none; }
+  .ahead-row.is-clash { background: #fffbeb; margin: 0 -8px; padding-left: 10px; padding-right: 10px; }
+  .ahead-row-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
+  .ahead-when { flex-shrink: 0; width: 118px; color: var(--ink); font-weight: 500; font-size: 12.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+  .ahead-when .awd { display: block; color: var(--text2); font-weight: 400; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .ahead-content { flex: 1; min-width: 0; }
+  .ahead-title { font-size: 0.9rem; line-height: 1.35; color: var(--ink); }
+  .ahead-where { display: block; color: var(--text2); font-size: 12px; margin-top: 3px; }
+  .ahead-clash { display: inline-block; margin-top: 5px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
   .ahead-empty { color: var(--text2); font-size: 0.875rem; padding: 1.5rem 0; }
   .ahead-conflict-band { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; margin-bottom: 18px; font-size: 0.875rem; }
   .ahead-conflict-band .acb-title { color: #92400e; font-weight: 600; margin-bottom: 6px; }
@@ -2645,12 +2653,24 @@ function renderAhead() {
   const clashing = new Set();
   conflicts.forEach(c => { clashing.add(c.a.id); clashing.add(c.b.id); });
 
-  const row = (ev, showDay) => `
-    <div class="ahead-row">
-      <span class="ahead-when">${escHtml(showDay ? `${aheadDayLabel(ev.date)}, ${aheadTimeLabel(ev)}` : aheadTimeLabel(ev))}</span>
-      <span class="ahead-title">${escHtml(ev.title)}${ev.location ? ` <span class="ahead-where">· ${escHtml(ev.location)}</span>` : ''}</span>
-      ${clashing.has(ev.id) ? '<span class="ahead-clash">clash</span>' : ''}
+  const colorFor = id => (aheadData.people || []).find(p => p.id === id)?.color || null;
+  const row = (ev, showDay) => {
+    const c = colorFor(ev.memberId);
+    const dotStyle = c ? `background:${memberColor(c)}` : 'background:transparent;box-shadow:inset 0 0 0 1.5px rgba(0,0,0,0.22)';
+    const when = showDay
+      ? `<span class="awd">${escHtml(aheadDayLabel(ev.date))}</span>${escHtml(aheadTimeLabel(ev))}`
+      : escHtml(aheadTimeLabel(ev));
+    return `
+    <div class="ahead-row${clashing.has(ev.id) ? ' is-clash' : ''}">
+      <span class="ahead-row-dot" style="${dotStyle}"></span>
+      <span class="ahead-when">${when}</span>
+      <span class="ahead-content">
+        <span class="ahead-title">${escHtml(ev.title)}</span>
+        ${ev.location ? `<span class="ahead-where">${escHtml(ev.location)}</span>` : ''}
+        ${clashing.has(ev.id) ? '<span class="ahead-clash">Clash</span>' : ''}
+      </span>
     </div>`;
+  };
 
   if (aheadMode === 'day') {
     const days = [];

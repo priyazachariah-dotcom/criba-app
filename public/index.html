@@ -5040,7 +5040,15 @@ async function catDismiss(ci) {
 
 // "Dismiss" at event level — removes just this one event row; the rest of
 // the category is untouched and can still be bulk-added.
-async function dismissCatEvent(ci, ei) {
+// `opts.clearOnly` removes the card from the screen without telling the server
+// anything. That distinction did not used to matter: dismissing was bookkeeping
+// that set a status and touched nothing else, so calling it to tidy up after a
+// successful approve was harmless. Dismissing now DELETES the event from Google
+// Calendar — correct when the user is rejecting something, catastrophic here,
+// because the approve that just ran is what put it there. Add to Calendar wrote
+// the event and this call removed it a second later, which is why approved
+// uploads reached the calendar and vanished.
+async function dismissCatEvent(ci, ei, opts = {}) {
   const cat = groupsState.categories[ci];
   if (!cat || !cat.events[ei]) return;
   const ev = cat.events[ei];
@@ -5055,6 +5063,7 @@ async function dismissCatEvent(ci, ei) {
     const nameEl = document.getElementById(`cat-name-${ci}`);
     if (nameEl) nameEl.textContent = `${cat.name} (${cat.events.length})`;
   }
+  if (opts.clearOnly) return;
   try {
     await fetch('/api/events/dismiss', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -5102,7 +5111,7 @@ async function cedApprove(evId, key, ci, ei) {
       if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">✓ Added</span>';
       await loadRecentEvents();
       // Remove this event from state and re-render after a brief success pause
-      setTimeout(() => dismissCatEvent(ci, ei), 1000);
+      setTimeout(() => dismissCatEvent(ci, ei, { clearOnly: true }), 1000);
     } else {
       const err = await res.json();
       if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">${err.error || 'Failed'}</span>`;

@@ -947,7 +947,7 @@
   <div class="page active" id="page-review">
     <div class="page-title-block">
       <div class="page-headline" id="review-page-title">REVIEW THE<br>QUEUE</div>
-      <div class="page-desc" id="review-page-sub">Criba found these. Nothing goes on your Google Calendar until you approve it.</div>
+      <div class="page-desc" id="review-page-sub">Criba adds these to your Google Calendar automatically — and never adds a duplicate. Review, edit, or remove anything it got wrong.</div>
     </div>
     <div id="review-list"></div>
   </div>
@@ -3100,7 +3100,9 @@ function rvCalSelectDay(dd) {
 }
 
 function isAlreadyOnCalendar(ev) {
-  return ev.status === 'duplicate' || ev.duplicate_of_calendar === true;
+  // With auto-add, an approved/added event is on the calendar; so is a detected
+  // duplicate. Both read as "on your calendar" (solid) rather than "proposed".
+  return ev.status === 'added' || ev.status === 'duplicate' || ev.duplicate_of_calendar === true;
 }
 
 function rvEventColorHex(ev) {
@@ -3196,7 +3198,7 @@ function renderReview({ force = false } = {}) {
       <div class="empty-state" style="margin-top:3rem">
         <div class="empty-icon">✓</div>
         <h3>All caught up</h3>
-        <p>New events Criba finds will appear here to approve.<br>Nothing lands on your calendar until you say so.</p>
+        <p>Events Criba adds to your calendar show up here to review.<br>Remove anything it got wrong — and it never adds a duplicate.</p>
       </div>`;
     wireBackfillBar();
     return;

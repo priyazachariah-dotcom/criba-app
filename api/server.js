@@ -892,7 +892,34 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
     }
   }
 
+  // Persistent write-guard — the most reliable defence against a second copy.
+  // The calendar reads above can be stale (cached, or a lookup that failed and
+  // returned "no duplicate"); this does not depend on them. Criba remembers every
+  // (date, title) it has auto-written for this user in Redis and refuses to write
+  // the same one twice, across runs and restarts. Keyed per user; the title is
+  // normalised so trivial punctuation/spacing differences still collide.
+  const guardEmail = opts.email || null;
+  const guardKey = guardEmail ? `gcalWritten:${guardEmail}` : null;
+  const guardSig = guardEmail ? `${ev.date || ''}|${String(ev.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}` : null;
+  if (guardSig && !opts.skipDuplicateCheck) {
+    try {
+      if (await redis.sismember(guardKey, guardSig)) {
+        ev.duplicate_of = ev.duplicate_of || { title: ev.title, date: ev.date, calendarId: targetCalId, calendarName: 'your calendar' };
+        console.log(`[calendar-dedup] GUARD-SKIP "${ev.title}" on ${ev.date} — Criba already auto-added this once`);
+        return null;
+      }
+    } catch (gErr) { console.error('[calendar-dedup] write-guard read failed, writing anyway:', gErr.message); }
+  }
+
   const result = await calendarApi.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
+  // Record the signature only after a successful insert, so a failed write does
+  // not permanently block a later retry of the same event.
+  if (guardSig) {
+    try {
+      await redis.sadd(guardKey, guardSig);
+      await redis.expire(guardKey, 400 * 24 * 60 * 60);
+    } catch (gErr) { console.error('[calendar-dedup] write-guard record failed:', gErr.message); }
+  }
   // Make this write visible to the next check in this process immediately.
   noteWrittenToCache(targetCalId, ev.date, {
     id: result.data.id,
@@ -5122,21 +5149,24 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
         const combinedNotes = ev.notes || null;
 
-        // APPROVE-FIRST: nothing is written to Google Calendar automatically.
-        // We only READ the calendar to see whether this event is already there,
-        // so the queue can say "already on your calendar" instead of proposing a
-        // duplicate. The write happens later, and only when the user approves the
-        // event from the review queue (POST /api/events/approve). This is the fix
-        // for events being auto-added — and auto-duplicated — before approval.
-        let calDup = null;
+        // Auto-add: write to the calendar immediately. autoWriteToCalendar is the
+        // single chokepoint that dedups before inserting — against every calendar
+        // the user subscribes to, a late fresh re-check, AND a persistent
+        // write-guard keyed per user — so auto-add never lands a second copy.
+        const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
+        const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: ev.recurring_note || null, attendees: [],
+          // Carried purely so buildEventDescription can write the details and
+          // the back-link to the source email into the calendar entry.
+          notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
+        let calEventId = null;
         try {
-          calDup = await findExistingOnAnyCalendar(calendarApi, targetCalId, { title: ev.title, date: ev.date, time: startTime });
-        } catch (dupErr) {
-          console.error(`[gmail-process] dedup lookup failed for "${ev.title}":`, dupErr.message);
+          calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz, email });
+          console.log(`[gmail-process] GCal WRITE "${ev.title}" on ${ev.date} calEventId=${calEventId}`);
+        } catch (calErr) {
+          console.error(`[gmail-process] GCal write failed for "${ev.title}":`, calErr.message);
         }
-        // Never written on the automatic path; the field is kept so the stored
-        // object below reads unchanged (status becomes 'duplicate' or 'pending').
-        const calEventId = null;
+        // Not written because it is already on one of the user's calendars.
+        const calDup = evObj.duplicate_of || null;
         const evId = randomUUID();
         await eventsStore.set(evId, {
           id: evId,
@@ -6804,19 +6834,20 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             [ev.title, ev.notes, subject].filter(Boolean).join(' '), familyMembers,
             exclusionRules, senderEmail);
 
-          // APPROVE-FIRST: never write during a scan. The on-target-calendar
-          // check above catches the common case; this read-only pass also checks
-          // every other calendar the user subscribes to, so a copy living on a
-          // club feed still reads as "already there" rather than being proposed
-          // a second time. The write happens only when the user approves from the
-          // review queue (POST /api/events/approve).
-          const calEventId = null;
-          let otherCalDup = null;
+          let calEventId = null;
+          // autoWriteToCalendar checks every calendar the user subscribes to and
+          // the persistent write-guard before inserting, so a scan can auto-add
+          // without ever landing a second copy.
+          const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: null, attendees: [],
+            // Carried purely so buildEventDescription can write the details and
+            // the back-link to the source email into the calendar entry.
+            notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
           if (relevance.relevant) {
             try {
-              otherCalDup = await findExistingOnAnyCalendar(bfCalApi, bfCalId, { title: ev.title, date: ev.date, time: startTime });
-            } catch (dupErr) { console.error(`[backfill] dedup lookup failed "${ev.title}":`, dupErr.message); }
+              calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz, email });
+            } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
           }
+          const otherCalDup = bfWriteObj.duplicate_of || null;
           const evId = randomUUID();
           const stored = {
             id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',

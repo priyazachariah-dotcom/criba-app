@@ -1440,6 +1440,30 @@ const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_REDIRECT_URI
 );
 
+// Which callback URL to hand Google for this request.
+//
+// Production is unchanged: when the request arrives on the same host as the
+// configured GOOGLE_REDIRECT_URI, that exact URI is used. For any OTHER host —
+// a Vercel preview/staging alias, or a fresh local domain — the callback is
+// derived from the request's own host, so sign-in completes on whatever domain
+// is actually serving the app instead of bouncing to production.
+//
+// This cannot be abused to steal tokens: Google only issues a code to a
+// redirect_uri that is registered on the OAuth client, so a spoofed Host header
+// just produces a URI Google refuses. The one operational requirement is that
+// each host you sign in on (production, and the stable staging alias) has its
+// /api/auth/google/callback registered on the OAuth client.
+function redirectUriFor(req) {
+  const envUri = process.env.GOOGLE_REDIRECT_URI || '';
+  const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+  if (!host) return envUri;
+  if (envUri) {
+    try { if (new URL(envUri).host === host) return envUri; } catch {}
+  }
+  const proto = String(req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http')).split(',')[0].trim();
+  return `${proto}://${host}/api/auth/google/callback`;
+}
+
 const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
@@ -1468,14 +1492,16 @@ function requireAuth2(req, res, next) {
 }
 
 app.get('/api/auth/google', (req, res) => {
-  const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
+  const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent', redirect_uri: redirectUriFor(req) });
   res.redirect(url);
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {
   const { code } = req.query;
   try {
-    const { tokens } = await oauth2Client.getToken(code);
+    // Must be the SAME redirect_uri that /api/auth/google sent Google, or the
+    // token exchange fails — redirectUriFor derives both from the request host.
+    const { tokens } = await oauth2Client.getToken({ code, redirect_uri: redirectUriFor(req) });
     oauth2Client.setCredentials(tokens);
     const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
     const { data } = await oauth2.userinfo.get();

@@ -4874,6 +4874,15 @@ const GENERIC_TITLE_TOKENS = new Set([
   'due','homework','assignment','deadline','reminder','form','forms','picture','photo',
   'field','gym','room','center','centre','vs','versus',
   'opener','season','all','st',
+  // Placeholders and status words. A school that writes "Submit Child's Health
+  // Form" is not naming a different child from the one that writes "Submit
+  // Aarav's Health Form" — "child" is the blank where a name goes. Likewise
+  // "(Overdue)" describes the state of a task, not which task it is. Both were
+  // being counted as identifying names, so the two-sided test below concluded
+  // that each title named something the other lacked and let the same
+  // immunization form onto the calendar twice, coloured for two children.
+  'child','childs','children','kid','kids',
+  'overdue','late','urgent','required','action','new','updated','pending','submit',
   // Schedule words. "Weekly Thursdays" describes when a class recurs, not which
   // class it is, so it must not distinguish a series from its first session.
   'weekly','monthly','recurring','monday','tuesday','wednesday','thursday',

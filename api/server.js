@@ -4318,10 +4318,99 @@ function _extractEmailBodyInner(payload, htmlParts) {
 //
 // So: take the plain text only when it actually carries date content, or when
 // the HTML has none either. Otherwise fall through to the HTML.
+// ── Quoted history ────────────────────────────────────────────────────────
+//
+// A forwarded thread arrives as one flat wall of text: the new message on top
+// and every prior message underneath, with nothing marking where one ends and
+// the next begins. Claude reads the lot and extracts from all of it, so a
+// school chasing a form produces two events — the original request and the
+// chase — which then land on the same date because a single inference is
+// applied to a body whose real structure was invisible.
+//
+// It is worse than duplicates. Every forward re-presents old content as new, so
+// events already handled come back.
+//
+// Markers are matched at line starts only. "On" and "From:" appear mid-sentence
+// constantly; as the first thing on a line, followed by what a mail client puts
+// there, they are reliable.
+const QUOTE_MARKERS = [
+  // Gmail/Apple: "On Mon, Aug 31, 2026 at 3:07 PM Someone <x@y.com> wrote:"
+  // The attribution often wraps, so allow it to run across a line break.
+  /^On\s[\s\S]{0,300}?\bwrote:\s*$/m,
+  /^-{2,}\s*Original Message\s*-{2,}/mi,
+  /^-{2,}\s*Forwarded message\s*-{2,}/mi,
+  /^Begin forwarded message:/mi,
+  // Outlook's divider, then its header block.
+  /^_{5,}\s*$/m,
+  /^From:\s.*\r?\n\s*(?:Sent|Date|To):/mi,
+  // A run of quoted lines with no preceding marker.
+  /^>{1,}\s?\S/m,
+];
+
+function firstQuoteIndex(text) {
+  let best = -1;
+  for (const re of QUOTE_MARKERS) {
+    const m = re.exec(text);
+    if (m && (best === -1 || m.index < best)) best = m.index;
+  }
+  return best;
+}
+
+// Below this, what remains above the quote is a greeting and a signature — not
+// something anyone forwarded for its own sake.
+const MIN_NEW_CONTENT_CHARS = 40;
+
+function stripQuotedHistory(text) {
+  const src = String(text || '');
+  const cut = firstQuoteIndex(src);
+  if (cut === -1) return src;
+
+  const head = src.slice(0, cut).trim();
+  if (head.length >= MIN_NEW_CONTENT_CHARS) return head;
+
+  // Nothing of substance on top — a bare forward, which for a school notice is
+  // the ordinary case, not an edge case. Dropping these would lose real events.
+  // So fall back to the newest quoted message alone: everything from the first
+  // marker up to the second. The rest of the chain is older still and is
+  // exactly what was generating repeats.
+  const rest = src.slice(cut);
+  const firstLineEnd = rest.indexOf('\n');
+  const afterMarker = firstLineEnd === -1 ? '' : rest.slice(firstLineEnd + 1);
+  // Strip the ">" prefixes BEFORE looking for the next boundary. One of the
+  // markers is a run of quoted lines, so leaving them in place made the very
+  // message being kept look like the start of the older chain — the boundary
+  // landed at offset zero and the whole quote was discarded.
+  const afterUnquoted = afterMarker.replace(/^\s*>+ ?/gm, '');
+  const nextCut = firstQuoteIndex(afterUnquoted);
+  const unquoted = (nextCut === -1 ? afterUnquoted : afterUnquoted.slice(0, nextCut)).trim();
+  // Keep the short note as well as the quoted message. "Practice moved to 4pm"
+  // is under the threshold and is the single most important line in the mail —
+  // discarding it in favour of the thread it corrects would invert the point.
+  if (!unquoted) return head || src;
+  return head ? `${head}\n\n${unquoted}` : unquoted;
+}
+
+// Gmail wraps quoted history in a container. Removing it in HTML is far more
+// reliable than pattern-matching the text after the tags are gone, so this runs
+// first and the text-level markers act as backstop.
+function stripQuotedHtml(html) {
+  return String(html || '')
+    .replace(/<blockquote[^>]*class="[^"]*gmail_quote[^"]*"[\s\S]*$/i, '')
+    .replace(/<div[^>]*class="[^"]*gmail_quote[^"]*"[\s\S]*$/i, '')
+    .replace(/<div[^>]*id="appendonsend"[\s\S]*$/i, '')
+    .replace(/<div[^>]*id="divRplyFwdMsg"[\s\S]*$/i, '');
+}
+
 function extractEmailBody(payload) {
   const htmlParts = [];
-  const plainText = _extractEmailBodyInner(payload, htmlParts);
-  const html = htmlParts.length ? stripHtmlTags(htmlParts.join('\n')) : '';
+  const plainTextRaw = _extractEmailBodyInner(payload, htmlParts);
+  // Quoted history is removed before anything else looks at the body, so every
+  // downstream decision — dates, relevance, attribution — sees only the message
+  // that actually arrived.
+  const plainText = stripQuotedHistory(plainTextRaw);
+  const html = htmlParts.length
+    ? stripQuotedHistory(stripHtmlTags(stripQuotedHtml(htmlParts.join('\n'))))
+    : '';
 
   if (plainText && html) {
     const plainHasDate = scanForDateContent(plainText).pass;
@@ -4953,6 +5042,9 @@ function titlesLooselyMatch(a, b) {
   return titlesShareDistinctiveTokens(a, b);
 }
 
+// Is this event already on the calendar, put there by something other than us?
+// Same day, similar title, and either the same start time or one of the two
+// being all-day.
 // Is this event already on the calendar, put there by something other than us?
 // Same day, similar title, and either the same start time or one of the two
 // being all-day.

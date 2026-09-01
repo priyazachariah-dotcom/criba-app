@@ -400,6 +400,10 @@
      than tinting — a light background change is invisible here. */
   .quick-chip.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   .quick-chip input { margin: 0; cursor: pointer; }
+  /* Dashed edge marks the "add someone new" action apart from the person chips. */
+  .quick-chip-add { border-style: dashed; color: var(--text2); }
+  .quick-newperson { display: inline-flex; align-items: center; gap: 6px; }
+  .quick-newperson-input { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--ink); border-radius: 999px; background: #fff; color: var(--ink); width: 8.5rem; outline: none; }
   .quick-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
   /* Whether a row is really on the calendar is the single most important fact
      about it, so it gets colour rather than another grey pill. */
@@ -904,7 +908,7 @@
       <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
       <!-- The Family page was built but never linked, so members could never be
            added — which silently disabled every colour feature downstream. -->
-      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">Family</button>
+      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">Circles</button>
     </nav>
     <div class="header-user-section">
       <span class="live-pill" id="live-pill" title="Checking…">
@@ -1086,13 +1090,13 @@
   <!-- Settings / Family members page -->
   <div class="page" id="page-settings">
     <div class="page-title-block">
-      <div class="page-headline page-headline-sm">FAMILY</div>
-      <div class="page-desc">Add family members — each person gets a distinct event color on your shared Google Calendar.</div>
+      <div class="page-headline page-headline-sm">CIRCLES</div>
+      <div class="page-desc">Add the people in your life and group them into circles — family, friends, work, whoever. Each person gets a distinct event colour on your calendar.</div>
     </div>
     <div class="settings-section">
       <div class="settings-section-title">Members</div>
       <div id="settings-members-list"></div>
-      <button class="btn-secondary" id="settings-add-btn" onclick="toggleAddMemberForm()" style="margin-top:0.5rem">+ Add member</button>
+      <button class="btn-secondary" id="settings-add-btn" onclick="toggleAddMemberForm()" style="margin-top:0.5rem">+ Add person</button>
       <div id="settings-add-form" style="display:none" class="add-member-form">
         <input type="text" id="settings-member-name" placeholder="Name (e.g. Aarav)" />
         <select id="settings-member-circle" class="member-circle" title="Which circle this person belongs to" style="margin-top:0.5rem">
@@ -1300,7 +1304,7 @@ function eventDotHtml(ev) {
   const m = memberId ? familyMembers.find(x => x.id === memberId) : null;
   const colorId = (m && (m.eventColor || m.color)) || ev.suggested_color;
   if (!colorId) return '';
-  const who = m ? m.name : 'a family member';
+  const who = m ? m.name : 'someone';
   // When the colour came from the sender's history rather than a name in the
   // event, say so on hover. An unexplained colour is the kind of thing that
   // makes the whole queue feel arbitrary.
@@ -1338,17 +1342,30 @@ function renderQuickAdds(ev, opts = {}) {
   const id = ev.id;
   const chosen = rvChosenMember(ev);
   const guessed = ev.suggested_member_id || '';
-  const people = familyMembers.length ? `
+  const memberChips = familyMembers.map(m => `
+      <button class="quick-chip ${chosen === m.id ? 'on' : ''}" id="qm-${id}-${m.id}"
+              onclick="setQuickMember('${id}','${m.id}')"
+              title="${chosen === m.id && guessed === m.id ? 'Criba matched this to ' + escHtml(m.name) : 'Colour this event for ' + escHtml(m.name)}">
+        <span class="quick-dot" style="background:${memberColor(m.eventColor || m.color)}"></span>${escHtml(m.name)}${chosen === m.id && memberCircle(m) !== 'family' ? `<span class="circle-tag">${circleLabel(memberCircle(m))}</span>` : ''}
+      </button>`).join('');
+  const noneChip = familyMembers.length ? `<button class="quick-chip ${chosen === '' ? 'on' : ''}" id="qm-${id}-none"
+              onclick="setQuickMember('${id}','')" title="No colour — use the calendar default">None</button>` : '';
+  // Add someone who isn't in your circles yet, right from the event — no trip to
+  // the Circles page. The new person is created and coloured onto this event in
+  // one step, and then shows up on every other card too.
+  const addPerson = `
+      <button class="quick-chip quick-chip-add" onclick="showQuickAddPerson('${id}')" title="Add someone new and colour this event for them">+ New person</button>
+      <span class="quick-newperson" id="qnp-${id}" style="display:none">
+        <input class="quick-newperson-input" id="qnp-input-${id}" placeholder="Name" autocomplete="off"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddPerson('${id}')}" />
+        <button class="quick-chip quick-newperson-save" onclick="quickAddPerson('${id}')">Add</button>
+      </span>`;
+  const people = `
     <div class="quick-add-group">
-      ${familyMembers.map(m => `
-        <button class="quick-chip ${chosen === m.id ? 'on' : ''}" id="qm-${id}-${m.id}"
-                onclick="setQuickMember('${id}','${m.id}')"
-                title="${chosen === m.id && guessed === m.id ? 'Criba matched this to ' + escHtml(m.name) : 'Colour this event for ' + escHtml(m.name)}">
-          <span class="quick-dot" style="background:${memberColor(m.eventColor || m.color)}"></span>${escHtml(m.name)}${chosen === m.id && memberCircle(m) !== 'family' ? `<span class="circle-tag">${circleLabel(memberCircle(m))}</span>` : ''}
-        </button>`).join('')}
-      <button class="quick-chip ${chosen === '' ? 'on' : ''}" id="qm-${id}-none"
-              onclick="setQuickMember('${id}','')" title="No colour — use the calendar default">None</button>
-    </div>` : '';
+      ${memberChips}
+      ${noneChip}
+      ${addPerson}
+    </div>`;
   // A deadline or action item is a note to self — there is nobody to invite to
   // "Tuition payment due", so the card only offers the colour chips.
   const recips = opts.hideRecipients ? '' : savedRecipients.length ? `
@@ -1382,6 +1399,35 @@ function setQuickMember(id, memberId) {
   if (sel) sel.value = memberId;
 }
 
+// Reveal the inline "add a new person" input on an event card.
+function showQuickAddPerson(id) {
+  const box = document.getElementById(`qnp-${id}`);
+  if (!box) return;
+  const showing = box.style.display !== 'none';
+  box.style.display = showing ? 'none' : 'inline-flex';
+  if (!showing) {
+    const inp = document.getElementById(`qnp-input-${id}`);
+    if (inp) { inp.value = ''; inp.focus(); }
+  }
+}
+
+// Create a person from the event card and colour this event for them in one
+// step. They are added to the default 'family' circle (re-file later on the
+// Circles page) and, via renderReview, become selectable on every other card.
+async function quickAddPerson(id) {
+  const inp = document.getElementById(`qnp-input-${id}`);
+  const name = (inp?.value || '').trim();
+  if (!name) { if (inp) inp.focus(); return; }
+  try {
+    const member = await apiAddMember(name, '7', 'family');
+    familyMembers.push(member);
+    rvMemberState[id] = member.id;   // colour this event for the new person
+    renderReview({ force: true });
+  } catch (e) {
+    alert(e.message || 'Could not add that person');
+  }
+}
+
 const CAL_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0891b2'];
 
 // ── Family member API helpers ─────────────────────────────────────────────
@@ -1408,7 +1454,7 @@ async function apiDeleteMember(id) {
 function renderSettingsPage() {
   const el = document.getElementById('settings-members-list');
   if (!familyMembers.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">No family members yet — add one below.</div>';
+    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">No people yet — add someone below.</div>';
     return;
   }
   // The colour was settable only while adding someone, so the sole way to
@@ -1710,7 +1756,7 @@ async function addMemberFromSettings() {
 }
 
 async function deleteMember(id) {
-  if (!confirm('Remove this family member? Their Google Calendar and events are not affected.')) return;
+  if (!confirm('Remove this person? Their Google Calendar and events are not affected.')) return;
   await apiDeleteMember(id);
   familyMembers = familyMembers.filter(m => m.id !== id);
   renderSettingsPage();
@@ -1753,7 +1799,7 @@ function cancelMemberPicker() {
 function renderMemberPickerList() {
   const el = document.getElementById('picker-members-list');
   if (!familyMembers.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.8rem;padding:0.25rem 0 0.75rem">No family members yet — add one below.</div>';
+    el.innerHTML = '<div style="color:var(--text2);font-size:0.8rem;padding:0.25rem 0 0.75rem">No people yet — add someone below.</div>';
     return;
   }
   el.innerHTML = familyMembers.map(m => `

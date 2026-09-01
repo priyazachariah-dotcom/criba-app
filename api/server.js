@@ -1523,18 +1523,48 @@ app.get('/api/auth/google', (req, res) => {
   res.redirect(url);
 });
 
-// Read-only diagnostic for sign-in setup: shows the EXACT redirect_uri this
-// deployment sends to Google (register this verbatim on the OAuth client) and
-// which client_id it is using (register it on THAT client). No secrets — the
-// client_id is public, and only its head is shown. Safe to leave in place.
+// Sign-in setup helper. Renders a plain-English page with the one URL to copy
+// and where to paste it, so enabling sign-in on a new deployment needs no
+// technical knowledge. Add ?format=json for the raw values. No secrets — the
+// client_id is public and only its head is shown.
 app.get('/api/auth/debug', (req, res) => {
-  res.json({
-    redirect_uri_to_register: redirectUriFor(req),
-    host_seen: req.headers['x-forwarded-host'] || req.headers.host || null,
-    proto_seen: req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http'),
-    configured_GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || null,
-    client_id_head: (process.env.GOOGLE_CLIENT_ID || '').slice(0, 24) || null,
-  });
+  const redirectUri = redirectUriFor(req);
+  const clientHead = (process.env.GOOGLE_CLIENT_ID || '').slice(0, 24) || 'unknown';
+  if (req.query.format === 'json') {
+    return res.json({
+      redirect_uri_to_register: redirectUri,
+      host_seen: req.headers['x-forwarded-host'] || req.headers.host || null,
+      proto_seen: req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http'),
+      configured_GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || null,
+      client_id_head: clientHead,
+    });
+  }
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  res.set('Content-Type', 'text/html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Criba — enable sign-in here</title></head>
+<body style="margin:0;background:#F0DAD8;color:#111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.55">
+<div style="max-width:620px;margin:0 auto;padding:32px 20px 64px">
+  <div style="font-weight:800;font-size:22px;letter-spacing:.04em;text-transform:uppercase">CRIBA</div>
+  <h1 style="font-size:24px;margin:18px 0 6px">Enable sign-in for this site</h1>
+  <p style="color:#555;margin:0 0 24px">This is a staging copy of Criba. To let people sign in here, do these two quick steps in Google — about a minute. Nothing here is sensitive.</p>
+
+  <div style="background:#fff;border:1.5px solid #111;padding:18px;margin-bottom:16px">
+    <div style="font-weight:700;margin-bottom:8px">Step 1 · Add this web address to Google</div>
+    <p style="margin:0 0 10px;color:#555">Copy the address below, then open the Google settings link and paste it under <b>“Authorized redirect URIs”</b> on the client named <b>Criba</b> (the one ending <code>${esc(clientHead)}…</code>).</p>
+    <div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap">
+      <input id="u" readonly value="${esc(redirectUri)}" style="flex:1;min-width:220px;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:10px;border:1.5px solid #111;background:#F0DAD8;color:#111">
+      <button onclick="navigator.clipboard.writeText(document.getElementById('u').value).then(()=>{this.textContent='Copied ✓'})" style="border:1.5px solid #111;background:#111;color:#F0DAD8;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;text-transform:uppercase;letter-spacing:.04em">Copy</button>
+    </div>
+    <p style="margin:12px 0 0"><a href="https://console.cloud.google.com/apis/credentials?project=criba-496102" target="_blank" rel="noopener" style="color:#1a73e8;font-weight:600">Open Google credentials settings →</a></p>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid #111;padding:18px;margin-bottom:16px">
+    <div style="font-weight:700;margin-bottom:8px">Step 2 · Allow the person to sign in</div>
+    <p style="margin:0;color:#555">On the <a href="https://console.cloud.google.com/apis/credentials/consent?project=criba-496102" target="_blank" rel="noopener" style="color:#1a73e8;font-weight:600">OAuth consent screen</a>, add their Google address under <b>Test users</b>. Save.</p>
+  </div>
+
+  <p style="color:#555;font-size:13px">Done both? Go back to the app and click <b>Continue with Google</b>. Google can take a minute to catch up — if it still blocks, wait 2 minutes and retry.</p>
+</div>
+</body></html>`);
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {

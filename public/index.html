@@ -180,6 +180,10 @@
     letter-spacing: 0.04em; padding: 3px 9px; vertical-align: middle; white-space: nowrap;
   }
 
+  /* Says the opposite of "Synced", so it must not look like the same badge
+     wearing different words. */
+  .pill-warn { background: var(--red); color: #fff; }
+
   /* ── Stats row (Review page) ─────────────────────────────────────────── */
   .stats-row { display: flex; gap: 48px; margin-bottom: 2rem; }
   .stat-block { display: flex; flex-direction: column; }
@@ -4026,7 +4030,10 @@ function renderRecent() {
           <div class="recent-card-meta">${formatDate(ev.date)}${ev.time ? ' · ' + formatTime(ev.time) : ' · All day'}</div>
         </div>
         <div class="recent-card-right">
-          <span class="pill">Synced</span>
+          ${ev.calEventId
+            ? '<span class="pill">Synced</span>'
+            : `<span class="pill pill-warn">Not on calendar</span>
+               <button class="btn-edit" onclick="restoreToCalendar('${ev.id}')">Add to calendar</button>`}
           <button class="btn-edit" onclick="toggleEdit('${ev.id}')">Edit</button>
         </div>
       </div>
@@ -5070,6 +5077,43 @@ async function dismissCatEvent(ci, ei, opts = {}) {
       body: JSON.stringify({ id: ev.id }),
     });
   } catch {}
+}
+
+// Put back an approved event that is no longer on Google Calendar.
+//
+// This screen used to claim everything on it was synced, so an event deleted
+// from Google — by the user, or by Criba's own dismiss path — sat here looking
+// filed away while the calendar had nothing. The badge now tells the truth and
+// this is the way back: approve re-inserts when there is no calEventId, so the
+// stored date, time and location are reused rather than retyped.
+async function restoreToCalendar(id) {
+  const ev = recentEvents.find(e => e.id === id);
+  if (!ev) return;
+  const card = document.getElementById(`recent-${id}`);
+  const btn = card?.querySelector('.recent-card-right .btn-edit');
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding\u2026'; }
+  try {
+    // Only identity and the fields this screen shows. /api/events/approve treats
+    // an absent key as "no opinion" and keeps what is stored, so omitting
+    // location and end time here preserves them instead of clearing them.
+    const res = await fetch('/api/events/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, title: ev.title, date: ev.date, time: ev.time || '' }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (btn) { btn.disabled = false; btn.textContent = 'Add to calendar'; }
+      alert(err.error || 'Could not add this to your calendar.');
+      return;
+    }
+    // Re-read rather than patching state by hand, so the badge is driven by
+    // what the server actually stored.
+    // loadRecentEvents re-renders on its own.
+    await loadRecentEvents();
+  } catch {
+    if (btn) { btn.disabled = false; btn.textContent = 'Add to calendar'; }
+    alert('Network error \u2014 nothing was changed.');
+  }
 }
 
 // ── Inline editor: "Add to Calendar" ─────────────────────────────────────

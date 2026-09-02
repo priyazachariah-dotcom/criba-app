@@ -5307,6 +5307,11 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
   const userTz = await getUserTimezone(email);
   const gpFamily = await getUserFamily(email).values();
   const gpFamilyNames = gpFamily.map(m => m.name).filter(Boolean);
+  // The webhook handles nearly every email that arrives; "Scan now" handles the
+  // rest. Only the latter was checking relevance, so the newsletter gate added
+  // in 25180b5 was never running on the path that mattered. Loading the same
+  // two inputs here is what lets the same check run in both places.
+  const gpExclusions = await getUserExclusions(email).values();
 
   // The cursor is NOT advanced here. It used to be, "so we don't reprocess on
   // retry" — but the per-message lock below already does that job, and moving
@@ -5578,12 +5583,32 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           // Carried purely so buildEventDescription can write the details and
           // the back-link to the source email into the calendar entry.
           notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
+        // A newsletter is a broadcast. Some of what it announces is genuinely
+        // yours — the school telling you about Back to School Night — and some
+        // is someone else's event it happens to be reporting, or an open
+        // invitation you never accepted. Writing the second kind is how a
+        // calendar fills with meetups in cities you don't live in.
+        //
+        // Held, not discarded: the event still lands in the review queue with
+        // the reason attached, and one click puts it on the calendar. Note that
+        // this only holds back events Claude tagged as third_party or
+        // opportunity, plus ones naming a grade nobody in the family is in.
+        // A school event addressed to you passes untouched — those are the ones
+        // that must never be missed, so the gate is deliberately narrow.
+        const relevance = eventRelevance(
+          [ev.title, ev.notes, subject].filter(Boolean).join(' '), gpFamily,
+          gpExclusions, senderEmail, ev.audience);
+
         let calEventId = null;
-        try {
-          calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz, email });
-          console.log(`[gmail-process] GCal WRITE "${ev.title}" on ${ev.date} calEventId=${calEventId}`);
-        } catch (calErr) {
-          console.error(`[gmail-process] GCal write failed for "${ev.title}":`, calErr.message);
+        if (relevance.relevant) {
+          try {
+            calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz, email });
+            console.log(`[gmail-process] GCal WRITE "${ev.title}" on ${ev.date} calEventId=${calEventId}`);
+          } catch (calErr) {
+            console.error(`[gmail-process] GCal write failed for "${ev.title}":`, calErr.message);
+          }
+        } else {
+          console.log(`[gmail-process] HELD "${ev.title}" — ${relevance.reason}`);
         }
         // Not written because it is already on one of the user's calendars.
         const calDup = evObj.duplicate_of || null;
@@ -5602,7 +5627,8 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           duplicate_of_calendar: !!calDup,
           conflict_note: calDup
             ? `Already on your calendar as "${calDup.title}"${calDup.calendarName && calDup.calendarId !== targetCalId ? ` (${calDup.calendarName})` : ''} — not added again`
-            : conflictNote || null,
+            : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
+          held_reason: relevance.reason || null,
           source_type: ev.source_type || null,
           recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
           source: 'gmail',

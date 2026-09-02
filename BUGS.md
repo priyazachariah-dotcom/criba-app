@@ -17,6 +17,37 @@ Last reviewed: 2026-09-02
 
 ## Blocks trust — a user would notice and lose confidence
 
+### 5. The 81 draft events silently suppress real school email
+**Verified. The most severe open bug.**
+
+297 events sit in neither feed — 216 `dismissed` + 81 `draft`. They cannot be
+seen, approved, or cleared from any screen. That much is cosmetic. The
+suppression is not.
+
+`isDuplicateEventIn` opens with `if (ev.status === 'dismissed') return false;`,
+so the 216 dismissed rows are inert — correctly excluded. **`draft` is not
+excluded.** The Gmail webhook checks every extracted event against every stored
+event (`isDuplicateEvent`, `api/server.js:5567`) and on a match does:
+
+```js
+console.log(`DEDUP SKIP event "${ev.title}" already exists`);
+continue;
+```
+
+Dropped. Not held, not queued, not visible anywhere in the UI.
+
+Those 81 drafts are a shadow copy of the St. Ignatius calendar. So an SI email
+about an event that exists as a draft is silently discarded — a school
+newsletter event missed, caused by debris from a period when nothing worked.
+This is the exact failure the product cannot have.
+
+Unknown: how many real emails this has already eaten. Checkable by grepping
+Vercel logs for `DEDUP SKIP`.
+
+Fix is not "reconcile the 297" — that was explicitly declined, and the dismissed
+ones genuinely do not matter. It is narrower: stop `draft` counting as an
+existing event for dedupe purposes, the same way `dismissed` already doesn't.
+
 ### 1. Deleting an email does not undo what Criba did with it
 **Verified. Filed, not being fixed.**
 
@@ -76,16 +107,6 @@ does describe three things — but one mass mailing can triple the review queue.
 ---
 
 ## Data integrity — mostly invisible, mostly Priya's account
-
-### 5. 297 events exist in neither feed
-**Verified.** 216 `dismissed` + 81 `draft`. `/api/events/pending` and
-`/api/events/recent` both exclude them, so they cannot be seen, approved, or
-cleared from any screen — but they still feed the duplicate detection.
-
-The practical cost: the account used to diagnose beta reports behaves unlike a
-fresh tester's. Decided not to reconcile them against the calendar ("this was
-all added when nothing was working"), but drawing a line under them so they
-stop affecting dedupe is still owed.
 
 ### 6. `draft` status has no approval path
 **Verified.** `draft` is in neither `VISIBLE_IN_REVIEW` nor `VISIBLE_IN_EDIT`.

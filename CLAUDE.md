@@ -22,14 +22,27 @@ expiring watches and sends the evening summary.
 
 Because the watch only delivers mail that arrives *after* it is registered, a
 new account would otherwise start with an empty queue. So on first sign-in Criba
-runs one automatic **24-hour scan** (`needsOnboardingScan` on
+runs one automatic **48-hour scan** (`needsOnboardingScan` on
 `/api/user/status`, cleared by `POST /api/user/onboarded`).
 
-**Criba starts working from the moment you sign in.** Email older than 24 hours
-at sign-up is out of scope by design — 24h reliably finishes inside the 60s
-function budget, so a new user's first experience can never be a timeout. The
-manual "Scan now" button remains for backfilling after an outage; it is not
-needed in normal use.
+**Criba starts working from the moment you sign in.** Email older than 48 hours
+at sign-up is out of scope by design — every email in the window costs a Claude
+call, and the webhook covers everything from here on. The manual button says
+**"Scan last 48 hours"** rather than "Scan now": the window is stated where the
+click happens, so it matches the onboarding copy and the button cannot quietly
+disagree with it. Server-side the window is capped at 14 days regardless of what
+is requested.
+
+The button label lives in one constant (`SCAN_BTN_LABEL` in `public/index.html`)
+because it is also restored in three places after a run — as a literal it
+reverted to the old wording on the first scan.
+
+## Known bugs
+`BUGS.md` is a live document — update it in the same commit as the work, not
+afterwards. Add newly found bugs, move fixed ones out, and when something turns
+out not to be broken move it to **Not bugs** with the reason rather than
+deleting it. Mark every entry as verified or assumed; several entries there were
+confident guesses that turned out to be Criba behaving correctly.
 
 ## Git workflow
 - Commit after completing each logical fix or feature

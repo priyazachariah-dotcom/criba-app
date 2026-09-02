@@ -4834,11 +4834,39 @@ function recurrenceShape(rule) {
 // to spot an event that is on the calendar. One notion of "same event" for both
 // sides is the point: a pair the calendar check would merge must not be a pair
 // the queue keeps apart.
+// A stored row may only block a new event if that row still represents
+// something the user can see and act on. Two ways to qualify:
+//
+//   1. calEventId is set — the event really is on Google Calendar. Adding it
+//      again would be a visible duplicate.
+//   2. The status is one the review queue actually renders, so the event is
+//      sitting in front of the user awaiting a decision. Adding it again would
+//      be a duplicate card.
+//
+// Everything else is a dead record: a `draft` stranded with no approval path,
+// something `cancelled` or `dismissed` by hand, or a row marked `added` /
+// `reviewed` whose calendar write never landed. None of those are on screen and
+// none are on the calendar, so none can be duplicated — yet before this guard
+// they all suppressed incoming email silently, with no queue entry and no log
+// beyond a DEDUP SKIP line. That is how a school newsletter goes missing.
+//
+// Deliberately keyed on calEventId rather than status alone: status records
+// what we intended, calEventId records what actually happened, and the 132 rows
+// where those disagreed are the whole reason this exists.
+const DEDUP_BLOCKING_STATUSES = new Set([
+  'pending', 'duplicate', 'pending_cancellation', 'pending_reschedule',
+]);
+
+function blocksDuplicate(ev) {
+  if (ev.calEventId) return true;
+  return DEDUP_BLOCKING_STATUSES.has(ev.status);
+}
+
 function isDuplicateEventIn(all, title, date, opts = {}) {
   const shape = recurrenceShape(opts.recurrence);
   const time = opts.time || '';
   return all.some(ev => {
-    if (ev.status === 'dismissed') return false;
+    if (!blocksDuplicate(ev)) return false;
     if (!titlesLooselyMatch(ev.title, title)) return false;
     // Same day counts when the clock time agrees, or when either side has no
     // time at all — one extraction saying "9:00" and another saying all-day is

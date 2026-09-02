@@ -18,7 +18,35 @@ Last reviewed: 2026-09-02
 ## Blocks trust — a user would notice and lose confidence
 
 ### 5. The 81 draft events silently suppress real school email
-**Verified. The most severe open bug.**
+**Verified. FIXED 2026-09-02 (`0a17791`), confirmed against live data.**
+
+A stored event may now block an incoming one only if `calEventId` is set (it is
+really on the calendar) or its status is one the review queue renders (it is
+awaiting a decision). Dead records — `draft`, `cancelled`, `dismissed`, and
+`added`/`reviewed` rows whose write never landed — are no longer consulted.
+Blocking rows dropped from 305 to 189; 116 phantoms neutralised.
+
+Confirmed with `/api/debug/dedup` (added in `304e987`) on four events a draft
+would have swallowed — Mass of the Holy Spirit, Week 7 League Game Day, Student
+Testing Day PSAT, Team Practice Sep 4. All four were skipped before, all four
+pass now.
+
+Fixed the inverse too: a `dismissed` event that *did* reach the calendar was
+previously excluded from the check, so re-extraction wrote a real duplicate.
+Six rows were in that state.
+
+**Still open, and not addressed by this fix:** `gcalWritten:${email}`
+(`api/server.js:1033`) is a separate Redis set holding a `date|title` signature
+for every event Criba successfully auto-wrote, TTL 400 days. The 30 cancelled
+events left signatures behind. If the school resends one, `autoWriteToCalendar`
+returns `GUARD-SKIP` and the calendar write is refused — though unlike the dedup
+path, the event is still stored and still appears in the review queue flagged as
+a duplicate, so it is visible rather than silent. There is no endpoint that
+reads or clears this set; it is referenced in exactly one place in the codebase.
+
+The original report follows.
+
+---
 
 297 events sit in neither feed — 216 `dismissed` + 81 `draft`. They cannot be
 seen, approved, or cleared from any screen. That much is cosmetic. The
@@ -128,6 +156,15 @@ Liturgy). Title-based dedupe does not catch two different names for one event.
 **Verified.** Of the 81 drafts, this is the only event genuinely not on the
 calendar — the other 80 are a shadow copy of the SI feed already subscribed to
 in Google. Blocked by #6.
+
+---
+
+### 13. `titlesLooselyMatch` matches far more widely than expected
+**Verified while testing #5.** "Week 7 – League Game Day" fuzzy-matches 23
+stored rows spanning January to February — every "Week N" variant matches every
+other. No harm results, because the date check then rejects them, but that means
+dedup safety rests on dates far more than on titles. Worth knowing before anyone
+loosens the date comparison.
 
 ---
 

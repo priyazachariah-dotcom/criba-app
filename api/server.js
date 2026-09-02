@@ -805,6 +805,23 @@ function normalizeSenders(raw) {
   return out;
 }
 
+// ── Circles ───────────────────────────────────────────────────────────────
+//
+// A "circle" is which group of people a member belongs to — the household, the
+// friend group, the extended family, work. It is a grouping label on the member
+// record, not a new store: attribution, colour and learning all continue to key
+// on the member, so an event tagged to a member is automatically tagged to that
+// member's circle.
+//
+// Every member predates this field, so the absence of a circle must read as the
+// default rather than as an error — that is why normalizeCircle never returns
+// empty and everything falls back to 'family'.
+const CIRCLE_PRESETS = ['family', 'friends', 'extended', 'work', 'other'];
+function normalizeCircle(raw) {
+  const s = String(raw || '').toLowerCase().trim();
+  return s || 'family';
+}
+
 // Resolve who an event is about, in evidence order.
 //
 // Activities first: they carry the tier discriminators, so they are the only
@@ -1006,7 +1023,34 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
     }
   }
 
+  // Persistent write-guard — the most reliable defence against a second copy.
+  // The calendar reads above can be stale (cached, or a lookup that failed and
+  // returned "no duplicate"); this does not depend on them. Criba remembers every
+  // (date, title) it has auto-written for this user in Redis and refuses to write
+  // the same one twice, across runs and restarts. Keyed per user; the title is
+  // normalised so trivial punctuation/spacing differences still collide.
+  const guardEmail = opts.email || null;
+  const guardKey = guardEmail ? `gcalWritten:${guardEmail}` : null;
+  const guardSig = guardEmail ? `${ev.date || ''}|${String(ev.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}` : null;
+  if (guardSig && !opts.skipDuplicateCheck) {
+    try {
+      if (await redis.sismember(guardKey, guardSig)) {
+        ev.duplicate_of = ev.duplicate_of || { title: ev.title, date: ev.date, calendarId: targetCalId, calendarName: 'your calendar' };
+        console.log(`[calendar-dedup] GUARD-SKIP "${ev.title}" on ${ev.date} — Criba already auto-added this once`);
+        return null;
+      }
+    } catch (gErr) { console.error('[calendar-dedup] write-guard read failed, writing anyway:', gErr.message); }
+  }
+
   const result = await calendarApi.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
+  // Record the signature only after a successful insert, so a failed write does
+  // not permanently block a later retry of the same event.
+  if (guardSig) {
+    try {
+      await redis.sadd(guardKey, guardSig);
+      await redis.expire(guardKey, 400 * 24 * 60 * 60);
+    } catch (gErr) { console.error('[calendar-dedup] write-guard record failed:', gErr.message); }
+  }
   // Make this write visible to the next check in this process immediately.
   noteWrittenToCache(targetCalId, ev.date, {
     id: result.data.id,
@@ -1592,6 +1636,30 @@ const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_REDIRECT_URI
 );
 
+// Which callback URL to hand Google for this request.
+//
+// Production is unchanged: when the request arrives on the same host as the
+// configured GOOGLE_REDIRECT_URI, that exact URI is used. For any OTHER host —
+// a Vercel preview/staging alias, or a fresh local domain — the callback is
+// derived from the request's own host, so sign-in completes on whatever domain
+// is actually serving the app instead of bouncing to production.
+//
+// This cannot be abused to steal tokens: Google only issues a code to a
+// redirect_uri that is registered on the OAuth client, so a spoofed Host header
+// just produces a URI Google refuses. The one operational requirement is that
+// each host you sign in on (production, and the stable staging alias) has its
+// /api/auth/google/callback registered on the OAuth client.
+function redirectUriFor(req) {
+  const envUri = process.env.GOOGLE_REDIRECT_URI || '';
+  const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+  if (!host) return envUri;
+  if (envUri) {
+    try { if (new URL(envUri).host === host) return envUri; } catch {}
+  }
+  const proto = String(req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http')).split(',')[0].trim();
+  return `${proto}://${host}/api/auth/google/callback`;
+}
+
 const SCOPES = [
   'https://www.googleapis.com/auth/userinfo.email',
   'https://www.googleapis.com/auth/userinfo.profile',
@@ -1620,14 +1688,60 @@ function requireAuth2(req, res, next) {
 }
 
 app.get('/api/auth/google', (req, res) => {
-  const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent' });
+  const url = oauth2Client.generateAuthUrl({ access_type: 'offline', scope: SCOPES, prompt: 'consent', redirect_uri: redirectUriFor(req) });
   res.redirect(url);
+});
+
+// Sign-in setup helper. Renders a plain-English page with the one URL to copy
+// and where to paste it, so enabling sign-in on a new deployment needs no
+// technical knowledge. Add ?format=json for the raw values. No secrets — the
+// client_id is public and only its head is shown.
+app.get('/api/auth/debug', (req, res) => {
+  const redirectUri = redirectUriFor(req);
+  const clientHead = (process.env.GOOGLE_CLIENT_ID || '').slice(0, 24) || 'unknown';
+  if (req.query.format === 'json') {
+    return res.json({
+      redirect_uri_to_register: redirectUri,
+      host_seen: req.headers['x-forwarded-host'] || req.headers.host || null,
+      proto_seen: req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http'),
+      configured_GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || null,
+      client_id_head: clientHead,
+    });
+  }
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  res.set('Content-Type', 'text/html').send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Criba — enable sign-in here</title></head>
+<body style="margin:0;background:#F0DAD8;color:#111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.55">
+<div style="max-width:620px;margin:0 auto;padding:32px 20px 64px">
+  <div style="font-weight:800;font-size:22px;letter-spacing:.04em;text-transform:uppercase">CRIBA</div>
+  <h1 style="font-size:24px;margin:18px 0 6px">Enable sign-in for this site</h1>
+  <p style="color:#555;margin:0 0 24px">This is a staging copy of Criba. To let people sign in here, do these two quick steps in Google — about a minute. Nothing here is sensitive.</p>
+
+  <div style="background:#fff;border:1.5px solid #111;padding:18px;margin-bottom:16px">
+    <div style="font-weight:700;margin-bottom:8px">Step 1 · Add this web address to Google</div>
+    <p style="margin:0 0 10px;color:#555">Copy the address below, then open the Google settings link and paste it under <b>“Authorized redirect URIs”</b> on the client named <b>Criba</b> (the one ending <code>${esc(clientHead)}…</code>).</p>
+    <div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap">
+      <input id="u" readonly value="${esc(redirectUri)}" style="flex:1;min-width:220px;font-family:ui-monospace,Menlo,monospace;font-size:12px;padding:10px;border:1.5px solid #111;background:#F0DAD8;color:#111">
+      <button onclick="navigator.clipboard.writeText(document.getElementById('u').value).then(()=>{this.textContent='Copied ✓'})" style="border:1.5px solid #111;background:#111;color:#F0DAD8;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;text-transform:uppercase;letter-spacing:.04em">Copy</button>
+    </div>
+    <p style="margin:12px 0 0"><a href="https://console.cloud.google.com/apis/credentials?project=criba-496102" target="_blank" rel="noopener" style="color:#1a73e8;font-weight:600">Open Google credentials settings →</a></p>
+  </div>
+
+  <div style="background:#fff;border:1.5px solid #111;padding:18px;margin-bottom:16px">
+    <div style="font-weight:700;margin-bottom:8px">Step 2 · Allow the person to sign in</div>
+    <p style="margin:0;color:#555">On the <a href="https://console.cloud.google.com/apis/credentials/consent?project=criba-496102" target="_blank" rel="noopener" style="color:#1a73e8;font-weight:600">OAuth consent screen</a>, add their Google address under <b>Test users</b>. Save.</p>
+  </div>
+
+  <p style="color:#555;font-size:13px">Done both? Go back to the app and click <b>Continue with Google</b>. Google can take a minute to catch up — if it still blocks, wait 2 minutes and retry.</p>
+</div>
+</body></html>`);
 });
 
 app.get('/api/auth/google/callback', async (req, res) => {
   const { code } = req.query;
   try {
-    const { tokens } = await oauth2Client.getToken(code);
+    // Must be the SAME redirect_uri that /api/auth/google sent Google, or the
+    // token exchange fails — redirectUriFor derives both from the request host.
+    const { tokens } = await oauth2Client.getToken({ code, redirect_uri: redirectUriFor(req) });
     oauth2Client.setCredentials(tokens);
     const oauth2 = google.oauth2({ version: 'v2', auth: oauth2Client });
     const { data } = await oauth2.userinfo.get();
@@ -1880,6 +1994,10 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
       if (match) {
         ev.suggested_member_id = match.id;
         ev.suggested_color = match.eventColor || match.color || null;
+        // The member carries a circle, so tagging the event to the member tags
+        // it to the circle too — no separate resolution step. Falls back to the
+        // default for members that predate the circle field.
+        ev.suggested_circle = normalizeCircle(match.circle);
         // Shown on the card. A colour that appears with no stated reason is the
         // kind of thing that makes people distrust the whole queue.
         ev.suggested_reason = reason;
@@ -3761,12 +3879,12 @@ app.get('/api/family', requireAuth, async (req, res) => {
 });
 
 app.post('/api/family', requireAuth, async (req, res) => {
-  const { name, color, eventColor, grade, activities, senders } = req.body;
+  const { name, color, eventColor, grade, circle, activities, senders } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
   const id = randomUUID();
   // Grade is stored as the user typed it ("3rd", "K", "TK", "9") and normalised
   // at comparison time, so nothing is lost if they type something unexpected.
-  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, googleCalendarId: null, activities: normalizeActivities(activities), senders: normalizeSenders(senders) };
+  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, circle: normalizeCircle(circle), googleCalendarId: null, activities: normalizeActivities(activities), senders: normalizeSenders(senders) };
   await getUserFamily(req.user.email).set(id, member);
   res.json(member);
 });
@@ -3781,6 +3899,9 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
   // Explicit undefined check: '' is how the UI clears a grade back to unset,
   // and a truthiness test would make clearing impossible.
   if (req.body.grade !== undefined) member.grade = String(req.body.grade).trim() || null;
+  // Same explicit-undefined rule as grade: a member can be moved between circles,
+  // and normalizeCircle keeps the field from ever landing empty.
+  if (req.body.circle !== undefined) member.circle = normalizeCircle(req.body.circle);
   // Same explicit-undefined rule: [] is how the UI removes every activity, and
   // a facts store you cannot empty is a facts store you cannot correct.
   if (req.body.activities !== undefined) member.activities = normalizeActivities(req.body.activities);
@@ -5445,7 +5566,10 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         const conflictNote = await findConflict(eventsStore, ev.date, startTime, endTime);
         const combinedNotes = ev.notes || null;
 
-        // Auto-write to calendar immediately
+        // Auto-add: write to the calendar immediately. autoWriteToCalendar is the
+        // single chokepoint that dedups before inserting — against every calendar
+        // the user subscribes to, a late fresh re-check, AND a persistent
+        // write-guard keyed per user — so auto-add never lands a second copy.
         const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
         const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: ev.recurring_note || null, attendees: [],
           // Carried purely so buildEventDescription can write the details and
@@ -5453,14 +5577,12 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
         let calEventId = null;
         try {
-          calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz });
+          calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz, email });
           console.log(`[gmail-process] GCal WRITE "${ev.title}" on ${ev.date} calEventId=${calEventId}`);
         } catch (calErr) {
           console.error(`[gmail-process] GCal write failed for "${ev.title}":`, calErr.message);
         }
         // Not written because it is already on one of the user's calendars.
-        // Recorded as 'duplicate' rather than 'pending' so the review queue says
-        // "already on your calendar" instead of looking like a failed write.
         const calDup = evObj.duplicate_of || null;
         const evId = randomUUID();
         await eventsStore.set(evId, {
@@ -7286,16 +7408,16 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             exclusionRules, senderEmail, ev.audience);
 
           let calEventId = null;
-          // The check above only saw the target calendar; autoWriteToCalendar
-          // additionally checks every other calendar the user subscribes to and
-          // returns null (setting duplicate_of) instead of writing a second copy.
+          // autoWriteToCalendar checks every calendar the user subscribes to and
+          // the persistent write-guard before inserting, so a scan can auto-add
+          // without ever landing a second copy.
           const bfWriteObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: null, attendees: [],
             // Carried purely so buildEventDescription can write the details and
             // the back-link to the source email into the calendar entry.
             notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
           if (relevance.relevant) {
             try {
-              calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz });
+              calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz, email });
             } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
           }
           const otherCalDup = bfWriteObj.duplicate_of || null;

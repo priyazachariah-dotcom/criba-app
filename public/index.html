@@ -404,6 +404,10 @@
      than tinting — a light background change is invisible here. */
   .quick-chip.on { background: var(--ink); color: #fff; border-color: var(--ink); }
   .quick-chip input { margin: 0; cursor: pointer; }
+  /* Dashed edge marks the "add someone new" action apart from the person chips. */
+  .quick-chip-add { border-style: dashed; color: var(--text2); }
+  .quick-newperson { display: inline-flex; align-items: center; gap: 6px; }
+  .quick-newperson-input { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--ink); border-radius: 999px; background: #fff; color: var(--ink); width: 8.5rem; outline: none; }
   .quick-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
   /* Whether a row is really on the calendar is the single most important fact
      about it, so it gets colour rather than another grey pill. */
@@ -509,6 +513,54 @@
   .member-cal-badge { font-size: 0.75rem; color: var(--text2); background: var(--bg); border: 1px solid var(--ink); padding: 2px 7px; }
   .member-grade { width: 3.5rem; font-family: inherit; font-size: 0.8rem; text-align: center; padding: 3px 4px; border: 1px solid var(--ink); background: var(--bg); color: var(--ink); }
   .member-grade:focus { outline: none; background: white; }
+  .member-circle { font-family: inherit; font-size: 0.78rem; padding: 3px 5px; border: 1px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
+  .member-circle:focus { outline: none; background: white; }
+  .circle-heading { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text2); margin: 0.75rem 0 0.35rem; }
+  .circle-heading:first-child { margin-top: 0; }
+  /* The circle a suggested event is heading for, shown on the review card. */
+  .circle-tag { display: inline-block; font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); background: var(--bg); border: 1px solid var(--text2); border-radius: 3px; padding: 1px 5px; margin-left: 6px; }
+
+  /* ── Review calendar view ───────────────────────────────────────────
+     Reuses the existing palette only: pink --bg, ink borders, white cards,
+     Archivo Black headings. Proposed (awaiting approval) reads as a dashed
+     chip; already-on-your-calendar reads as a solid muted chip. */
+  .rv-view-toggle { display: flex; gap: 0; margin: 0.75rem 0 0; }
+  .rv-view-toggle button { font-family: inherit; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.5rem 1.1rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
+  .rv-view-toggle button.on { background: var(--ink); color: var(--bg); }
+  .rv-view-toggle button + button { border-left: none; }
+  .rv-cal { border: 1.5px solid var(--ink); background: white; margin-top: 1rem; }
+  .rv-cal-head { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.9rem; border-bottom: 1.5px solid var(--ink); }
+  .rv-cal-month { font-family: 'Archivo Black', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; }
+  .rv-cal-nav { display: flex; gap: 6px; }
+  .rv-cal-nav button { font-family: inherit; font-size: 14px; width: 30px; height: 30px; border: 1.5px solid var(--ink); background: var(--bg); cursor: pointer; color: var(--ink); line-height: 1; }
+  .rv-cal-nav button:hover { background: var(--bg2); }
+  .rv-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+  .rv-cal-dow { font-size: 0.64rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); text-align: center; padding: 6px 0; border-bottom: 1px solid var(--ink); }
+  .rv-cal-cell { min-height: 88px; border-right: 1px solid var(--bg2); border-bottom: 1px solid var(--bg2); padding: 4px 4px 6px; overflow: hidden; }
+  .rv-cal-cell:nth-child(7n) { border-right: none; }
+  .rv-cal-cell.other-month { background: var(--bg); }
+  .rv-cal-day { font-size: 0.72rem; font-weight: 600; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; color: var(--ink); }
+  .rv-cal-cell.today .rv-cal-day { background: var(--ink); color: white; border-radius: 50%; }
+  .rv-cal-cell.sel { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .rv-cal-ev { display: flex; align-items: center; gap: 4px; font-size: 0.68rem; line-height: 1.25; padding: 2px 4px; margin-top: 2px; border: 1px solid var(--ink); cursor: pointer; white-space: nowrap; overflow: hidden; }
+  .rv-cal-ev-title { overflow: hidden; text-overflow: ellipsis; }
+  .rv-cal-ev.proposed { border-style: dashed; background: white; }
+  .rv-cal-ev.already { background: var(--bg2); color: var(--text2); opacity: 0.9; }
+  .rv-cal-ev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .rv-cal-more { font-size: 0.64rem; color: var(--text2); margin-top: 2px; cursor: pointer; }
+  .rv-cal-legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 0.6rem 0.9rem; border-top: 1.5px solid var(--ink); font-size: 0.7rem; color: var(--text2); align-items: center; }
+  .rv-cal-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .rv-cal-legend i { width: 16px; border-top: 1.5px dashed var(--ink); display: inline-block; }
+  .rv-cal-legend i.solid { border-top-style: solid; }
+  .rv-cal-detail { margin-top: 1.25rem; }
+  .rv-cal-detail-head { font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 0.5rem; }
+  .rv-cal-hint { font-size: 0.8rem; color: var(--text2); margin-top: 1rem; text-align: center; }
+
+  /* Agenda view — the review workspace. */
+  .rv-agenda { margin-top: 1rem; }
+  .rv-agenda-day { margin-bottom: 1.75rem; }
+  .rv-agenda-daylabel { font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink); padding-bottom: 0.5rem; margin-bottom: 0.75rem; border-bottom: 1.5px solid var(--ink); }
+  .rv-agenda-daylabel.is-today { color: var(--blue); border-bottom-color: var(--blue); }
   .member-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 0 6px 22px; }
   .act-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; padding: 2px 5px 2px 7px; border: 1px solid var(--ink); border-radius: 10px; }
   /* Dashed edge marks a fact Criba inferred rather than one you confirmed. */
@@ -552,7 +604,14 @@
 
   /* ── Responsive ──────────────────────────────────────────────────── */
   @media (max-width: 860px) {
-    header { padding: 0 24px; height: 72px; }
+    /* Below full desktop the header stops trying to fit everything on one line —
+       the nav drops to its own horizontally-scrollable row so it can never
+       collide with the live pill, name or Sign out. */
+    header { padding: 10px 24px; height: auto; flex-wrap: wrap; gap: 8px 16px; }
+    .header-logo-section { flex: 0 0 auto; }
+    .header-user-section { flex: 1 1 auto; }
+    .header-nav-section { order: 3; flex: 1 1 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .header-nav-section, nav { gap: 20px; flex-wrap: nowrap; }
     .page { padding: 32px 24px 56px; }
     #gmail-disconnect-banner { margin: 1rem 24px 0; }
     .page-title-block { flex-direction: column; gap: 1rem; align-items: flex-start; }
@@ -561,8 +620,36 @@
     .cer-title { max-width: 50%; }
     .scan-bar { flex-direction: column; align-items: flex-start; gap: 0.75rem; padding: 16px 18px; }
     .scan-bar-btns { flex-wrap: wrap; }
-    .header-nav-section, nav { gap: 20px; }
     .page-headline { font-size: clamp(32px, 8vw, 64px); }
+  }
+
+  /* Phones. Reflow only — every colour, border and font stays as designed.
+     The header wraps so the nav gets its own horizontally-scrollable row
+     instead of overflowing, and the calendar tightens to fit a narrow width. */
+  @media (max-width: 640px) {
+    header { height: auto; flex-wrap: wrap; padding: 10px 16px; gap: 8px 12px; }
+    .header-logo-section { flex: 0 0 auto; }
+    .header-user-section { flex: 1 1 auto; }
+    .user-name { display: none; }
+    .header-nav-section { order: 3; flex: 1 1 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .header-nav-section, nav { gap: 18px; flex-wrap: nowrap; }
+    .page { padding: 24px 16px 56px; }
+    .page-headline { font-size: clamp(30px, 11vw, 52px); }
+    .rv-cal-cell { min-height: 62px; padding: 3px 2px 4px; }
+    .rv-cal-ev { font-size: 0.6rem; padding: 1px 3px; gap: 3px; }
+    .rv-cal-ev-dot { width: 6px; height: 6px; }
+    .rv-cal-dow { font-size: 0.55rem; }
+    .rv-cal-day { font-size: 0.66rem; width: 18px; height: 18px; }
+    .rv-cal-month { font-size: 13px; }
+    .rv-cal-legend { font-size: 0.62rem; gap: 10px; }
+    .rv-cal-hint { font-size: 0.75rem; }
+    .rv-view-toggle button { padding: 0.45rem 0.9rem; font-size: 11.5px; }
+    .review-card-row { flex-direction: column; align-items: stretch; }
+    .review-card-tags { padding-top: 10px; }
+    .member-row { flex-wrap: wrap; }
+    .ahead-bar { gap: 8px; }
+    .ahead-refresh { margin-left: 0; }
+    .ahead-when { width: 94px; font-size: 12px; }
   }
 
   .empty-state { text-align: center; padding: 4rem 2rem; color: var(--text2); }
@@ -781,14 +868,19 @@
   .ahead-win:hover, .ahead-mode:hover, .ahead-refresh:hover { border-color: var(--ink); }
   .ahead-refresh { margin-left: auto; }
   .ahead-meta { color: var(--text2); font-size: 12px; margin-bottom: 14px; }
-  .ahead-group { margin-bottom: 22px; }
-  .ahead-group-head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 0.9rem; margin-bottom: 6px; padding-bottom: 5px; border-bottom: 1.5px solid var(--ink); }
-  .ahead-group-count { color: var(--text2); font-weight: 400; font-size: 12px; }
-  .ahead-row { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--border, #eee); font-size: 0.875rem; }
-  .ahead-when { flex-shrink: 0; width: 132px; color: var(--text2); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .ahead-title { flex: 1; }
-  .ahead-where { color: var(--text2); font-size: 12px; }
-  .ahead-clash { color: #b45309; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .ahead-group { margin-bottom: 30px; }
+  .ahead-group-head { display: flex; align-items: center; gap: 9px; font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--ink); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); }
+  .ahead-group-count { margin-left: auto; color: var(--text2); font-family: 'Inter', sans-serif; font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; }
+  .ahead-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 2px; border-bottom: 1px solid rgba(0,0,0,0.09); }
+  .ahead-row:last-child { border-bottom: none; }
+  .ahead-row.is-clash { background: #fffbeb; margin: 0 -8px; padding-left: 10px; padding-right: 10px; }
+  .ahead-row-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
+  .ahead-when { flex-shrink: 0; width: 118px; color: var(--ink); font-weight: 500; font-size: 12.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+  .ahead-when .awd { display: block; color: var(--text2); font-weight: 400; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .ahead-content { flex: 1; min-width: 0; }
+  .ahead-title { font-size: 0.9rem; line-height: 1.35; color: var(--ink); }
+  .ahead-where { display: block; color: var(--text2); font-size: 12px; margin-top: 3px; }
+  .ahead-clash { display: inline-block; margin-top: 5px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
   .ahead-empty { color: var(--text2); font-size: 0.875rem; padding: 1.5rem 0; }
   .ahead-conflict-band { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; margin-bottom: 18px; font-size: 0.875rem; }
   .ahead-conflict-band .acb-title { color: #92400e; font-weight: 600; margin-bottom: 6px; }
@@ -834,7 +926,7 @@
       <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
       <!-- The Family page was built but never linked, so members could never be
            added — which silently disabled every colour feature downstream. -->
-      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">Family</button>
+      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">Circles</button>
     </nav>
     <div class="header-user-section">
       <span class="live-pill" id="live-pill" title="Checking…">
@@ -873,7 +965,7 @@
   <div class="page active" id="page-review">
     <div class="page-title-block">
       <div class="page-headline" id="review-page-title">REVIEW THE<br>QUEUE</div>
-      <div class="page-desc" id="review-page-sub">Events added to your Google Calendar — review, edit, or remove anything Criba got wrong.</div>
+      <div class="page-desc" id="review-page-sub">Criba adds these to your Google Calendar automatically — and never adds a duplicate. Review, edit, or remove anything it got wrong.</div>
     </div>
     <div id="review-list"></div>
   </div>
@@ -1016,15 +1108,22 @@
   <!-- Settings / Family members page -->
   <div class="page" id="page-settings">
     <div class="page-title-block">
-      <div class="page-headline page-headline-sm">FAMILY</div>
-      <div class="page-desc">Add family members — each person gets a distinct event color on your shared Google Calendar.</div>
+      <div class="page-headline page-headline-sm">CIRCLES</div>
+      <div class="page-desc">Add the people in your life and group them into circles — family, friends, work, whoever. Each person gets a distinct event colour on your calendar.</div>
     </div>
     <div class="settings-section">
       <div class="settings-section-title">Members</div>
       <div id="settings-members-list"></div>
-      <button class="btn-secondary" id="settings-add-btn" onclick="toggleAddMemberForm()" style="margin-top:0.5rem">+ Add member</button>
+      <button class="btn-secondary" id="settings-add-btn" onclick="toggleAddMemberForm()" style="margin-top:0.5rem">+ Add person</button>
       <div id="settings-add-form" style="display:none" class="add-member-form">
         <input type="text" id="settings-member-name" placeholder="Name (e.g. Aarav)" />
+        <select id="settings-member-circle" class="member-circle" title="Which circle this person belongs to" style="margin-top:0.5rem">
+          <option value="family">Family</option>
+          <option value="friends">Friends</option>
+          <option value="extended">Extended family</option>
+          <option value="work">Work</option>
+          <option value="other">Other</option>
+        </select>
         <div class="color-swatches" id="settings-color-swatches"></div>
         <div class="add-member-actions">
           <button class="btn-primary" onclick="addMemberFromSettings()">Add</button>
@@ -1192,6 +1291,13 @@ let savedRecipients = [];
 
 // Family members state
 let familyMembers = [];        // loaded from /api/family on boot
+
+// Circles group members into the household, friends, extended family, work.
+// A member with no circle predates the feature and reads as 'family'.
+const CIRCLE_ORDER = ['family', 'friends', 'extended', 'work', 'other'];
+const CIRCLE_LABELS = { family: 'Family', friends: 'Friends', extended: 'Extended family', work: 'Work', other: 'Other' };
+function circleLabel(c) { return CIRCLE_LABELS[c] || (c ? c.charAt(0).toUpperCase() + c.slice(1) : 'Family'); }
+function memberCircle(m) { return (m && m.circle) || 'family'; }
 let pickerCallback = null;     // fn(memberId|null) set when picker opens
 let settingsNewColor = '7';    // selected color in settings add-form
 let pickerNewColor = '7';      // selected color in picker inline-form
@@ -1216,7 +1322,7 @@ function eventDotHtml(ev) {
   const m = memberId ? familyMembers.find(x => x.id === memberId) : null;
   const colorId = (m && (m.eventColor || m.color)) || ev.suggested_color;
   if (!colorId) return '';
-  const who = m ? m.name : 'a family member';
+  const who = m ? m.name : 'someone';
   // When the colour came from the sender's history rather than a name in the
   // event, say so on hover. An unexplained colour is the kind of thing that
   // makes the whole queue feel arbitrary.
@@ -1254,17 +1360,30 @@ function renderQuickAdds(ev, opts = {}) {
   const id = ev.id;
   const chosen = rvChosenMember(ev);
   const guessed = ev.suggested_member_id || '';
-  const people = familyMembers.length ? `
+  const memberChips = familyMembers.map(m => `
+      <button class="quick-chip ${chosen === m.id ? 'on' : ''}" id="qm-${id}-${m.id}"
+              onclick="setQuickMember('${id}','${m.id}')"
+              title="${chosen === m.id && guessed === m.id ? 'Criba matched this to ' + escHtml(m.name) : 'Colour this event for ' + escHtml(m.name)}">
+        <span class="quick-dot" style="background:${memberColor(m.eventColor || m.color)}"></span>${escHtml(m.name)}${chosen === m.id && memberCircle(m) !== 'family' ? `<span class="circle-tag">${circleLabel(memberCircle(m))}</span>` : ''}
+      </button>`).join('');
+  const noneChip = familyMembers.length ? `<button class="quick-chip ${chosen === '' ? 'on' : ''}" id="qm-${id}-none"
+              onclick="setQuickMember('${id}','')" title="No colour — use the calendar default">None</button>` : '';
+  // Add someone who isn't in your circles yet, right from the event — no trip to
+  // the Circles page. The new person is created and coloured onto this event in
+  // one step, and then shows up on every other card too.
+  const addPerson = `
+      <button class="quick-chip quick-chip-add" onclick="showQuickAddPerson('${id}')" title="Add someone new and colour this event for them">+ New person</button>
+      <span class="quick-newperson" id="qnp-${id}" style="display:none">
+        <input class="quick-newperson-input" id="qnp-input-${id}" placeholder="Name" autocomplete="off"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddPerson('${id}')}" />
+        <button class="quick-chip quick-newperson-save" onclick="quickAddPerson('${id}')">Add</button>
+      </span>`;
+  const people = `
     <div class="quick-add-group">
-      ${familyMembers.map(m => `
-        <button class="quick-chip ${chosen === m.id ? 'on' : ''}" id="qm-${id}-${m.id}"
-                onclick="setQuickMember('${id}','${m.id}')"
-                title="${chosen === m.id && guessed === m.id ? 'Criba matched this to ' + escHtml(m.name) : 'Colour this event for ' + escHtml(m.name)}">
-          <span class="quick-dot" style="background:${memberColor(m.eventColor || m.color)}"></span>${escHtml(m.name)}
-        </button>`).join('')}
-      <button class="quick-chip ${chosen === '' ? 'on' : ''}" id="qm-${id}-none"
-              onclick="setQuickMember('${id}','')" title="No colour — use the calendar default">None</button>
-    </div>` : '';
+      ${memberChips}
+      ${noneChip}
+      ${addPerson}
+    </div>`;
   // A deadline or action item is a note to self — there is nobody to invite to
   // "Tuition payment due", so the card only offers the colour chips.
   const recips = opts.hideRecipients ? '' : savedRecipients.length ? `
@@ -1298,6 +1417,35 @@ function setQuickMember(id, memberId) {
   if (sel) sel.value = memberId;
 }
 
+// Reveal the inline "add a new person" input on an event card.
+function showQuickAddPerson(id) {
+  const box = document.getElementById(`qnp-${id}`);
+  if (!box) return;
+  const showing = box.style.display !== 'none';
+  box.style.display = showing ? 'none' : 'inline-flex';
+  if (!showing) {
+    const inp = document.getElementById(`qnp-input-${id}`);
+    if (inp) { inp.value = ''; inp.focus(); }
+  }
+}
+
+// Create a person from the event card and colour this event for them in one
+// step. They are added to the default 'family' circle (re-file later on the
+// Circles page) and, via renderReview, become selectable on every other card.
+async function quickAddPerson(id) {
+  const inp = document.getElementById(`qnp-input-${id}`);
+  const name = (inp?.value || '').trim();
+  if (!name) { if (inp) inp.focus(); return; }
+  try {
+    const member = await apiAddMember(name, '7', 'family');
+    familyMembers.push(member);
+    rvMemberState[id] = member.id;   // colour this event for the new person
+    renderReview({ force: true });
+  } catch (e) {
+    alert(e.message || 'Could not add that person');
+  }
+}
+
 const CAL_COLORS = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#db2777','#0891b2'];
 
 // ── Family member API helpers ─────────────────────────────────────────────
@@ -1309,8 +1457,8 @@ async function loadFamily() {
   } catch {}
 }
 
-async function apiAddMember(name, color) {
-  const res = await fetch('/api/family', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, color }) });
+async function apiAddMember(name, color, circle) {
+  const res = await fetch('/api/family', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, color, circle }) });
   if (!res.ok) throw new Error((await res.json()).error || 'Failed');
   return res.json();
 }
@@ -1324,17 +1472,21 @@ async function apiDeleteMember(id) {
 function renderSettingsPage() {
   const el = document.getElementById('settings-members-list');
   if (!familyMembers.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">No family members yet — add one below.</div>';
+    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">No people yet — add someone below.</div>';
     return;
   }
   // The colour was settable only while adding someone, so the sole way to
   // correct it was to delete the person and recreate them. The dot is now the
   // control that changes it.
-  el.innerHTML = familyMembers.map(m => `
+  const memberRow = m => `
     <div class="member-row">
       <span class="member-dot member-dot-btn" style="background:${memberColor(m.color)}"
             title="Change ${escHtml(m.name)}'s colour" onclick="toggleMemberColors('${m.id}')"></span>
       <span class="member-name">${escHtml(m.name)}</span>
+      <select class="member-circle" title="Which circle ${escHtml(m.name)} belongs to"
+              onchange="setMemberCircle('${m.id}', this.value)">
+        ${CIRCLE_ORDER.map(c => `<option value="${c}"${memberCircle(m) === c ? ' selected' : ''}>${circleLabel(c)}</option>`).join('')}
+      </select>
       <input class="member-grade" id="member-grade-${m.id}" value="${escHtml(m.grade || '')}"
              placeholder="grade" maxlength="4" autocomplete="off"
              title="School grade — TK, K, or a number. Used to skip newsletter events for grades nobody is in."
@@ -1344,7 +1496,17 @@ function renderSettingsPage() {
     </div>
     <div class="member-colors" id="member-colors-${m.id}" style="display:none"></div>
     ${renderMemberActivities(m)}
-  `).join('');
+  `;
+  // Members are grouped by circle so the household, the friend group and work
+  // read as distinct lists rather than one undifferentiated column. A circle
+  // heading only appears when someone is actually in it.
+  el.innerHTML = CIRCLE_ORDER
+    .map(c => {
+      const inCircle = familyMembers.filter(m => memberCircle(m) === c);
+      if (!inCircle.length) return '';
+      return `<div class="circle-heading">${circleLabel(c)}</div>${inCircle.map(memberRow).join('')}`;
+    })
+    .join('');
 }
 
 // What Criba believes about this person, shown as removable chips. Every fact
@@ -1561,6 +1723,32 @@ async function setMemberGrade(id, value) {
   }
 }
 
+// Moving someone between circles re-groups the list, so a failed save must put
+// them back where they were rather than leave a heading that does not match the
+// server. Re-render on both paths so the grouping always reflects saved state.
+async function setMemberCircle(id, value) {
+  const member = familyMembers.find(m => m.id === id);
+  if (!member) return;
+  const previous = memberCircle(member);
+  const next = String(value || 'family').trim().toLowerCase() || 'family';
+  if (next === previous) return;
+  member.circle = next;
+  renderSettingsPage();
+  try {
+    const res = await fetch(`/api/family/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ circle: next }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed');
+    Object.assign(member, await res.json());
+    renderSettingsPage();
+  } catch (e) {
+    member.circle = previous;
+    renderSettingsPage();
+    alert(`Could not change the circle: ${e.message}`);
+  }
+}
+
 function toggleAddMemberForm() {
   const form = document.getElementById('settings-add-form');
   const isHidden = form.style.display === 'none';
@@ -1576,8 +1764,9 @@ function toggleAddMemberForm() {
 async function addMemberFromSettings() {
   const name = document.getElementById('settings-member-name').value.trim();
   if (!name) { alert('Please enter a name'); return; }
+  const circle = document.getElementById('settings-member-circle')?.value || 'family';
   try {
-    const member = await apiAddMember(name, settingsNewColor);
+    const member = await apiAddMember(name, settingsNewColor, circle);
     familyMembers.push(member);
     renderSettingsPage();
     toggleAddMemberForm();
@@ -1585,7 +1774,7 @@ async function addMemberFromSettings() {
 }
 
 async function deleteMember(id) {
-  if (!confirm('Remove this family member? Their Google Calendar and events are not affected.')) return;
+  if (!confirm('Remove this person? Their Google Calendar and events are not affected.')) return;
   await apiDeleteMember(id);
   familyMembers = familyMembers.filter(m => m.id !== id);
   renderSettingsPage();
@@ -1628,7 +1817,7 @@ function cancelMemberPicker() {
 function renderMemberPickerList() {
   const el = document.getElementById('picker-members-list');
   if (!familyMembers.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.8rem;padding:0.25rem 0 0.75rem">No family members yet — add one below.</div>';
+    el.innerHTML = '<div style="color:var(--text2);font-size:0.8rem;padding:0.25rem 0 0.75rem">No people yet — add someone below.</div>';
     return;
   }
   el.innerHTML = familyMembers.map(m => `
@@ -2494,12 +2683,24 @@ function renderAhead() {
   const clashing = new Set();
   conflicts.forEach(c => { clashing.add(c.a.id); clashing.add(c.b.id); });
 
-  const row = (ev, showDay) => `
-    <div class="ahead-row">
-      <span class="ahead-when">${escHtml(showDay ? `${aheadDayLabel(ev.date)}, ${aheadTimeLabel(ev)}` : aheadTimeLabel(ev))}</span>
-      <span class="ahead-title">${escHtml(ev.title)}${ev.location ? ` <span class="ahead-where">· ${escHtml(ev.location)}</span>` : ''}</span>
-      ${clashing.has(ev.id) ? '<span class="ahead-clash">clash</span>' : ''}
+  const colorFor = id => (aheadData.people || []).find(p => p.id === id)?.color || null;
+  const row = (ev, showDay) => {
+    const c = colorFor(ev.memberId);
+    const dotStyle = c ? `background:${memberColor(c)}` : 'background:transparent;box-shadow:inset 0 0 0 1.5px rgba(0,0,0,0.22)';
+    const when = showDay
+      ? `<span class="awd">${escHtml(aheadDayLabel(ev.date))}</span>${escHtml(aheadTimeLabel(ev))}`
+      : escHtml(aheadTimeLabel(ev));
+    return `
+    <div class="ahead-row${clashing.has(ev.id) ? ' is-clash' : ''}">
+      <span class="ahead-row-dot" style="${dotStyle}"></span>
+      <span class="ahead-when">${when}</span>
+      <span class="ahead-content">
+        <span class="ahead-title">${escHtml(ev.title)}</span>
+        ${ev.location ? `<span class="ahead-where">${escHtml(ev.location)}</span>` : ''}
+        ${clashing.has(ev.id) ? '<span class="ahead-clash">Clash</span>' : ''}
+      </span>
     </div>`;
+  };
 
   if (aheadMode === 'day') {
     const days = [];
@@ -2871,6 +3072,157 @@ let reviewRenderDeferred = false;
 // The card stayed on screen, the user pressed Dismiss again, and Dismiss looked
 // broken when the server had done exactly what it was asked. A repaint the user
 // themselves triggered must never be deferred.
+// ── Review calendar view ──────────────────────────────────────────────────
+// A month grid over the same pendingEvents the list uses. Proposed events read
+// as dashed chips; ones already on the calendar read as solid muted chips.
+// Selecting a day drops the day's real review cards (with Add + circle chips)
+// below the grid, so approval and circle assignment reuse the existing card.
+// 'agenda' (default — the review workspace) or 'month' (at-a-glance overview).
+let reviewViewMode = (() => { try { return localStorage.getItem('crReviewView') === 'month' ? 'month' : 'agenda'; } catch { return 'agenda'; } })();
+let rvCalMonth = null;         // {y, m} shown; null = derive from earliest event
+let rvCalSelectedDate = null;  // reserved for future in-grid selection
+
+function setReviewView(mode) {
+  reviewViewMode = mode === 'month' ? 'month' : 'agenda';
+  try { localStorage.setItem('crReviewView', reviewViewMode); } catch {}
+  renderReview({ force: true });
+}
+
+// Tapping a day in the month overview is a navigation action: jump to that day
+// in the agenda, where the real review cards live.
+function rvGotoDay(dd) {
+  if (!dd) return;
+  reviewViewMode = 'agenda';
+  try { localStorage.setItem('crReviewView', 'agenda'); } catch {}
+  renderReview({ force: true });
+  setTimeout(() => {
+    const el = document.getElementById('agenda-day-' + dd);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 60);
+}
+
+// Agenda view — the workspace. Events grouped under day headers, each rendered
+// as its full review card (Add button, circle chips, inline edit). This is the
+// accessible, thumb-friendly surface for actually approving events; the month
+// grid is only an overview.
+function reviewAgendaHtml(events) {
+  const dated = events.filter(e => e.date).sort((a, b) => (a.date + (a.time || '')) > (b.date + (b.time || '')) ? 1 : -1);
+  const undated = events.filter(e => !e.date);
+  if (!dated.length && !undated.length) return '';
+  const groups = [];
+  const seen = {};
+  for (const e of dated) {
+    if (!(e.date in seen)) { seen[e.date] = groups.length; groups.push({ date: e.date, items: [] }); }
+    groups[seen[e.date]].items.push(e);
+  }
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const dayCard = e => isReminderEvent(e) ? renderReminderCard(e) : renderPostWriteReviewCard(e);
+  let html = '<div class="rv-agenda">';
+  for (const g of groups) {
+    const d = new Date(g.date + 'T12:00:00');
+    const label = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+    const isToday = g.date === todayStr;
+    html += `<div class="rv-agenda-day" id="agenda-day-${g.date}">
+      <div class="rv-agenda-daylabel${isToday ? ' is-today' : ''}">${escHtml(label)}${isToday ? ' · Today' : ''}</div>
+      ${g.items.map(dayCard).join('')}
+    </div>`;
+  }
+  if (undated.length) {
+    html += `<div class="rv-agenda-day"><div class="rv-agenda-daylabel">No date</div>${undated.map(dayCard).join('')}</div>`;
+  }
+  return html + '</div>';
+}
+
+function rvCalBaseMonth() {
+  if (rvCalMonth) return rvCalMonth;
+  const dates = pendingEvents.filter(e => e.date).map(e => e.date).sort();
+  const d = dates[0] || new Date().toISOString().slice(0, 10);
+  return { y: +String(d).slice(0, 4), m: +String(d).slice(5, 7) - 1 };
+}
+
+function rvCalShift(delta) {
+  const base = rvCalBaseMonth();
+  let y = base.y, m = base.m + delta;
+  while (m < 0) { m += 12; y--; }
+  while (m > 11) { m -= 12; y++; }
+  rvCalMonth = { y, m };
+  renderReview({ force: true });
+}
+
+function rvCalSelectDay(dd) {
+  if (!dd) return;
+  rvCalSelectedDate = dd;
+  renderReview({ force: true });
+}
+
+function isAlreadyOnCalendar(ev) {
+  // With auto-add, an approved/added event is on the calendar; so is a detected
+  // duplicate. Both read as "on your calendar" (solid) rather than "proposed".
+  return ev.status === 'added' || ev.status === 'duplicate' || ev.duplicate_of_calendar === true;
+}
+
+function rvEventColorHex(ev) {
+  const memberId = rvChosenMember(ev);
+  const m = memberId ? familyMembers.find(x => x.id === memberId) : null;
+  const colorId = (m && (m.eventColor || m.color)) || ev.suggested_color;
+  return colorId ? memberColor(colorId) : null;
+}
+
+function reviewCalendarHtml(events) {
+  const withDates = events.filter(e => e.date);
+  const base = rvCalBaseMonth();
+  const y = base.y, m = base.m;
+  const monthName = new Date(y, m, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const firstDow = new Date(y, m, 1).getDay();
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const byDate = {};
+  for (const e of withDates) { (byDate[e.date] || (byDate[e.date] = [])).push(e); }
+
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  let cells = DOW.map(d => `<div class="rv-cal-dow">${d}</div>`).join('');
+
+  const totalCells = Math.ceil((firstDow + daysInMonth) / 7) * 7;
+  for (let i = 0; i < totalCells; i++) {
+    const dayNum = i - firstDow + 1;
+    const inMonth = dayNum >= 1 && dayNum <= daysInMonth;
+    const dd = inMonth ? `${y}-${String(m + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}` : '';
+    const evs = dd ? (byDate[dd] || []) : [];
+    const shown = evs.slice(0, 3);
+    const evHtml = shown.map(e => {
+      const already = isAlreadyOnCalendar(e);
+      const hex = already ? null : rvEventColorHex(e);
+      const dot = hex ? `<span class="rv-cal-ev-dot" style="background:${hex}"></span>` : '';
+      return `<div class="rv-cal-ev ${already ? 'already' : 'proposed'}" title="${escHtml(e.title || '')}${already ? ' — already on your calendar' : ''}">${dot}<span class="rv-cal-ev-title">${escHtml(e.title || '(untitled)')}</span></div>`;
+    }).join('');
+    const more = evs.length > 3 ? `<div class="rv-cal-more">+${evs.length - 3} more</div>` : '';
+    const classes = ['rv-cal-cell'];
+    if (!inMonth) classes.push('other-month');
+    if (dd === todayStr) classes.push('today');
+    if (dd && dd === rvCalSelectedDate) classes.push('sel');
+    const dayLabel = inMonth ? `<span class="rv-cal-day">${dayNum}</span>` : '';
+    cells += `<div class="${classes.join(' ')}"${dd ? ` onclick="rvGotoDay('${dd}')"` : ''}>${dayLabel}${evHtml}${more}</div>`;
+  }
+
+  const grid = `<div class="rv-cal">
+    <div class="rv-cal-head">
+      <div class="rv-cal-month">${escHtml(monthName)}</div>
+      <div class="rv-cal-nav">
+        <button onclick="rvCalShift(-1)" title="Previous month" aria-label="Previous month">‹</button>
+        <button onclick="rvCalShift(1)" title="Next month" aria-label="Next month">›</button>
+      </div>
+    </div>
+    <div class="rv-cal-grid">${cells}</div>
+    <div class="rv-cal-legend">
+      <span><i></i> Proposed — tap a day to review</span>
+      <span><i class="solid"></i> Already on your calendar</span>
+    </div>
+  </div>
+  <div class="rv-cal-hint">Tap any day to jump to it in the agenda and approve its events.</div>`;
+  return grid;
+}
+
 function renderReviewNow() { renderReview({ force: true }); }
 
 function renderReview({ force = false } = {}) {
@@ -2902,7 +3254,7 @@ function renderReview({ force = false } = {}) {
       <div class="empty-state" style="margin-top:3rem">
         <div class="empty-icon">✓</div>
         <h3>All caught up</h3>
-        <p>Events added to your calendar will appear here for review.<br>Dismiss anything Criba got wrong.</p>
+        <p>Events Criba adds to your calendar show up here to review.<br>Remove anything it got wrong — and it never adds a duplicate.</p>
       </div>`;
     wireBackfillBar();
     return;
@@ -2910,32 +3262,37 @@ function renderReview({ force = false } = {}) {
 
   let html = BACKFILL_BAR_HTML;
 
-  // Bulk exit from a long queue. Only offered when there is enough of a list to
-  // make pressing OK on each card tedious.
-  const bulkCount = timedEvents.length + reminders.length;
-  if (bulkCount >= 3) {
-    html += `<div class="scan-bar" style="margin-top:0.75rem">
-      <span class="scan-bar-label">${bulkCount} to review</span>
-      <div class="scan-bar-btns">
-        <button class="btn-outlined btn-sm" id="review-all-ok-btn" onclick="markAllReviewed()" title="Keep all of these on your calendar and clear the list">OK to all</button>
-      </div>
-    </div>`;
-  }
+  // Agenda / Month toggle. Agenda is the default review workspace; Month is a
+  // one-tap overview. Both show proposed events distinct from what is already on
+  // the calendar.
+  html += `<div class="rv-view-toggle">
+    <button class="${reviewViewMode === 'agenda' ? 'on' : ''}" onclick="setReviewView('agenda')">Agenda</button>
+    <button class="${reviewViewMode === 'month' ? 'on' : ''}" onclick="setReviewView('month')">Month</button>
+  </div>`;
 
+  // Change notices are not calendar adds — always shown as cards, above either view.
   if (cancellations.length) {
-    html += `<div style="margin-bottom:2rem">${cancellations.map(renderCancellationCard).join('')}</div>`;
+    html += `<div style="margin-bottom:1rem;margin-top:1rem">${cancellations.map(renderCancellationCard).join('')}</div>`;
   }
   if (reschedules.length) {
-    html += `<div style="margin-bottom:2rem">${reschedules.map(renderRescheduleCard).join('')}</div>`;
+    html += `<div style="margin-bottom:1rem;margin-top:1rem">${reschedules.map(renderRescheduleCard).join('')}</div>`;
   }
-  if (timedEvents.length) {
-    html += `<div style="margin-top:1.5rem">${timedEvents.map(renderPostWriteReviewCard).join('')}</div>`;
-  }
-  if (reminders.length) {
-    html += `<div class="reminders-section" style="margin-top:2rem">
-      <div class="reminders-section-label">Reminders &amp; Deadlines</div>
-      ${reminders.map(renderReminderCard).join('')}
-    </div>`;
+
+  if (reviewViewMode === 'month') {
+    html += reviewCalendarHtml([...timedEvents, ...reminders]);
+  } else {
+    // Bulk exit from a long queue. Only offered when there is enough of a list to
+    // make pressing OK on each card tedious.
+    const bulkCount = timedEvents.length + reminders.length;
+    if (bulkCount >= 3) {
+      html += `<div class="scan-bar" style="margin-top:0.75rem">
+        <span class="scan-bar-label">${bulkCount} to review</span>
+        <div class="scan-bar-btns">
+          <button class="btn-outlined btn-sm" id="review-all-ok-btn" onclick="markAllReviewed()" title="Keep all of these on your calendar and clear the list">OK to all</button>
+        </div>
+      </div>`;
+    }
+    html += reviewAgendaHtml([...timedEvents, ...reminders]);
   }
 
   container.innerHTML = html;

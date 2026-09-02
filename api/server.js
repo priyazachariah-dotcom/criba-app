@@ -2377,7 +2377,29 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
   if (!event) return res.json({ ok: true });
 
   if (!event.calEventId) {
-    // A genuine draft. Nothing was written, so there is nothing to delete.
+    // Might be a genuine draft (never written) — or an event whose calEventId
+    // was lost but which is still on the calendar. Look before concluding there
+    // is nothing to delete, so "dismiss" reliably means "remove from the
+    // calendar too" (mirrors /api/events/delete-from-calendar).
+    try {
+      const auth = await getUserOAuthClient(req.user);
+      const calendar = google.calendar({ version: 'v3', auth });
+      const targetCalId = await resolveTargetCalendar(req.user.email);
+      const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
+        title: event.title, date: event.date, time: event.time || '',
+      });
+      if (found?.id) {
+        await calendar.events.delete({ calendarId: found.calendarId || targetCalId, eventId: found.recurringEventId || found.id });
+        event.status = 'cancelled';
+        event.calEventId = null;
+        await events.set(req.body.id, event);
+        return res.json({ ok: true, removedFromCalendar: true });
+      }
+    } catch (err) {
+      const gone = err.message?.includes('410') || err.message?.includes('404') || err.message?.includes('Resource has been deleted');
+      if (!gone) console.error('dismiss search-delete error:', err.message);
+    }
+    // Genuinely nothing on the calendar — a real draft, or already gone.
     event.status = 'dismissed';
     await events.set(req.body.id, event);
     return res.json({ ok: true, removedFromCalendar: false });

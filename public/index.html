@@ -573,6 +573,19 @@
   .rv-agenda-day { margin-bottom: 1.75rem; }
   .rv-agenda-daylabel { font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink); padding-bottom: 0.5rem; margin-bottom: 0.75rem; border-bottom: 1.5px solid var(--ink); }
   .rv-agenda-daylabel.is-today { color: var(--blue); border-bottom-color: var(--blue); }
+
+  /* Themed confirm/alert modal — replaces the browser's native cribaAlert()/confirm(). */
+  .criba-modal-overlay { position: fixed; inset: 0; background: rgba(17,17,17,0.5); display: flex; align-items: center; justify-content: center; z-index: 10000; padding: 20px; }
+  .criba-modal { background: #fff; border: 1.5px solid var(--ink); max-width: 420px; width: 100%; padding: 22px 22px 18px; }
+  .criba-modal-title { font-family: 'Archivo Black', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 10px; color: var(--ink); }
+  .criba-modal-msg { font-size: 0.9rem; line-height: 1.55; color: var(--ink); }
+  .criba-modal-btns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+  .criba-modal-btns button { font-family: inherit; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500; padding: 8px 16px; border: 1.5px solid var(--ink); cursor: pointer; }
+  .criba-modal-cancel { background: var(--bg); color: var(--ink); }
+  .criba-modal-cancel:hover { background: var(--bg2); }
+  .criba-modal-ok { background: var(--ink); color: var(--bg); }
+  .criba-modal-ok.danger { background: var(--red); border-color: var(--red); color: #fff; }
+  .criba-modal-ok:hover { opacity: 0.9; }
   .member-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 0 6px 22px; }
   .act-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; padding: 2px 5px 2px 7px; border: 1px solid var(--ink); border-radius: 10px; }
   /* Dashed edge marks a fact Criba inferred rather than one you confirmed. */
@@ -615,15 +628,21 @@
   .picker-cancel:hover { background: var(--bg); }
 
   /* ── Responsive ──────────────────────────────────────────────────── */
-  @media (max-width: 860px) {
-    /* Below full desktop the header stops trying to fit everything on one line —
-       the nav drops to its own horizontally-scrollable row so it can never
-       collide with the live pill, name or Sign out. */
-    header { padding: 10px 24px; height: auto; flex-wrap: wrap; gap: 8px 16px; }
+  /* The full nav + status pill + name + Sign out need ~1150px to share one row.
+     Below that the nav drops to its own horizontally-scrollable row so it can
+     never collide with the right-hand controls — at ANY width down to mobile. */
+  @media (max-width: 1180px) {
+    header { padding: 10px 48px; height: auto; flex-wrap: wrap; gap: 8px 16px; }
     .header-logo-section { flex: 0 0 auto; }
     .header-user-section { flex: 1 1 auto; }
-    .header-nav-section { order: 3; flex: 1 1 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    .header-nav-section, nav { gap: 20px; flex-wrap: nowrap; }
+    .header-nav-section { order: 3; flex: 1 1 100%; min-width: 0; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    .header-nav-section::-webkit-scrollbar { display: none; }
+    .header-nav-section, nav { gap: 24px; flex-wrap: nowrap; }
+  }
+
+  @media (max-width: 860px) {
+    header { padding: 10px 24px; gap: 8px 16px; }
+    .header-nav-section, nav { gap: 20px; }
     .page { padding: 32px 24px 56px; }
     #gmail-disconnect-banner { margin: 1rem 24px 0; }
     .page-title-block { flex-direction: column; gap: 1rem; align-items: flex-start; }
@@ -1310,6 +1329,45 @@ const CIRCLE_ORDER = ['family', 'friends', 'extended', 'work', 'other'];
 const CIRCLE_LABELS = { family: 'Family', friends: 'Friends', extended: 'Extended family', work: 'Work', other: 'Other' };
 function circleLabel(c) { return CIRCLE_LABELS[c] || (c ? c.charAt(0).toUpperCase() + c.slice(1) : 'Family'); }
 function memberCircle(m) { return (m && m.circle) || 'family'; }
+
+// ── Themed confirm / alert ─────────────────────────────────────────────────
+// Promise-based replacements for the browser's native confirm()/cribaAlert(), so
+// every prompt matches Criba's look instead of the OS dialog. cribaConfirm
+// resolves true/false; cribaAlert resolves when dismissed.
+function cribaModal({ title = null, message = '', confirmLabel = 'OK', cancelLabel = null, danger = false }) {
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'criba-modal-overlay';
+    overlay.innerHTML = `
+      <div class="criba-modal" role="dialog" aria-modal="true">
+        ${title ? `<div class="criba-modal-title">${escHtml(title)}</div>` : ''}
+        <div class="criba-modal-msg">${escHtml(message).replace(/\n/g, '<br>')}</div>
+        <div class="criba-modal-btns">
+          ${cancelLabel ? `<button type="button" class="criba-modal-cancel">${escHtml(cancelLabel)}</button>` : ''}
+          <button type="button" class="criba-modal-ok${danger ? ' danger' : ''}">${escHtml(confirmLabel)}</button>
+        </div>
+      </div>`;
+    const close = val => { overlay.remove(); document.removeEventListener('keydown', onKey); resolve(val); };
+    const onKey = e => {
+      if (e.key === 'Escape' && cancelLabel) close(false);
+      else if (e.key === 'Enter') close(true);
+    };
+    overlay.querySelector('.criba-modal-ok').addEventListener('click', () => close(true));
+    const cancelBtn = overlay.querySelector('.criba-modal-cancel');
+    if (cancelBtn) cancelBtn.addEventListener('click', () => close(false));
+    // Click on the dim backdrop cancels (only when there is a cancel option).
+    overlay.addEventListener('click', e => { if (e.target === overlay && cancelLabel) close(false); });
+    document.addEventListener('keydown', onKey);
+    document.body.appendChild(overlay);
+    (cancelBtn || overlay.querySelector('.criba-modal-ok')).focus();
+  });
+}
+function cribaConfirm(message, opts = {}) {
+  return cribaModal({ title: opts.title || null, message, confirmLabel: opts.confirmLabel || 'Confirm', cancelLabel: opts.cancelLabel || 'Cancel', danger: !!opts.danger });
+}
+function cribaAlert(message, opts = {}) {
+  return cribaModal({ title: opts.title || null, message, confirmLabel: opts.confirmLabel || 'OK', cancelLabel: null, danger: false });
+}
 let pickerCallback = null;     // fn(memberId|null) set when picker opens
 let settingsNewColor = '7';    // selected color in settings add-form
 let pickerNewColor = '7';      // selected color in picker inline-form
@@ -1495,7 +1553,7 @@ async function createQuickPerson(id, name, email) {
     rvMemberState[id] = member.id;   // colour this event for the new person
     renderReview({ force: true });
   } catch (e) {
-    alert(e.message || 'Could not add that person');
+    cribaAlert(e.message || 'Could not add that person');
   }
 }
 
@@ -1641,7 +1699,7 @@ async function removeExclusion(id) {
   } catch {
     exclusionRules = previous;
     renderExclusions();
-    alert('Could not remove that rule — please try again.');
+    cribaAlert('Could not remove that rule — please try again.');
   }
 }
 
@@ -1670,14 +1728,14 @@ async function saveMemberActivities(id, activities, onFail) {
   } catch (e) {
     member.activities = previous;
     renderSettingsPage();
-    alert(`${onFail}: ${e.message}`);
+    cribaAlert(`${onFail}: ${e.message}`);
   }
 }
 
 async function addMemberActivity(id) {
   const val = k => (document.getElementById(`act-${k}-${id}`)?.value || '').trim();
   const type = val('type');
-  if (!type) { alert('An activity needs a name — "football", "soccer".'); return; }
+  if (!type) { cribaAlert('An activity needs a name — "football", "soccer".'); return; }
   const member = familyMembers.find(m => m.id === id);
   const list = (Array.isArray(member?.activities) ? member.activities : []).slice();
   // Typed in by hand is a statement of fact, not an inference.
@@ -1704,7 +1762,7 @@ async function removeMemberSender(id, index) {
   } catch (e) {
     member.senders = previous;
     renderSettingsPage();
-    alert(`Could not remove the sender: ${e.message}`);
+    cribaAlert(`Could not remove the sender: ${e.message}`);
   }
 }
 
@@ -1748,7 +1806,7 @@ async function setMemberColor(id, colorId) {
   } catch (e) {
     member.color = previous;       // never leave a colour showing that did not save
     renderSettingsPage();
-    alert(`Could not change the colour: ${e.message}`);
+    cribaAlert(`Could not change the colour: ${e.message}`);
   }
 }
 
@@ -1772,7 +1830,7 @@ async function setMemberGrade(id, value) {
     member.grade = previous || null;
     const input = document.getElementById(`member-grade-${id}`);
     if (input) input.value = previous;
-    alert(`Could not save the grade: ${e.message}`);
+    cribaAlert(`Could not save the grade: ${e.message}`);
   }
 }
 
@@ -1798,7 +1856,7 @@ async function setMemberCircle(id, value) {
   } catch (e) {
     member.circle = previous;
     renderSettingsPage();
-    alert(`Could not change the circle: ${e.message}`);
+    cribaAlert(`Could not change the circle: ${e.message}`);
   }
 }
 
@@ -1816,18 +1874,18 @@ function toggleAddMemberForm() {
 
 async function addMemberFromSettings() {
   const name = document.getElementById('settings-member-name').value.trim();
-  if (!name) { alert('Please enter a name'); return; }
+  if (!name) { cribaAlert('Please enter a name'); return; }
   const circle = document.getElementById('settings-member-circle')?.value || 'family';
   try {
     const member = await apiAddMember(name, settingsNewColor, circle);
     familyMembers.push(member);
     renderSettingsPage();
     toggleAddMemberForm();
-  } catch (e) { alert(e.message); }
+  } catch (e) { cribaAlert(e.message); }
 }
 
 async function deleteMember(id) {
-  if (!confirm('Remove this person? Their Google Calendar and events are not affected.')) return;
+  if (!(await cribaConfirm('Their Google Calendar and events are not affected.', { title: 'Remove this person?', confirmLabel: 'Remove', danger: true }))) return;
   await apiDeleteMember(id);
   familyMembers = familyMembers.filter(m => m.id !== id);
   renderSettingsPage();
@@ -1900,14 +1958,14 @@ function hidePickerInlineForm() {
 
 async function addAndSelectMember() {
   const name = document.getElementById('picker-new-name').value.trim();
-  if (!name) { alert('Please enter a name'); return; }
+  if (!name) { cribaAlert('Please enter a name'); return; }
   try {
     const member = await apiAddMember(name, pickerNewColor);
     familyMembers.push(member);
     renderMemberPickerList();
     hidePickerInlineForm();
     selectMember(member.id);
-  } catch (e) { alert(e.message); }
+  } catch (e) { cribaAlert(e.message); }
 }
 
 // ── Google Places autocomplete ────────────────────────────────────────────
@@ -2268,7 +2326,7 @@ async function sendDismissReason(reason) {
 
   // The one place friction belongs: a standing rule is about to exist, and the
   // user has to read what it says before it does.
-  if (!confirm(`${data.prompt}\n\nThey'll still reach Review with the reason shown — one click to add. You can remove this rule any time under Family.`)) return;
+  if (!(await cribaConfirm(`${data.prompt}\n\nThey'll still reach Review with the reason shown — one click to add. You can remove this rule any time under Circles.`, { confirmLabel: 'Create rule' }))) return;
 
   try {
     const res = await fetch('/api/exclusions', {
@@ -2278,7 +2336,7 @@ async function sendDismissReason(reason) {
     if (!res.ok) throw new Error('Failed');
     await loadExclusions();
   } catch {
-    alert('Could not save that rule — please try again.');
+    cribaAlert('Could not save that rule — please try again.');
   }
 }
 
@@ -2292,9 +2350,9 @@ async function markAllReviewed() {
   // clearing them would throw them away.
   const n = pendingEvents.filter(e => e.status === 'added' && !e.reviewed).length;
   const drafts = pendingEvents.filter(e => e.status === 'pending').length;
-  if (!n) { alert(drafts ? `Nothing to clear — all ${drafts} remaining are drafts that aren't on your calendar yet. Add or discard them individually.` : 'Nothing to clear.'); return; }
-  if (!confirm(`Keep all ${n} events on your calendar and clear them from the review list?\n\nNothing is deleted — they move to Edit Calendar Events.`
-    + (drafts ? `\n\n${drafts} draft${drafts > 1 ? 's' : ''} not yet added will stay in the list.` : ''))) return;
+  if (!n) { cribaAlert(drafts ? `Nothing to clear — all ${drafts} remaining are drafts that aren't on your calendar yet. Add or discard them individually.` : 'Nothing to clear.'); return; }
+  if (!(await cribaConfirm(`Keep all ${n} events on your calendar and clear them from the review list?\n\nNothing is deleted — they move to Edit Calendar Events.`
+    + (drafts ? `\n\n${drafts} draft${drafts > 1 ? 's' : ''} not yet added will stay in the list.` : ''), { confirmLabel: 'Clear list' }))) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Clearing…'; }
   try {
     const res = await fetch('/api/events/review-all-ok', { method: 'POST' });
@@ -2303,7 +2361,7 @@ async function markAllReviewed() {
     await loadRecentEvents();
   } catch {
     if (btn) { btn.disabled = false; btn.textContent = 'OK to all'; }
-    alert('Could not clear the list — please try again.');
+    cribaAlert('Could not clear the list — please try again.');
   }
 }
 
@@ -2908,10 +2966,11 @@ async function startFresh() {
 
   const series = plan.plan.filter(p => p.isSeries).length;
   const detail = series ? ` (${series} of them repeating series)` : '';
-  const ok = confirm(
+  const ok = await cribaConfirm(
     `Remove ${plan.wouldDelete} event${plan.wouldDelete === 1 ? '' : 's'}${detail} that Criba added to your calendar?\n\n` +
     `Covers ${plan.windowFrom} to ${plan.windowTo}. Events you created yourself and events from subscribed calendars are not touched. ` +
-    `Your review queue will also be emptied.\n\nThis cannot be undone.`
+    `Your review queue will also be emptied.\n\nThis cannot be undone.`,
+    { confirmLabel: 'Remove all', danger: true }
   );
   if (!ok) { say(''); return; }
 
@@ -2966,10 +3025,11 @@ async function cleanupDuplicates() {
   const series = (plan.plan || []).filter(p => p.isSeries).length;
   const detail = series ? ` (${series} repeating series)` : '';
   const sample = (plan.plan || []).slice(0, 6).map(p => `• ${p.title}${p.isSeries ? ' (series)' : ''}`).join('\n');
-  const ok = confirm(
+  const ok = await cribaConfirm(
     `Found ${plan.wouldDelete} duplicate cop${plan.wouldDelete === 1 ? 'y' : 'ies'}${detail} that Criba added.\n\n` +
     `${sample}${plan.wouldDelete > 6 ? '\n…' : ''}\n\n` +
-    `One copy of each event is kept — only the extra copies are removed. Events you created yourself and events from subscribed calendars are never touched.\n\nThis cannot be undone. Remove them?`
+    `One copy of each event is kept — only the extra copies are removed. Events you created yourself and events from subscribed calendars are never touched.\n\nThis cannot be undone. Remove them?`,
+    { confirmLabel: 'Remove duplicates', danger: true }
   );
   if (!ok) { say(''); return; }
 
@@ -3142,7 +3202,7 @@ function renderReminderCard(ev) {
 
 async function deleteReminder(id) {
   const title = (pendingEvents.find(e => e.id === id) || {}).title || 'this event';
-  if (!confirm(`Delete "${title}" from your calendar?`)) return;
+  if (!(await cribaConfirm(`Delete "${title}" from your calendar?`, { confirmLabel: 'Delete', danger: true }))) return;
   const card = document.getElementById(`rcard-${id}`);
   if (card) card.style.opacity = '0.4';
   try {
@@ -3151,7 +3211,7 @@ async function deleteReminder(id) {
     renderReviewNow();
   } catch (e) {
     if (card) card.style.opacity = '1';
-    alert('Failed to delete — please try again.');
+    cribaAlert('Failed to delete — please try again.');
   }
 }
 
@@ -3163,7 +3223,7 @@ async function deleteReminder(id) {
 // quote, which silently killed the whole handler.
 async function deleteApproved(id) {
   const title = (recentEvents.find(e => e.id === id) || {}).title || 'this event';
-  if (!confirm(`Delete "${title}" from your Google Calendar?`)) return;
+  if (!(await cribaConfirm(`Delete "${title}" from your Google Calendar?`, { confirmLabel: 'Delete', danger: true }))) return;
   const status = document.getElementById(`rv-status-${id}`);
   if (status) { status.textContent = 'Deleting…'; status.style.color = ''; }
   try {
@@ -4759,7 +4819,7 @@ async function deleteCalendar(id) {
     const choice = await threeWayConfirm(msg);
     if (choice === 'abort') return;
     removeUpcoming = choice === 'yes';
-  } else if (!confirm(`Remove "${label}"?\n\nCriba will stop checking it for updates. Events already on your calendar stay.`)) {
+  } else if (!(await cribaConfirm(`Remove "${label}"?\n\nCriba will stop checking it for updates. Events already on your calendar stay.`, { confirmLabel: 'Remove', danger: true }))) {
     return;
   }
 
@@ -4773,8 +4833,8 @@ async function deleteCalendar(id) {
 // never mind). Rather than a custom modal, ask twice: the second question only
 // appears once the user has already committed to removing the calendar.
 async function threeWayConfirm(msg) {
-  if (!confirm(msg)) {
-    return confirm('Leave those events on your calendar and just stop syncing?') ? 'no' : 'abort';
+  if (!(await cribaConfirm(msg, { confirmLabel: 'Remove events', danger: true }))) {
+    return (await cribaConfirm('Leave those events on your calendar and just stop syncing?', { confirmLabel: 'Stop syncing' })) ? 'no' : 'abort';
   }
   return 'yes';
 }
@@ -4854,7 +4914,7 @@ function acceptUploadFile(file) {
   // broken rather than that the file was wrong. Always say something.
   if (!file) return;
   if (!uploadFileOk(file)) {
-    alert(`"${file.name}" is not a PDF or an image.\n\nUpload a PDF or a screenshot (PNG, JPG, GIF or WEBP).`);
+    cribaAlert(`"${file.name}" is not a PDF or an image.\n\nUpload a PDF or a screenshot (PNG, JPG, GIF or WEBP).`);
     return;
   }
   selectedFile = file;
@@ -4881,16 +4941,16 @@ async function submitCalendar() {
   // for "URL", so renaming the tab silently sent subscriptions down the upload
   // path — a rename should never be able to change behaviour.
   const isUrl = document.querySelector('.source-tab.active').dataset.source === 'url';
-  if (!name) { alert('Please enter a calendar name'); return; }
+  if (!name) { cribaAlert('Please enter a calendar name'); return; }
   const btn = document.getElementById('cal-submit-btn');
   const status = document.getElementById('extract-status');
 
   // Validate source before showing the picker so the user sees errors immediately
   if (isUrl) {
     const url = document.getElementById('cal-url').value.trim();
-    if (!url) { alert('Please enter a URL'); return; }
+    if (!url) { cribaAlert('Please enter a URL'); return; }
   } else if (!selectedFile && !instructionText()) {
-    alert('Attach a PDF or screenshot, or describe the event in the box below.');
+    cribaAlert('Attach a PDF or screenshot, or describe the event in the box below.');
     return;
   }
 
@@ -4956,7 +5016,7 @@ async function doImport(name, isUrl, memberId, btn, status) {
         // Said before the user starts approving, because an invite that never
         // goes out stays invisible until the person does not turn up.
         if (unmatched.length) {
-          alert(`Criba couldn't match ${unmatched.map(n => '"' + n + '"').join(', ')} to anyone you've saved, so they have not been invited.\n\nAdd them under Family first, then tick them on the events.`);
+          cribaAlert(`Criba couldn't match ${unmatched.map(n => '"' + n + '"').join(', ')} to anyone you've saved, so they have not been invited.\n\nAdd them under Family first, then tick them on the events.`);
         }
       } else {
         status.innerHTML = `<div style="color:var(--red);font-size:0.875rem;padding:0.5rem 0">${data.error || 'Failed'}</div>`;
@@ -5117,12 +5177,12 @@ async function applyRemovals() {
     // Failures are reported, not swallowed — a date Criba could not isolate is
     // still on the user's calendar and they need to know that.
     if (data.failures && data.failures.length) {
-      alert(`Removed ${data.skipped || 0} date(s). Could not remove ${data.failures.length}: ${data.failures.map(f => f.date || f).join(', ')}`);
+      cribaAlert(`Removed ${data.skipped || 0} date(s). Could not remove ${data.failures.length}: ${data.failures.map(f => f.date || f).join(', ')}`);
     }
   } catch (err) {
     if (status) status.textContent = '';
     if (btn) btn.disabled = false;
-    alert('Could not remove those dates: ' + (err.message || 'network error'));
+    cribaAlert('Could not remove those dates: ' + (err.message || 'network error'));
   }
 }
 
@@ -5375,7 +5435,7 @@ async function applyFieldToGroup(ci, key, field) {
     toggleEventEditor(ci, Number(String(key).split('-')[1]));
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Apply to all'; }
-    alert(`Could not apply to the group: ${e.message}`);
+    cribaAlert(`Could not apply to the group: ${e.message}`);
   }
 }
 
@@ -5594,7 +5654,7 @@ async function restoreToCalendar(id) {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       if (btn) { btn.disabled = false; btn.textContent = 'Add to calendar'; }
-      alert(err.error || 'Could not add this to your calendar.');
+      cribaAlert(err.error || 'Could not add this to your calendar.');
       return;
     }
     // Re-read rather than patching state by hand, so the badge is driven by
@@ -5603,7 +5663,7 @@ async function restoreToCalendar(id) {
     await loadRecentEvents();
   } catch {
     if (btn) { btn.disabled = false; btn.textContent = 'Add to calendar'; }
-    alert('Network error \u2014 nothing was changed.');
+    cribaAlert('Network error \u2014 nothing was changed.');
   }
 }
 

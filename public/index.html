@@ -599,6 +599,33 @@
   .criba-modal-ok { background: var(--ink); color: var(--bg); }
   .criba-modal-ok.danger { background: var(--red); border-color: var(--red); color: #fff; }
   .criba-modal-ok:hover { opacity: 0.9; }
+
+  /* First-run onboarding overlay — same theme as the sign-in screen. */
+  .ob-overlay { position: fixed; inset: 0; z-index: 9500; display: flex; align-items: center; justify-content: center; padding: 20px;
+    background: radial-gradient(ellipse 90% 80% at 50% 42%, #F6E4E2 0%, var(--bg) 48%, #E4CBC7 100%); }
+  .ob-card { background: #fff; border: 1.5px solid var(--ink); width: 100%; max-width: 460px; padding: 2.25rem 2rem; text-align: center; }
+  .ob-logo { font-family: 'Archivo Black', sans-serif; font-size: 1.7rem; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ink); margin-bottom: 1rem; }
+  .ob-dots { display: flex; justify-content: center; gap: 7px; margin-bottom: 1.25rem; }
+  .ob-dots span { width: 7px; height: 7px; border-radius: 50%; background: rgba(0,0,0,0.18); }
+  .ob-dots span.on { background: var(--ink); }
+  .ob-title { font-family: 'Archivo Black', sans-serif; font-size: 1.3rem; line-height: 1.15; color: var(--ink); margin-bottom: 0.6rem; text-transform: uppercase; letter-spacing: 0.01em; }
+  .ob-sub { font-size: 0.9rem; line-height: 1.55; color: var(--text2); margin-bottom: 1.5rem; }
+  .ob-add-row { display: flex; gap: 6px; margin-bottom: 0.9rem; }
+  .ob-input { flex: 1; min-width: 0; font-family: inherit; font-size: 0.875rem; padding: 0.55rem 0.75rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); }
+  .ob-input:focus { outline: none; background: #fff; }
+  .ob-select { font-family: inherit; font-size: 0.8rem; padding: 0.55rem 0.4rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
+  .ob-btn-add { font-family: inherit; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; font-weight: 500; padding: 0.55rem 0.9rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
+  .ob-btn-add:hover { background: var(--bg2); }
+  .ob-people { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; min-height: 1.5rem; margin-bottom: 1.5rem; }
+  .ob-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--ink); border: 1px solid var(--ink); border-radius: 999px; padding: 3px 10px; }
+  .ob-dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
+  .ob-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .ob-btn-primary { font-family: inherit; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500; padding: 0.7rem 1.5rem; border: 1.5px solid var(--ink); background: var(--ink); color: var(--bg); cursor: pointer; }
+  .ob-btn-primary:hover { opacity: 0.9; }
+  .ob-btn-ghost { font-family: inherit; font-size: 0.82rem; color: var(--text2); background: none; border: none; cursor: pointer; text-decoration: underline; }
+  .ob-btn-ghost:hover { color: var(--ink); }
+  .ob-spinner { font-size: 2rem; color: var(--ink); margin-bottom: 0.75rem; animation: ob-spin 1.6s linear infinite; display: inline-block; }
+  @keyframes ob-spin { to { transform: rotate(360deg); } }
   .member-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 0 6px 22px; }
   .act-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; padding: 2px 5px 2px 7px; border: 1px solid var(--ink); border-radius: 10px; }
   /* Dashed edge marks a fact Criba inferred rather than one you confirmed. */
@@ -1003,6 +1030,47 @@
       Criba is no longer receiving new events from your Gmail. Click to reconnect.
     </div>
     <button class="reconnect-btn" id="reconnect-btn" onclick="reconnectGmail()">Reconnect Gmail</button>
+  </div>
+
+  <!-- First-run guided onboarding: welcome → add your circle → first scan.
+       Shown once for a new account (needsOnboardingScan), over everything. -->
+  <div id="onboarding-overlay" class="ob-overlay" style="display:none">
+    <div class="ob-card">
+      <div class="ob-step" id="ob-step-1">
+        <div class="ob-logo">CRIBA</div>
+        <div class="ob-dots"><span class="on"></span><span></span><span></span></div>
+        <h2 class="ob-title">Welcome to Criba</h2>
+        <p class="ob-sub">Criba reads your Gmail, PDFs and calendar feeds and adds anything with a date to your Google Calendar — colour-coded by person, and never a duplicate. Two quick steps and you're set.</p>
+        <button class="ob-btn-primary" onclick="obGoStep(2)">Get started</button>
+      </div>
+      <div class="ob-step" id="ob-step-2" style="display:none">
+        <div class="ob-dots"><span></span><span class="on"></span><span></span></div>
+        <h2 class="ob-title">Who do you plan around?</h2>
+        <p class="ob-sub">Add the people whose events you track — kids, family, friends. Each gets a colour, so events land already colour-coded. You can always add more later.</p>
+        <div class="ob-add-row">
+          <input id="ob-name" class="ob-input" placeholder="Name (e.g. Aarav)" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();obAddPerson();}" />
+          <select id="ob-circle" class="ob-select" title="Which circle">
+            <option value="family">Family</option>
+            <option value="friends">Friends</option>
+            <option value="extended">Extended family</option>
+            <option value="work">Work</option>
+            <option value="other">Other</option>
+          </select>
+          <button class="ob-btn-add" onclick="obAddPerson()">Add</button>
+        </div>
+        <div class="ob-people" id="ob-people"></div>
+        <div class="ob-actions">
+          <button class="ob-btn-ghost" onclick="obFinish()">Skip for now</button>
+          <button class="ob-btn-primary" id="ob-continue" onclick="obFinish()">Continue</button>
+        </div>
+      </div>
+      <div class="ob-step" id="ob-step-3" style="display:none">
+        <div class="ob-dots"><span></span><span></span><span class="on"></span></div>
+        <div class="ob-spinner">◴</div>
+        <h2 class="ob-title">Setting up your calendar</h2>
+        <p class="ob-sub" id="ob-scan-msg">Reading your last 48 hours of email to get you started — this takes up to a minute.</p>
+      </div>
+    </div>
   </div>
 
   <!-- Review queue (Gmail events) -->
@@ -2454,18 +2522,74 @@ async function checkGmailStatus() {
     } else {
       banner.classList.add('hidden');
     }
-    if (data.needsOnboardingScan) runOnboardingScan();
+    if (data.needsOnboardingScan) startOnboarding();
   } catch {}
+}
+
+// ── First-run guided onboarding ─────────────────────────────────────────────
+//
+// A brand-new account has no people/circles, so auto-add can't colour anything
+// and the first scan lands as a grey pile. This wizard fixes the ordering: greet
+// the user, let them add the people they plan around (so colours work from the
+// first event), THEN run the catch-up scan. Circles can still be edited later on
+// the Circles page; "Skip" is always available so setup is never a wall.
+let obAdded = [];
+function startOnboarding() {
+  const ov = document.getElementById('onboarding-overlay');
+  if (!ov) { runOnboardingScan(); return; }   // markup missing — fall back to the plain scan
+  // Hold the review repaint underneath while the wizard is open.
+  onboardingScanRunning = true;
+  obAdded = [];
+  obRenderPeople();
+  obShowStep(1);
+  ov.style.display = 'flex';
+}
+function obShowStep(n) {
+  [1, 2, 3].forEach(i => { const e = document.getElementById(`ob-step-${i}`); if (e) e.style.display = i === n ? 'block' : 'none'; });
+  if (n === 2) { const inp = document.getElementById('ob-name'); if (inp) setTimeout(() => inp.focus(), 60); }
+}
+function obGoStep(n) { obShowStep(n); }
+async function obAddPerson() {
+  const nameEl = document.getElementById('ob-name');
+  const name = (nameEl?.value || '').trim();
+  if (!name) { nameEl?.focus(); return; }
+  const circle = document.getElementById('ob-circle')?.value || 'family';
+  // Give each new person a distinct colour so the calendar reads at a glance.
+  const palette = ['5', '9', '3', '6', '7', '10', '2', '8', '11', '1'];
+  const color = palette[obAdded.length % palette.length];
+  try {
+    const m = await apiAddMember(name, color, circle, null);
+    familyMembers.push(m);
+    obAdded.push(m);
+    nameEl.value = '';
+    nameEl.focus();
+    obRenderPeople();
+  } catch (e) { cribaAlert(e.message || 'Could not add that person'); }
+}
+function obRenderPeople() {
+  const el = document.getElementById('ob-people');
+  if (!el) return;
+  el.innerHTML = obAdded.map(m =>
+    `<span class="ob-chip"><span class="ob-dot" style="background:${memberColor(m.eventColor || m.color)}"></span>${escHtml(m.name)}${memberCircle(m) !== 'family' ? ` · ${escHtml(circleLabel(memberCircle(m)))}` : ''}</span>`
+  ).join('');
+  const cont = document.getElementById('ob-continue');
+  if (cont) cont.textContent = obAdded.length ? 'Continue' : 'Continue';
+}
+// Step 3: run the catch-up scan behind the overlay, then reveal the app.
+async function obFinish() {
+  obShowStep(3);
+  try { await runOnboardingScan(); } catch {}
+  const ov = document.getElementById('onboarding-overlay');
+  if (ov) ov.style.display = 'none';
 }
 
 // ── First-run scan ─────────────────────────────────────────────────────────
 //
 // The Gmail watch only delivers mail arriving after sign-in, so without this a
-// new user's first sight of Criba is an empty queue. One 24h scan, run once,
-// automatically. Deliberately not longer: 24h always finishes inside the 60s
-// function budget, so the first thing a new user experiences can't be a
-// timeout. Anything older than a day is out of scope by design — Criba starts
-// working from the moment you sign in.
+// new user's first sight of Criba is an empty queue. One 48h scan, run once.
+// Deliberately not longer: it always finishes inside the 60s function budget,
+// so the first thing a new user experiences can't be a timeout. Anything older
+// is out of scope by design — Criba starts working from the moment you sign in.
 async function runOnboardingScan() {
   // loadData() and the 30s poller both render the review queue. Without this
   // flag they would repaint the empty state over the "Setting up" message a

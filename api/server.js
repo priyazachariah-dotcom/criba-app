@@ -6869,6 +6869,51 @@ app.get('/api/debug/writes', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/debug/dedup?title=...&date=YYYY-MM-DD[&time=HH:MM] — read-only.
+//
+// Answers "would an incoming email carrying this event be dropped, and by what?"
+// The webhook's dedup skip is otherwise invisible: it logs one line and drops
+// the event, so the only way to know an email was suppressed was to already
+// suspect it. This runs the real matcher — not a copy of its rules — and reports
+// every row that matched, whether that row still blocks, and why.
+//
+// Titles that match but no longer block are listed too. That is the interesting
+// half: it is where a draft or a cancelled event used to swallow real mail.
+app.get('/api/debug/dedup', requireAuth, async (req, res) => {
+  try {
+    const title = String(req.query.title || '');
+    const date = String(req.query.date || '');
+    if (!title || !date) return res.status(400).json({ error: 'title and date are required' });
+    const time = String(req.query.time || '');
+
+    const all = await getUserEvents(req.user.email).values();
+    const matches = all
+      .filter(ev => titlesLooselyMatch(ev.title, title))
+      .map(ev => ({
+        title: ev.title, date: ev.date, status: ev.status,
+        calEventId: ev.calEventId || null,
+        blocks: blocksDuplicate(ev),
+        why: ev.calEventId
+          ? 'on the calendar'
+          : DEDUP_BLOCKING_STATUSES.has(ev.status)
+            ? 'awaiting your decision in the review queue'
+            : `dead record (${ev.status}, never written) — ignored`,
+      }));
+
+    res.json({
+      query: { title, date, time },
+      // The verdict, straight from the function the webhook calls.
+      wouldBeSkipped: isDuplicateEventIn(all, title, date, { time }),
+      titleMatches: matches.length,
+      blocking: matches.filter(m => m.blocks).length,
+      ignoredDeadRecords: matches.filter(m => !m.blocks).length,
+      matches,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'debug dedup failed', detail: err.message });
+  }
+});
+
 // GET /api/debug/scan-list?days=7 — run the EXACT query the backfill uses and
 // report, per message, whether it is still fingerprinted and whether the snippet
 // pre-filter would pass it. No Claude calls, so it returns in a second or two.

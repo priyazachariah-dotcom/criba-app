@@ -2831,7 +2831,7 @@ const BACKFILL_BAR_HTML = `
   <span class="scan-bar-label">Scan Gmail</span>
   <div class="scan-bar-btns">
     <button class="btn-outlined btn-sm" id="backfill-btn-dry" onclick="runBackfill(2, true)" title="Preview which emails would be sent to AI — no API calls">Dry run</button>
-    <button class="btn-filled btn-sm" id="backfill-btn-2" onclick="runBackfill(2)">Scan now</button>
+    <button class="btn-filled btn-sm" id="backfill-btn-2" onclick="runBackfill(2)">Scan last 48 hours</button>
     <button class="btn-outlined btn-sm" id="backfill-debug-toggle" onclick="toggleScanDebug()" title="Show debug tools — scan trace, reset dedup">Tools</button>
   </div>
 </div>
@@ -3606,6 +3606,12 @@ async function showScanTrace() {
 // time for. It is not a new scan: it must not be blocked by the cooldown, and
 // it chains itself until the queue is actually empty.
 const MAX_SCAN_CONTINUATIONS = 6;
+// The button says exactly how far back it reads, so the scope is visible at
+// the point of the click rather than only in onboarding copy. Held in one
+// constant because the label is also restored in three places after a run —
+// as a literal it silently reverted to the old wording on the first scan.
+const SCAN_BTN_LABEL = 'Scan last 48 hours';
+
 async function runBackfill(days, dryRun = false, continuation = 0) {
   const btn2 = document.getElementById('backfill-btn-2');
   const btnDry = document.getElementById('backfill-btn-dry');
@@ -3687,7 +3693,7 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
         setTimeout(() => runBackfill(days, false, continuation + 1), 800);
         return;
       }
-      if (data.hitLimit) msg += ' — still more to read, click Scan now to carry on';
+      if (data.hitLimit) msg += ' — still more to read, click scan again to carry on';
       if (result) {
         result.textContent = msg;
         // The reason belongs next to the count. Without it the user is told
@@ -3702,10 +3708,10 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
       }
       // A run in which everything failed did not finish. Saying "Done" invites
       // the user to walk away from a scan that read nothing at all.
-      if (btn2) btn2.textContent = (data.hitLimit || (failed && !eventsStored)) ? 'Scan now' : '✓ Done';
+      if (btn2) btn2.textContent = (data.hitLimit || (failed && !eventsStored)) ? SCAN_BTN_LABEL : '✓ Done';
     }
   } finally {
-    if (btn2) { btn2.disabled = false; if (btn2.textContent === 'Scanning…') btn2.textContent = 'Scan now'; }
+    if (btn2) { btn2.disabled = false; if (btn2.textContent === 'Scanning…') btn2.textContent = SCAN_BTN_LABEL; }
     const btn7f = document.getElementById('backfill-btn-7');
     if (btn7f) { btn7f.disabled = false; if (btn7f.textContent === 'Scanning…') btn7f.textContent = 'Last 7 days'; }
     if (btnDry) { btnDry.disabled = false; if (btnDry.textContent === 'Running…') btnDry.textContent = 'Dry run'; }

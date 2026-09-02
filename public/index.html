@@ -408,6 +408,10 @@
   .quick-chip-add { border-style: dashed; color: var(--text2); }
   .quick-newperson { display: inline-flex; align-items: center; gap: 6px; }
   .quick-newperson-input { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--ink); border-radius: 999px; background: #fff; color: var(--ink); width: 8.5rem; outline: none; }
+  .qnp-field { position: relative; display: inline-block; }
+  .qnp-drop { position: absolute; top: calc(100% + 3px); left: 0; z-index: 60; min-width: 210px; max-height: 220px; overflow-y: auto; background: #fff; border: 1.5px solid var(--ink); }
+  .qnp-drop .contact-option:not(:last-child) { border-bottom: 1px solid rgba(0,0,0,0.08); }
+  .qnp-drop .contact-option:hover { background: var(--bg); }
   .quick-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
   /* Whether a row is really on the calendar is the single most important fact
      about it, so it gets colour rather than another grey pill. */
@@ -1374,8 +1378,12 @@ function renderQuickAdds(ev, opts = {}) {
   const addPerson = `
       <button class="quick-chip quick-chip-add" onclick="showQuickAddPerson('${id}')" title="Add someone new and colour this event for them">+ New person</button>
       <span class="quick-newperson" id="qnp-${id}" style="display:none">
-        <input class="quick-newperson-input" id="qnp-input-${id}" placeholder="Name" autocomplete="off"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddPerson('${id}')}" />
+        <span class="qnp-field">
+          <input class="quick-newperson-input" id="qnp-input-${id}" placeholder="Type a name" autocomplete="off"
+                 oninput="qnpSearch('${id}', this.value)"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();quickAddPerson('${id}')}" />
+          <div class="qnp-drop" id="qnp-drop-${id}" style="display:none"></div>
+        </span>
         <button class="quick-chip quick-newperson-save" onclick="quickAddPerson('${id}')">Add</button>
       </span>`;
   const people = `
@@ -1429,15 +1437,52 @@ function showQuickAddPerson(id) {
   }
 }
 
-// Create a person from the event card and colour this event for them in one
-// step. They are added to the default 'family' circle (re-file later on the
-// Circles page) and, via renderReview, become selectable on every other card.
+// As you type a name in "+ New person", suggest matching Google Contacts (same
+// endpoint the guest picker uses). Picking one captures their email so the
+// person can also be invited to events later; typing a name and pressing Add
+// creates them by name alone.
+let qnpTimers = {};
+function qnpSearch(id, q) {
+  clearTimeout(qnpTimers[id]);
+  const drop = document.getElementById(`qnp-drop-${id}`);
+  if (!drop) return;
+  if (!q || q.trim().length < 2) { drop.style.display = 'none'; return; }
+  qnpTimers[id] = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/contacts/search?q=${encodeURIComponent(q.trim())}`);
+      const contacts = await res.json();
+      if (!Array.isArray(contacts) || !contacts.length) { drop.style.display = 'none'; return; }
+      drop.innerHTML = contacts.slice(0, 6).map(c =>
+        `<div class="contact-option" onclick="quickAddPersonPick('${id}', '${String(c.name || '').replace(/'/g, "\\'")}', '${String(c.email || '').replace(/'/g, "\\'")}')">
+          <div class="contact-name">${escHtml(c.name || c.email)}</div>
+          <div class="contact-email">${escHtml(c.email || '')}</div>
+        </div>`).join('');
+      drop.style.display = 'block';
+    } catch { drop.style.display = 'none'; }
+  }, 300);
+}
+
+// Picked a contact from the dropdown — create them with their email attached.
+async function quickAddPersonPick(id, name, email) {
+  const drop = document.getElementById(`qnp-drop-${id}`);
+  if (drop) drop.style.display = 'none';
+  await createQuickPerson(id, name, email || null);
+}
+
+// Typed a name and pressed Add / Enter — create them by name alone.
 async function quickAddPerson(id) {
   const inp = document.getElementById(`qnp-input-${id}`);
   const name = (inp?.value || '').trim();
   if (!name) { if (inp) inp.focus(); return; }
+  await createQuickPerson(id, name, null);
+}
+
+// Create a person from the event card and colour this event for them in one
+// step. They are added to the default 'family' circle (re-file later on the
+// Circles page) and, via renderReview, become selectable on every other card.
+async function createQuickPerson(id, name, email) {
   try {
-    const member = await apiAddMember(name, '7', 'family');
+    const member = await apiAddMember(name, '7', 'family', email);
     familyMembers.push(member);
     rvMemberState[id] = member.id;   // colour this event for the new person
     renderReview({ force: true });
@@ -1457,8 +1502,8 @@ async function loadFamily() {
   } catch {}
 }
 
-async function apiAddMember(name, color, circle) {
-  const res = await fetch('/api/family', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, color, circle }) });
+async function apiAddMember(name, color, circle, email) {
+  const res = await fetch('/api/family', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name, color, circle, email: email || null }) });
   if (!res.ok) throw new Error((await res.json()).error || 'Failed');
   return res.json();
 }

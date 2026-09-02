@@ -3879,12 +3879,14 @@ app.get('/api/family', requireAuth, async (req, res) => {
 });
 
 app.post('/api/family', requireAuth, async (req, res) => {
-  const { name, color, eventColor, grade, circle, activities, senders } = req.body;
+  const { name, color, eventColor, grade, circle, email, activities, senders } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
   const id = randomUUID();
   // Grade is stored as the user typed it ("3rd", "K", "TK", "9") and normalised
   // at comparison time, so nothing is lost if they type something unexpected.
-  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, circle: normalizeCircle(circle), googleCalendarId: null, activities: normalizeActivities(activities), senders: normalizeSenders(senders) };
+  // email is optional — captured when a person is added from a Google contact, so
+  // they can be invited to events later; null when the person was typed by hand.
+  const member = { id, name: name.trim(), color: color || '7', eventColor: eventColor || color || '7', grade: (grade || '').trim() || null, circle: normalizeCircle(circle), email: (email || '').trim().toLowerCase() || null, googleCalendarId: null, activities: normalizeActivities(activities), senders: normalizeSenders(senders) };
   await getUserFamily(req.user.email).set(id, member);
   res.json(member);
 });
@@ -3902,6 +3904,7 @@ app.patch('/api/family/:id', requireAuth, async (req, res) => {
   // Same explicit-undefined rule as grade: a member can be moved between circles,
   // and normalizeCircle keeps the field from ever landing empty.
   if (req.body.circle !== undefined) member.circle = normalizeCircle(req.body.circle);
+  if (req.body.email !== undefined) member.email = String(req.body.email).trim().toLowerCase() || null;
   // Same explicit-undefined rule: [] is how the UI removes every activity, and
   // a facts store you cannot empty is a facts store you cannot correct.
   if (req.body.activities !== undefined) member.activities = normalizeActivities(req.body.activities);

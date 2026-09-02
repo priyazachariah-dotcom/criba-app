@@ -2398,7 +2398,7 @@ async function runOnboardingScan() {
       <div class="empty-state" style="margin-top:3rem">
         <div class="empty-icon">◴</div>
         <h3>Setting up</h3>
-        <p>Reading the last 24 hours of your email to get you started.<br>This takes up to a minute.</p>
+        <p>Reading the last 48 hours of your email to get you started.<br>This takes up to a minute.</p>
       </div>`;
   }
 
@@ -2412,7 +2412,11 @@ async function runOnboardingScan() {
     const res = await fetch('/api/gmail/backfill', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ days: 1 }),
+      // Matches the "Scan now" button's window, so the one-time catch-up we
+      // promise at onboarding and the one the user can trigger later are the
+      // same 48 hours. Deliberately not wider: every email in the window costs
+      // a Claude call, and the webhook picks up everything from here on.
+      body: JSON.stringify({ days: 2 }),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);

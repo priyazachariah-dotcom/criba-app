@@ -7203,6 +7203,36 @@ app.get('/api/debug/decision-gate', requireAuth, async (req, res) => {
 //
 // Titles that match but no longer block are listed too. That is the interesting
 // half: it is where a draft or a cancelled event used to swallow real mail.
+// GET /api/debug/drafts — the shape of the stranded-draft population.
+//
+// Bug #6 says 'draft' has no approval path and calls it a one-line filter
+// change. It is not, because of #7: most drafts belong to calendars that were
+// deleted, so surfacing them all would fill Review with events nobody can
+// place. This splits them the way a fix has to treat them — live calendar vs
+// deleted, future vs past — so the decision rests on counts, not memory.
+app.get('/api/debug/drafts', requireAuth, async (req, res) => {
+  const events = getUserEvents(req.user.email);
+  const cals = getUserCalendars(req.user.email);
+  const liveCalIds = new Set((await cals.keys()));
+  const today = new Date().toISOString().slice(0, 10);
+  const drafts = (await events.values()).filter(e => e.status === 'draft');
+  const bucket = { liveFuture: [], livePast: [], deadFuture: [], deadPast: [] };
+  for (const ev of drafts) {
+    const live = liveCalIds.has(ev.calendar_id);
+    const future = (ev.date || '') >= today;
+    bucket[`${live ? 'live' : 'dead'}${future ? 'Future' : 'Past'}`].push({
+      title: ev.title, date: ev.date || null, calendar_id: ev.calendar_id, source: ev.source || null,
+    });
+  }
+  res.json({
+    total: drafts.length, today,
+    liveCalendars: [...liveCalIds],
+    counts: Object.fromEntries(Object.entries(bucket).map(([k, v]) => [k, v.length])),
+    liveFuture: bucket.liveFuture,
+    deadFutureSample: bucket.deadFuture.slice(0, 15),
+  });
+});
+
 app.get('/api/debug/dedup', requireAuth, async (req, res) => {
   try {
     const title = String(req.query.title || '');

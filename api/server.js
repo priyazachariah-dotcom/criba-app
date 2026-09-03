@@ -133,9 +133,9 @@ async function clearRefusal(email, ev) {
   }
 }
 
-// The gate's question. Not yet consulted by any live path — the webhook wiring
-// waits until the read-only replay (/api/debug/decision-gate) has been seen
-// working against real data.
+// The gate's question, consulted by the webhook and backfill paths BEFORE
+// their dedup checks — a prior "no" always resurfaces for review rather than
+// being swallowed by a blocking row or auto-written again.
 async function priorRefusal(email, date, title) {
   try {
     const d = await getUserDecisions(email).get(decisionKey(date, title));
@@ -5746,7 +5746,13 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           continue;
         }
 
-        if (await isDuplicateEvent(eventsStore, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) {
+        // Decision gate — consulted BEFORE dedup on purpose. A refusal means
+        // "the user already ruled on this event", and the ruling must reach the
+        // review queue even if some blocking row would otherwise swallow the
+        // extraction. Gate first, dedup second: a prior "no" can never become
+        // a silent drop.
+        const refusal = await priorRefusal(email, ev.date, ev.title);
+        if (!refusal && await isDuplicateEvent(eventsStore, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) {
           console.log(`[gmail-process] msg=${messageId} DEDUP SKIP event "${ev.title}" on ${ev.date} already exists`);
           // A skip that only exists in a log line is a skip nobody can audit.
           // This is the path that once ate real school mail, so every drop now
@@ -5786,8 +5792,16 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           [ev.title, ev.notes, subject].filter(Boolean).join(' '), gpFamily,
           gpExclusions, senderEmail, ev.audience);
 
+        // A prior refusal is treated like a relevance hold: never auto-write,
+        // never drop — the event surfaces in Review carrying the reason, and
+        // one click either adds it or refuses it again.
+        const hold = refusal ? refusalHold(refusal) : null;
         let calEventId = null;
-        if (relevance.relevant) {
+        if (hold) {
+          console.log(`[gmail-process] HELD-REFUSAL "${ev.title}" on ${ev.date} — refused ${refusal.decided_at || 'earlier'} via ${refusal.via || 'unknown'}`);
+          await traceEmail(email, { stage: 'HELD-REFUSAL', via: 'webhook', messageId, subject,
+            title: ev.title, date: ev.date, refusedVia: refusal.via || null, decidedAt: refusal.decided_at || null });
+        } else if (relevance.relevant) {
           try {
             calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz, email });
             console.log(`[gmail-process] GCal WRITE "${ev.title}" on ${ev.date} calEventId=${calEventId}`);
@@ -5812,10 +5826,12 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
           notes: combinedNotes,
           duplicate_of_calendar: !!calDup,
-          conflict_note: calDup
-            ? calDupNote(calDup, targetCalId)
-            : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
-          held_reason: relevance.reason || null,
+          conflict_note: hold
+            ? hold.conflict_note
+            : calDup
+              ? calDupNote(calDup, targetCalId)
+              : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
+          held_reason: hold ? hold.held_reason : (relevance.reason || null),
           source_type: ev.source_type || null,
           recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
           source: 'gmail',
@@ -7164,7 +7180,7 @@ app.get('/api/debug/decision-gate', requireAuth, async (req, res) => {
     }
     res.json({
       note: 'read-only replay of the actual gate functions; nothing written, nothing live',
-      gateWiredIntoWebhook: false,
+      gateWiredIntoWebhook: true,
       scope: 'date-scoped (decisionKey: date + normalised title, same as gcalWritten)',
       totalEvents: all.length,
       storedDecisions: stored.length,
@@ -7747,7 +7763,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             eventsStored++; continue;
           }
 
-          if (isDuplicateEventIn(knownEvents, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) continue;
+          // Decision gate before dedup — same contract as the webhook path:
+          // a prior "no" always resurfaces for review, never silently drops.
+          const refusal = await priorRefusal(email, ev.date, ev.title);
+          if (!refusal && isDuplicateEventIn(knownEvents, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) continue;
           const startTime = ev.start_time || '', endTime = ev.end_time || '';
 
           // Already on the calendar from somewhere else — typically a club's
@@ -7755,7 +7774,10 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // chose not to add a second copy, but do not write.
           const existingCalEvents = await existingCalendarEventsFor(ev.date);
           const calDup = findCalendarDuplicate(existingCalEvents, ev.title, ev.date, startTime);
-          if (calDup) {
+          // A refusal outranks the calendar-duplicate shortcut: the point of the
+          // gate is that the user sees the card and decides, so fall through to
+          // the main store where the hold text is attached.
+          if (calDup && !refusal) {
             const dupId = randomUUID();
             await eventsStore.set(dupId, {
               id: dupId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
@@ -7827,7 +7849,11 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             // Carried purely so buildEventDescription can write the details and
             // the back-link to the source email into the calendar entry.
             notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
-          if (relevance.relevant) {
+          const hold = refusal ? refusalHold(refusal) : null;
+          if (hold) {
+            await traceEmail(email, { runId, stage: 'HELD-REFUSAL', messageId, subject, from,
+              title: ev.title, date: ev.date, refusedVia: refusal.via || null, decidedAt: refusal.decided_at || null });
+          } else if (relevance.relevant) {
             try {
               calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz, email });
             } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
@@ -7839,10 +7865,12 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             time: startTime, end_time: endTime, location: ev.location || '',
             is_all_day: !!ev.is_all_day, attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
             notes: combinedNotes,
-            conflict_note: otherCalDup
-              ? calDupNote(otherCalDup, bfCalId)
-              : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
-            held_reason: relevance.reason || null,
+            conflict_note: hold
+              ? hold.conflict_note
+              : otherCalDup
+                ? calDupNote(otherCalDup, bfCalId)
+                : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
+            held_reason: hold ? hold.held_reason : (relevance.reason || null),
             duplicate_of_calendar: !!otherCalDup,
             source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
             source: 'gmail', gmail_message_id: messageId, thread_id: threadId || null,

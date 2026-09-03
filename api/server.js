@@ -928,6 +928,20 @@ function normalizeSenders(raw) {
 // char limit and cheap-model routing were both left on the table. With a list
 // of senders that must never be dropped, the pipeline can be generous where it
 // matters and aggressive everywhere else.
+// Consumer mail providers can never be trusted at the domain level. A member's
+// senders list legitimately learns "gmail.com" — a team parent mails from a
+// personal address, and for ATTRIBUTION that is a useful fact about that one
+// person. As a gate bypass it is catastrophic: it whitelists every personal
+// address on earth, which would send the entire inbox to Claude at full price
+// and quietly undo the cost work this was built to protect.
+//
+// Attribution still uses these domains. Only the bypass refuses them.
+const PUBLIC_MAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'hotmail.com',
+  'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'mac.com',
+  'aol.com', 'proton.me', 'protonmail.com', 'gmx.com', 'mail.com', 'zoho.com',
+]);
+
 const TRUSTED_CACHE_TTL_MS = 60 * 1000;
 const _trustedCache = new Map();
 
@@ -950,7 +964,8 @@ async function getTrustedDomains(email) {
   try {
     for (const m of await getUserFamily(email).values()) {
       for (const s of (Array.isArray(m.senders) ? m.senders : [])) {
-        if (s?.domain) set.add(String(s.domain).toLowerCase());
+        const d = String(s?.domain || '').toLowerCase();
+        if (d && !PUBLIC_MAIL_DOMAINS.has(d)) set.add(d);
       }
     }
   } catch {}
@@ -6321,7 +6336,8 @@ app.get('/api/trusted-senders', requireAuth, async (req, res) => {
   const learned = new Set();
   for (const m of await getUserFamily(email).values()) {
     for (const sd of (Array.isArray(m.senders) ? m.senders : [])) {
-      if (sd?.domain && !named.includes(sd.domain)) learned.add(sd.domain);
+      const d = String(sd?.domain || '').toLowerCase();
+      if (d && !named.includes(d) && !PUBLIC_MAIL_DOMAINS.has(d)) learned.add(d);
     }
   }
   res.json({ named, learned: [...learned] });
@@ -6335,6 +6351,11 @@ app.post('/api/trusted-senders', requireAuth, async (req, res) => {
   const domain = raw.includes('@') ? raw.split('@').pop() : raw;
   if (!domain || !domain.includes('.')) {
     return res.status(400).json({ error: 'That does not look like an email domain — try something like hillsdale.org.' });
+  }
+  // Refused even when typed deliberately. Trusting a consumer provider means
+  // trusting every address on it, which is never what the person meant.
+  if (PUBLIC_MAIL_DOMAINS.has(domain)) {
+    return res.status(400).json({ error: `${domain} is a personal email provider, so trusting it would mean trusting every address there. Add the school or club's own domain instead.` });
   }
   const store = getUserSettings(email);
   const cur = await store.get('trustedDomains');

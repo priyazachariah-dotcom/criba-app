@@ -912,6 +912,63 @@ function normalizeSenders(raw) {
   return out;
 }
 
+// ── Trusted senders ───────────────────────────────────────────────────────
+//
+// The domains a family actually gets school, team and club mail from. Two
+// sources, deliberately kept together:
+//   * settings.trustedDomains — named by the user (onboarding, or "always read
+//     this sender" in the review queue). Authoritative.
+//   * family member `senders` — already learned from real attributions, and
+//     until now used only to decide WHICH child an event belongs to. If a
+//     domain has been confirmed as one of Maya's coaches, the question of
+//     whether its mail is worth reading is already settled.
+//
+// This exists to break a tradeoff. Every cost dial was global, so tightening
+// one to save money also risked dropping a school newsletter — which is why the
+// char limit and cheap-model routing were both left on the table. With a list
+// of senders that must never be dropped, the pipeline can be generous where it
+// matters and aggressive everywhere else.
+const TRUSTED_CACHE_TTL_MS = 60 * 1000;
+const _trustedCache = new Map();
+
+function domainOf(senderEmail) {
+  const d = String(senderEmail || '').toLowerCase().trim().split('@').pop();
+  return d && d.includes('.') ? d.replace(/^www\./, '') : null;
+}
+
+async function getTrustedDomains(email) {
+  const hit = _trustedCache.get(email);
+  if (hit && Date.now() - hit.at < TRUSTED_CACHE_TTL_MS) return hit.set;
+  const set = new Set();
+  try {
+    const settings = await getUserSettings(email).get('trustedDomains');
+    for (const d of (Array.isArray(settings?.domains) ? settings.domains : [])) {
+      const n = domainOf(d) || String(d).toLowerCase().trim().replace(/^@/, '');
+      if (n && n.includes('.')) set.add(n);
+    }
+  } catch {}
+  try {
+    for (const m of await getUserFamily(email).values()) {
+      for (const s of (Array.isArray(m.senders) ? m.senders : [])) {
+        if (s?.domain) set.add(String(s.domain).toLowerCase());
+      }
+    }
+  } catch {}
+  _trustedCache.set(email, { at: Date.now(), set });
+  return set;
+}
+
+// Subdomain-aware on purpose. A school on Google Workspace mails from
+// hillsdale.org but its newsletter tool mails from mail.hillsdale.org, and a
+// parent naming the first should not have to discover the second.
+function isTrustedSender(trusted, senderEmail) {
+  const d = domainOf(senderEmail);
+  if (!d || !trusted.size) return false;
+  if (trusted.has(d)) return true;
+  for (const t of trusted) if (d.endsWith('.' + t)) return true;
+  return false;
+}
+
 // ── Circles ───────────────────────────────────────────────────────────────
 //
 // A "circle" is which group of people a member belongs to — the household, the
@@ -5794,6 +5851,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
   const MAX_MESSAGE_ATTEMPTS = 3;
   let fatalApiError = '';
 
+  const trustedDomains = await getTrustedDomains(email);
   for (const messageId of messageIds) {
     // One bad API key or an empty balance fails all 399 messages in exactly
     // the same way. Grinding through the rest bills for every one of them.
@@ -5851,8 +5909,11 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       // Read the headers first: a skip we cannot name in the trace is a skip
       // nobody can debug later.
       const labelIds = msg.labelIds || [];
+      // Same precedence as the scan path: a school that mails through a
+      // marketing service must not be dropped for looking like marketing.
+      const trustedSender = isTrustedSender(trustedDomains, parseFrom(from).senderEmail);
       const noisy = labelIds.filter(l => GMAIL_NOISE_LABELS.has(l));
-      if (noisy.length) {
+      if (noisy.length && !trustedSender) {
         console.log(`[gmail-process] SKIP msg=${messageId} — noise category label: ${noisy.join(',')}`);
         await traceEmail(email, { stage: 'SKIP-NOISE', via: 'webhook', messageId, subject, from, labels: noisy.join(',') });
         completed = true;
@@ -5874,7 +5935,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       // the two filters silently disagreed: mail the scan happily queued, the
       // webhook threw away. Both paths now apply the same test to the same
       // full body, so a manual scan can no longer find what the webhook missed.
-      const wePass = scanForDateContent(`${subject} ${body}`).pass;
+      const wePass = trustedSender || scanForDateContent(`${subject} ${body}`).pass;
       if (!wePass && !isImageHeavy) {
         console.log(`[prefilter] SKIP msg=${messageId} user=${email} subject="${subject}" — no date signal in body`);
         await traceEmail(email, { stage: 'SKIP-BODY', via: 'webhook', messageId, subject, from, bodyLen: body.length });
@@ -6246,6 +6307,56 @@ app.post('/api/gmail/reconnect', requireAuth, async (req, res) => {
     console.error('[Gmail reconnect] Failed:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Trusted senders API ───────────────────────────────────────────────────
+// The list that guarantees a school or team never gets filtered out. Learned
+// domains are returned alongside named ones but are not editable here: they
+// belong to the family member that earned them, and deleting one here would
+// silently break attribution as well as the gate.
+app.get('/api/trusted-senders', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const settings = await getUserSettings(email).get('trustedDomains');
+  const named = Array.isArray(settings?.domains) ? settings.domains : [];
+  const learned = new Set();
+  for (const m of await getUserFamily(email).values()) {
+    for (const sd of (Array.isArray(m.senders) ? m.senders : [])) {
+      if (sd?.domain && !named.includes(sd.domain)) learned.add(sd.domain);
+    }
+  }
+  res.json({ named, learned: [...learned] });
+});
+
+app.post('/api/trusted-senders', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  // Accepts a bare domain or a full address, because the review queue passes
+  // whatever the sender header held and onboarding takes what a parent types.
+  const raw = String(req.body.domain || '').toLowerCase().trim().replace(/^@/, '');
+  const domain = raw.includes('@') ? raw.split('@').pop() : raw;
+  if (!domain || !domain.includes('.')) {
+    return res.status(400).json({ error: 'That does not look like an email domain — try something like hillsdale.org.' });
+  }
+  const store = getUserSettings(email);
+  const cur = await store.get('trustedDomains');
+  const domains = Array.isArray(cur?.domains) ? cur.domains : [];
+  if (!domains.includes(domain)) domains.push(domain);
+  await store.set('trustedDomains', { domains });
+  // The gate caches for a minute; without this the sender she just added would
+  // keep being filtered until the cache aged out, which reads as the button
+  // not working.
+  _trustedCache.delete(email);
+  res.json({ ok: true, domain, domains });
+});
+
+app.delete('/api/trusted-senders/:domain', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const store = getUserSettings(email);
+  const cur = await store.get('trustedDomains');
+  const domains = (Array.isArray(cur?.domains) ? cur.domains : [])
+    .filter(d => d !== String(req.params.domain).toLowerCase());
+  await store.set('trustedDomains', { domains });
+  _trustedCache.delete(email);
+  res.json({ ok: true, domains });
 });
 
 // GET /api/health — which commit is actually serving traffic.
@@ -7800,6 +7911,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Messages that passed every filter and are waiting on extraction.
   const candidates = [];
 
+  // Fetched once per scan, not per message: it is the same answer every time
+  // and a Redis round trip inside the loop would cost more than the gate saves.
+  const trustedDomains = await getTrustedDomains(email);
   for (const messageId of messageIds) {
     // This loop is now cheap — metadata and body fetches only, ~450ms each.
     // Reserve most of the budget for the extraction waves that follow.
@@ -7874,8 +7988,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     // Deliberately NOT including CATEGORY_UPDATES or CATEGORY_FORUMS: school
     // and team mail routinely lands in both, and dropping those would be
     // exactly the silent miss this pipeline exists to prevent.
+    // A trusted sender outranks every gate below, including the Promotions
+    // label. Schools mail through Mailchimp and ParentSquare, which is exactly
+    // the mail Gmail files as promotional — so the category skip, left
+    // unqualified, would drop the newsletters this product exists to catch.
+    const trustedSender = isTrustedSender(trustedDomains, parseFrom(from).senderEmail);
+
     const noisy = labelIds.filter(l => GMAIL_NOISE_LABELS.has(l));
-    if (noisy.length) {
+    if (noisy.length && !trustedSender) {
       skippedPreFilter++;
       await traceEmail(email, { runId, stage: 'SKIP-NOISE', messageId, subject, from, labels: noisy.join(',') });
       if (dryRun) dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: `noise-label:${noisy.join(',')}` });
@@ -7906,8 +8026,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     // explainable as a skipped one. Every SKIP is traced with a reason but a
     // PASS was traced with none, so the only way to ask "why did a shipping
     // receipt cost us a Claude call" was to re-read the regexes and guess.
-    let passReason = snippetScan.pass ? `snippet:${snippetScan.matchName}` : null;
-    if (!snippetScan.pass && !isImageHeavy) {
+    let passReason = trustedSender ? 'trusted-sender'
+      : snippetScan.pass ? `snippet:${snippetScan.matchName}` : null;
+    if (!snippetScan.pass && !isImageHeavy && !trustedSender) {
       // The filter used to judge the first 5000 characters only. The body is
       // already in memory and this is a regex, so the truncation bought
       // nothing and cost us any newsletter that carried its date further

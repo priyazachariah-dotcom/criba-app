@@ -4884,20 +4884,46 @@ function blocksDuplicate(ev) {
   return DEDUP_BLOCKING_STATUSES.has(ev.status);
 }
 
+// Same day counts when the clock time agrees, or when either side has no time
+// at all — one extraction saying "9:00" and another saying all-day is still one
+// event. Two different times on one day stay distinct, so a class that
+// genuinely meets twice in a day survives as two entries.
+function sameDayAndTime(ev, date, time) {
+  if (ev.date !== date) return false;
+  const evTime = ev.time || '';
+  return !evTime || !time || evTime === time;
+}
+
 function isDuplicateEventIn(all, title, date, opts = {}) {
   const shape = recurrenceShape(opts.recurrence);
   const time = opts.time || '';
+  const threadId = opts.threadId || '';
   return all.some(ev => {
     if (!blocksDuplicate(ev)) return false;
+
+    // Same Gmail thread, same day, same time: one event, however it was worded.
+    //
+    // A reply is where title matching fails hardest. The school sends "Frosh
+    // Football — Parents Pregame Gathering", a parent replies "reminder, pregame
+    // is Friday at 6", and Claude extracts a title with almost no words in
+    // common. titlesLooselyMatch rejects the pair, dedup passes, and the user
+    // gets the same gathering twice. Stripping quoted history (0b878c4) does not
+    // help: the reply restates the event in its own new words, which is exactly
+    // the content we keep.
+    //
+    // The thread is the strongest same-event signal we have and it costs
+    // nothing — Gmail returns threadId on every message and we were discarding
+    // it. Deliberately still requires the date and time to agree, so a thread
+    // that legitimately announces practice at 4 and team dinner at 7 on one day
+    // keeps both. Rewording cannot defeat it; a genuinely different event on a
+    // different day or hour is untouched.
+    //
+    // Runs behind blocksDuplicate like every other clause, so a dead record can
+    // no more suppress mail via its thread than via its title.
+    if (threadId && ev.thread_id === threadId && sameDayAndTime(ev, date, time)) return true;
+
     if (!titlesLooselyMatch(ev.title, title)) return false;
-    // Same day counts when the clock time agrees, or when either side has no
-    // time at all — one extraction saying "9:00" and another saying all-day is
-    // still one event. Two different times on one day stay distinct, so a class
-    // that genuinely meets twice in a day survives as two entries.
-    if (ev.date === date) {
-      const evTime = ev.time || '';
-      if (!evTime || !time || evTime === time) return true;
-    }
+    if (sameDayAndTime(ev, date, time)) return true;
     if (!shape) return false;
     return recurrenceShape(ev.recurrence_rule) === shape && (ev.time || '') === time;
   });
@@ -5473,6 +5499,10 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         format: 'full',
       });
       const msg = msgRes.data;
+      // Gmail hands us the thread on every message and we used to drop it on
+      // the floor. It is the one identifier that survives rewording, so it is
+      // stored on every event and consulted by dedup — see isDuplicateEventIn.
+      const threadId = msg.threadId || '';
       const headers = msg.payload.headers || [];
       const subject = headers.find(h => h.name.toLowerCase() === 'subject')?.value || '';
       const from = headers.find(h => h.name.toLowerCase() === 'from')?.value || '';
@@ -5605,7 +5635,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
             old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
             matched_event_id: matchedEvent?.id || null, matched_event_title: matchedEvent?.title || null,
             matched_event_confidence: matchedScore,
-            source: 'gmail', gmail_message_id: messageId,
+            source: 'gmail', gmail_message_id: messageId, thread_id: threadId || null,
             sender_name: senderName, sender_email: senderEmail, subject,
             status, type: ev.is_all_day ? 'other' : 'timed',
             created_at: new Date().toISOString(),
@@ -5614,8 +5644,13 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           continue;
         }
 
-        if (await isDuplicateEvent(eventsStore, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence })) {
+        if (await isDuplicateEvent(eventsStore, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) {
           console.log(`[gmail-process] msg=${messageId} DEDUP SKIP event "${ev.title}" on ${ev.date} already exists`);
+          // A skip that only exists in a log line is a skip nobody can audit.
+          // This is the path that once ate real school mail, so every drop now
+          // leaves a trace the user's own timeline can show.
+          await traceEmail(email, { stage: 'SKIP-DUPLICATE', via: 'webhook', messageId, subject,
+            title: ev.title, date: ev.date, threadId: threadId || null });
           continue;
         }
 
@@ -5683,6 +5718,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
           source: 'gmail',
           gmail_message_id: messageId,
+          thread_id: threadId || null,
           sender_name: senderName,
           sender_email: senderEmail,
           subject,
@@ -7389,6 +7425,8 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     candidates.push({
       messageId, subject, from, dateSent, senderName, senderEmail,
       body, imageParts, payload: fullRes.data.payload, fpKey, isImageHeavy,
+      // Same reason as the webhook: the thread is what survives rewording.
+      threadId: fullRes.data.threadId || '',
     });
     await traceEmail(email, { runId, stage: 'TIMING', messageId, subject, msgMs: Date.now() - msgStart, elapsedMs: Date.now() - startedAt });
   }
@@ -7455,7 +7493,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
         continue;
       }
       const { extracted, claudeMs, imageCount } = r.value;
-      const { messageId, subject, from, dateSent, senderName, senderEmail, fpKey } = c;
+      const { messageId, subject, from, dateSent, senderName, senderEmail, fpKey, threadId } = c;
       await traceEmail(email, { runId,
         stage: 'SENT-TO-AI', messageId, subject, from, claudeEvents: extracted.length,
         claudeMs, preClaudeMs: 0, elapsedMs: Date.now() - startedAt,
@@ -7528,7 +7566,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
               old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
               matched_event_id: matchResult?.event?.id || null, matched_event_title: matchResult?.event?.title || null,
               matched_event_confidence: matchResult?.score ?? null,
-              source: 'gmail', gmail_message_id: messageId,
+              source: 'gmail', gmail_message_id: messageId, thread_id: threadId || null,
               sender_name: senderName, sender_email: senderEmail, subject,
               status: intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule',
               type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),
@@ -7542,7 +7580,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             eventsStored++; continue;
           }
 
-          if (isDuplicateEventIn(knownEvents, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence })) continue;
+          if (isDuplicateEventIn(knownEvents, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) continue;
           const startTime = ev.start_time || '', endTime = ev.end_time || '';
 
           // Already on the calendar from somewhere else — typically a club's
@@ -7560,7 +7598,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
               conflict_note: `Already on your calendar as "${calDup.title}" — not added again`,
               duplicate_of_calendar: true,
               source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
-              source: 'gmail', gmail_message_id: messageId,
+              source: 'gmail', gmail_message_id: messageId, thread_id: threadId || null,
               sender_name: senderName, sender_email: senderEmail, subject,
               status: 'duplicate', reviewed: false, calEventId: null,
               type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),
@@ -7640,7 +7678,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             held_reason: relevance.reason || null,
             duplicate_of_calendar: !!otherCalDup,
             source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
-            source: 'gmail', gmail_message_id: messageId,
+            source: 'gmail', gmail_message_id: messageId, thread_id: threadId || null,
             sender_name: senderName, sender_email: senderEmail, subject,
             status: calEventId ? 'added' : (otherCalDup ? 'duplicate' : 'pending'), reviewed: false,
             calEventId: calEventId || null, gcalId: calEventId ? bfCalId : null,

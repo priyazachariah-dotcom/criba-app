@@ -105,7 +105,7 @@ function getUserDecisions(email) {
 // cancellation) says no to a specific event. Never inferred; each call site is
 // an explicit gesture. Failures are logged and swallowed — a refusal that fails
 // to record must not break the dismissal the user actually asked for.
-async function recordRefusal(email, ev, via) {
+async function recordRefusal(email, ev, via, reason = null) {
   try {
     if (!ev?.date || !ev?.title) return;
     const store = getUserDecisions(email);
@@ -113,6 +113,12 @@ async function recordRefusal(email, ev, via) {
     const prev = await store.get(key);
     await store.set(key, {
       key, verdict: 'no', title: ev.title, date: ev.date, via,
+      // Why, not just that. Until now a dismissal recorded no reason at all,
+      // so "this is a marketing newsletter" and "we already have this" were
+      // indistinguishable afterwards — and neither could inform anything
+      // beyond the single dated event it was recorded against.
+      reason: reason || null,
+      sender_email: ev.sender_email || null,
       source_event_id: ev.id || null,
       decided_at: prev?.decided_at || new Date().toISOString(),
       last_affirmed_at: new Date().toISOString(),
@@ -973,15 +979,55 @@ async function getTrustedDomains(email) {
   return set;
 }
 
+// ── Muted senders ─────────────────────────────────────────────────────────
+//
+// The mirror of the trusted list, and the missing half of dismissal.
+//
+// recordRefusal keys on (date, title), so dismissing a newsletter event teaches
+// Criba about that one event on that one date. Next week's edition carries new
+// dates and new titles and passes straight through — which is why dismissing
+// the same commercial newsletter every week never made it stop, and why the
+// only durable options were to keep dismissing or to lose school mail too.
+//
+// A muted sender is skipped before any Claude call, so this is both the
+// nuisance fix and a direct cost saving.
+//
+// Safety: this is the one mechanism that can cause a missed event, so it is
+// only ever set by an explicit gesture naming a specific sender, it is always
+// visible and reversible, and trusted always beats muted — a school can never
+// be silenced by a stray click.
+async function getMutedDomains(email) {
+  try {
+    const settings = await getUserSettings(email).get('mutedDomains');
+    const out = new Set();
+    for (const d of (Array.isArray(settings?.domains) ? settings.domains : [])) {
+      const n = String(d).toLowerCase().trim();
+      if (n) out.add(n);
+    }
+    return out;
+  } catch { return new Set(); }
+}
+
 // Subdomain-aware on purpose. A school on Google Workspace mails from
 // hillsdale.org but its newsletter tool mails from mail.hillsdale.org, and a
 // parent naming the first should not have to discover the second.
 function isTrustedSender(trusted, senderEmail) {
+  return domainMatches(trusted, senderEmail);
+}
+
+function domainMatches(set, senderEmail) {
   const d = domainOf(senderEmail);
-  if (!d || !trusted.size) return false;
-  if (trusted.has(d)) return true;
-  for (const t of trusted) if (d.endsWith('.' + t)) return true;
+  if (!d || !set || !set.size) return false;
+  if (set.has(d)) return true;
+  for (const t of set) if (d.endsWith('.' + t)) return true;
   return false;
+}
+
+// Trusted always wins. A domain on both lists is a mistake, and the safe
+// reading of a mistake is to keep reading the mail rather than to drop it.
+function isMutedSender(muted, trusted, senderEmail) {
+  if (domainMatches(trusted, senderEmail)) return false;
+  return domainMatches(muted, senderEmail);
 }
 
 // ── Circles ───────────────────────────────────────────────────────────────
@@ -2764,7 +2810,7 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
         event.status = 'cancelled';
         event.calEventId = null;
         await events.set(req.body.id, event);
-        await recordRefusal(req.user.email, event, 'dismiss-removed-from-calendar');
+        await recordRefusal(req.user.email, event, 'dismiss-removed-from-calendar', req.body.reason);
         return res.json({ ok: true, removedFromCalendar: true });
       }
     } catch (err) {
@@ -2774,7 +2820,7 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
     // Genuinely nothing on the calendar — a real draft, or already gone.
     event.status = 'dismissed';
     await events.set(req.body.id, event);
-    await recordRefusal(req.user.email, event, 'dismiss');
+    await recordRefusal(req.user.email, event, 'dismiss', req.body.reason);
     return res.json({ ok: true, removedFromCalendar: false });
   }
 
@@ -2799,7 +2845,7 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
   event.status = 'cancelled';
   event.calEventId = null;
   await events.set(req.body.id, event);
-  await recordRefusal(req.user.email, event, 'dismiss-removed-from-calendar');
+  await recordRefusal(req.user.email, event, 'dismiss-removed-from-calendar', req.body.reason);
   res.json({ ok: true, removedFromCalendar: true });
 });
 
@@ -5867,6 +5913,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
   let fatalApiError = '';
 
   const trustedDomains = await getTrustedDomains(email);
+  const mutedDomains = await getMutedDomains(email);
   for (const messageId of messageIds) {
     // One bad API key or an empty balance fails all 399 messages in exactly
     // the same way. Grinding through the rest bills for every one of them.
@@ -5927,6 +5974,11 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
       // Same precedence as the scan path: a school that mails through a
       // marketing service must not be dropped for looking like marketing.
       const trustedSender = isTrustedSender(trustedDomains, parseFrom(from).senderEmail);
+      if (isMutedSender(mutedDomains, trustedDomains, parseFrom(from).senderEmail)) {
+        await traceEmail(email, { stage: 'SKIP-MUTED', via: 'webhook', messageId, subject, from });
+        completed = true;
+        continue;
+      }
       const noisy = labelIds.filter(l => GMAIL_NOISE_LABELS.has(l));
       if (noisy.length && !trustedSender) {
         console.log(`[gmail-process] SKIP msg=${messageId} — noise category label: ${noisy.join(',')}`);
@@ -6322,6 +6374,47 @@ app.post('/api/gmail/reconnect', requireAuth, async (req, res) => {
     console.error('[Gmail reconnect] Failed:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Muted senders API ─────────────────────────────────────────────────────
+app.get('/api/muted-senders', requireAuth, async (req, res) => {
+  const settings = await getUserSettings(req.user.email).get('mutedDomains');
+  res.json({ domains: Array.isArray(settings?.domains) ? settings.domains : [] });
+});
+
+app.post('/api/muted-senders', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const raw = String(req.body.domain || '').toLowerCase().trim().replace(/^@/, '');
+  const domain = raw.includes('@') ? raw.split('@').pop() : raw;
+  if (!domain || !domain.includes('.')) {
+    return res.status(400).json({ error: 'That does not look like an email domain.' });
+  }
+  // Refused rather than silently ignored. A trusted domain is one the user
+  // named as a school or team, so a request to mute it is far more likely to
+  // be a misclick than a change of heart — and silently accepting it would
+  // create exactly the invisible missed-event failure this product cannot have.
+  const trusted = await getTrustedDomains(email);
+  if (domainMatches(trusted, `x@${domain}`)) {
+    return res.status(409).json({
+      error: `${domain} is on your trusted list as a school or club, so Criba will keep reading it. Remove it from trusted senders first if you really want to stop.`,
+      trusted: true,
+    });
+  }
+  const store = getUserSettings(email);
+  const cur = await store.get('mutedDomains');
+  const domains = Array.isArray(cur?.domains) ? cur.domains : [];
+  if (!domains.includes(domain)) domains.push(domain);
+  await store.set('mutedDomains', { domains });
+  res.json({ ok: true, domain, domains });
+});
+
+app.delete('/api/muted-senders/:domain', requireAuth, async (req, res) => {
+  const store = getUserSettings(req.user.email);
+  const cur = await store.get('mutedDomains');
+  const domains = (Array.isArray(cur?.domains) ? cur.domains : [])
+    .filter(d => d !== String(req.params.domain).toLowerCase());
+  await store.set('mutedDomains', { domains });
+  res.json({ ok: true, domains });
 });
 
 // ── Fleet cost view (owner only) ──────────────────────────────────────────
@@ -8002,6 +8095,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   // Fetched once per scan, not per message: it is the same answer every time
   // and a Redis round trip inside the loop would cost more than the gate saves.
   const trustedDomains = await getTrustedDomains(email);
+  const mutedDomains = await getMutedDomains(email);
   for (const messageId of messageIds) {
     // This loop is now cheap — metadata and body fetches only, ~450ms each.
     // Reserve most of the budget for the extraction waves that follow.
@@ -8080,7 +8174,17 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     // label. Schools mail through Mailchimp and ParentSquare, which is exactly
     // the mail Gmail files as promotional — so the category skip, left
     // unqualified, would drop the newsletters this product exists to catch.
-    const trustedSender = isTrustedSender(trustedDomains, parseFrom(from).senderEmail);
+    const scanSenderEmail = parseFrom(from).senderEmail;
+    const trustedSender = isTrustedSender(trustedDomains, scanSenderEmail);
+
+    // Muted senders stop here — before the body fetch and before any Claude
+    // call, so a newsletter the user has already said no to costs nothing.
+    if (isMutedSender(mutedDomains, trustedDomains, scanSenderEmail)) {
+      skippedPreFilter++;
+      await traceEmail(email, { runId, stage: 'SKIP-MUTED', messageId, subject, from });
+      if (dryRun) dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: 'muted-sender' });
+      continue;
+    }
 
     const noisy = labelIds.filter(l => GMAIL_NOISE_LABELS.has(l));
     if (noisy.length && !trustedSender) {

@@ -596,6 +596,13 @@ function eventRelevance(text, members, exclusions = [], senderEmail = null, audi
   // she had signed up for. Extraction is asked to miss nothing, which is right
   // for a school newsletter and catastrophic for an industry one: every issue
   // carries a fresh crop of real dates that are not hers.
+  // Gmail promotions are dropped before they are ever stored. This is the
+  // backstop for any other path (an upload, a future source) where one gets
+  // this far: held, not written, so the failure mode is a stray review card
+  // rather than a discount code on the calendar.
+  if (audience === 'promotion') {
+    return { relevant: false, reason: 'a promotional offer, not something on your calendar' };
+  }
   if (audience === 'opportunity') {
     return { relevant: false, reason: 'an opportunity from a newsletter, not something you signed up for' };
   }
@@ -1247,7 +1254,7 @@ For each extracted item return a JSON object with:
 - old_title (string | null) — for cancellation/reschedule: the title of the event being cancelled or changed, as stated in the email; null for new_event
 - old_date (YYYY-MM-DD | null) — for cancellation/reschedule: the original date of the event being changed; null if not stated or new_event
 - old_time (HH:MM 24hr | null) — for cancellation/reschedule: the original time of the event being changed; null if not stated or new_event
-- audience ("you" | "open" | "third_party" | "opportunity") — see Rule 10. Default to "you" when unsure.
+- audience ("you" | "open" | "third_party" | "opportunity" | "promotion") — see Rule 10. Default to "you" when unsure.
 
 Rule 10: Whose event is this? A newsletter, digest or mailing list carries
 other people's business alongside the reader's own. A neighbourhood digest
@@ -1265,11 +1272,20 @@ Still extract it. Do not skip it. Label it instead, with the "audience" field:
   only as a bystander reading about it. Classified ads and items for sale,
   someone else's appointment, garage sales, "my daughter's recital", a
   stranger's request for help at a stated time, another household's plans.
-- "opportunity" — an opening, offer or deadline the reader has NOT signed up
-  for. It is being advertised to them, not required of them. Submission
+- "opportunity" — an opening or deadline the reader has NOT signed up for but
+  which could genuinely matter to them if they chose to act. Submission
   windows and application deadlines from an industry newsletter, fellowship
-  and grant deadlines, contests, webinars and promotional events, early-bird
-  pricing, class-action claim deadlines, "last chance to register".
+  and grant deadlines, contests, webinars, early-bird pricing on a real event,
+  class-action claim deadlines, "last chance to register".
+- "promotion" — a business marketing a commercial offer. A discount code, a
+  sale ending, free delivery, loyalty points expiring, "30% off back to
+  school", a subscription renewal push. The "date" is a marketing deadline
+  invented to create urgency, and nothing in the reader's life happens on it.
+  Unlike the categories above, these are DISCARDED outright rather than shown
+  for review — so use it only when the entire message is a commercial offer.
+  If the email is from a school, employer, doctor, team or anyone the reader
+  has a real relationship with, it is not a promotion, even if it mentions a
+  price.
 
 The test that separates "opportunity" from "you" is whether the reader has
 already committed. Homework for their child, a form their team asked them to
@@ -1332,7 +1348,7 @@ function normalizeExtractedEvent(ev) {
     // Anything the model did not label, or labelled with a value we do not
     // recognise, is treated as the user's own. An unknown value must never be
     // the reason an event is withheld.
-    audience: ['you', 'open', 'third_party', 'opportunity'].includes(ev.audience) ? ev.audience : 'you',
+    audience: ['you', 'open', 'third_party', 'opportunity', 'promotion'].includes(ev.audience) ? ev.audience : 'you',
     recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
   };
 }
@@ -4875,8 +4891,20 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
   try {
     const raw = JSON.parse(text.replace(/^```json\s*/,'').replace(/\s*```$/,''));
     const events = Array.isArray(raw) ? raw : [];
+    // A promotion is the one class of extraction with no review value. Every
+    // other audience is held rather than dropped, because Criba would rather
+    // cost a click than miss a school event. That reasoning does not apply to
+    // a discount code: there is no version of "Uber Eats 30% off expires" that
+    // the user wants on a calendar or in a queue, so showing it held is just
+    // noise in the one screen that has to stay worth reading. Dropped here,
+    // the single point both the webhook and the backfill pass through.
+    const kept = events.filter(ev => {
+      if (ev.audience !== 'promotion') return true;
+      console.log(`[gmail-extract] DROPPED promotion "${ev.title}" from ${senderEmail || 'unknown sender'}`);
+      return false;
+    });
     // Inject sender as attendee name string so it shows in the review card
-    return events.map(ev => ({
+    return kept.map(ev => ({
       ...ev,
       attendees: Array.isArray(ev.attendees)
         ? (ev.attendees.includes(senderName) || !senderName ? ev.attendees : [senderName, ...ev.attendees])

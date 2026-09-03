@@ -7844,6 +7844,27 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
       continue;
     }
 
+    // Promotions and Social, skipped before any pattern runs.
+    //
+    // The webhook path has always dropped these; this path fetched labelIds and
+    // then never looked at them, so the two disagreed in the expensive
+    // direction. Marketing mail is the worst case for the cost gate: a retail
+    // receipt carries "$24.99" and a promo carries "last day" and "expires",
+    // so ACTIONABLE_PATTERNS passes it by design, and it reaches Claude at full
+    // price to be told there is no event. Gmail has already classified it, for
+    // free, more accurately than a regex can.
+    //
+    // Deliberately NOT including CATEGORY_UPDATES or CATEGORY_FORUMS: school
+    // and team mail routinely lands in both, and dropping those would be
+    // exactly the silent miss this pipeline exists to prevent.
+    const noisy = labelIds.filter(l => GMAIL_NOISE_LABELS.has(l));
+    if (noisy.length) {
+      skippedPreFilter++;
+      await traceEmail(email, { runId, stage: 'SKIP-NOISE', messageId, subject, from, labels: noisy.join(',') });
+      if (dryRun) dryRunMessages.push({ messageId, subject, sizeEstimate, verdict: 'SKIP', reason: `noise-label:${noisy.join(',')}` });
+      continue;
+    }
+
     // ── Snippet scan ─────────────────────────────────────────────────────────
     const snippetScan = scanForDateContent(`${subject} ${snippet}`.trim(), snippet.length);
     if (!snippetScan.pass && !snippetScan.escalate) {
@@ -7864,12 +7885,18 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     }
 
     const isImageHeavy = imageParts.length > 0 && body.trim().length < IMAGE_HEAVY_BODY_MAX;
+    // Which pattern opened the gate, carried forward so a passing email is as
+    // explainable as a skipped one. Every SKIP is traced with a reason but a
+    // PASS was traced with none, so the only way to ask "why did a shipping
+    // receipt cost us a Claude call" was to re-read the regexes and guess.
+    let passReason = snippetScan.pass ? `snippet:${snippetScan.matchName}` : null;
     if (!snippetScan.pass && !isImageHeavy) {
       // The filter used to judge the first 5000 characters only. The body is
       // already in memory and this is a regex, so the truncation bought
       // nothing and cost us any newsletter that carried its date further
       // down — exactly the shape of mail a school sends.
       const bodyScan = scanForDateContent(`${subject} ${body}`);
+      passReason = bodyScan.pass ? `body:${bodyScan.matchName}` : null;
       if (!bodyScan.pass) {
         skippedPreFilter++;
         await traceEmail(email, { runId, stage: 'SKIP-BODY', messageId, subject, from, bodyLen: body.length });
@@ -7880,9 +7907,14 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
 
     if (dryRun) {
       const estTokens = PROMPT_TOKENS_ESTIMATE + Math.ceil((subject.length + body.length) / 4) + imageParts.length * IMAGE_TOKENS_ESTIMATE;
-      dryRunMessages.push({ messageId, subject, sizeEstimate, snippetPreview: snippet.slice(0, 100), verdict: 'WOULD_SEND', reason: snippetScan.pass ? 'snippet-match' : isImageHeavy ? 'image-escalation' : 'body-match', imageCount: imageParts.length, estTokens });
+      dryRunMessages.push({ messageId, subject, sizeEstimate, snippetPreview: snippet.slice(0, 100), verdict: 'WOULD_SEND', reason: snippetScan.pass ? 'snippet-match' : isImageHeavy ? 'image-escalation' : 'body-match', matchedPattern: passReason || (isImageHeavy ? 'image-escalation' : null), imageCount: imageParts.length, estTokens });
       continue;
     }
+    // Traced for real runs too, not just dry runs. The cost question is about
+    // what actually happened, and a dry run does not bill anything.
+    await traceEmail(email, { runId, stage: 'SEND-CLAUDE', messageId, subject, from,
+      bodyLen: body.length, images: imageParts.length,
+      matchedPattern: passReason || (isImageHeavy ? 'image-escalation' : null) });
 
     // ── Collect for extraction ───────────────────────────────────────────────
     // Claude calls are ~19s each and fully independent of one another, so

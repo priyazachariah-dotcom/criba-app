@@ -6248,6 +6248,23 @@ app.post('/api/gmail/reconnect', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/health — which commit is actually serving traffic.
+//
+// Every deploy check so far has been "wait a bit, then look for a string in the
+// HTML", which only works for front-end changes and silently reports success on
+// a stale edge cache. A server-only fix had no way to be verified at all. This
+// is unauthenticated on purpose so it can be curled, and returns nothing but
+// the commit and the boot time.
+const BOOTED_AT = new Date().toISOString();
+app.get('/api/health', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    commit: (process.env.VERCEL_GIT_COMMIT_SHA || 'local').slice(0, 7),
+    bootedAt: BOOTED_AT,
+  });
+});
+
 // GET /api/spend — what this account has cost today, and which paths caused it.
 // The cap was shipped without any way to read the meter, which left the user
 // asking "why is today expensive?" with the answer sitting unreadable in Redis.

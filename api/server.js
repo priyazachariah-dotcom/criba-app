@@ -6324,6 +6324,73 @@ app.post('/api/gmail/reconnect', requireAuth, async (req, res) => {
   }
 });
 
+// ── Fleet cost view (owner only) ──────────────────────────────────────────
+//
+// Pricing cannot be set from this account's numbers: it is a development
+// account that has been scanned and re-scanned repeatedly, so its daily cost
+// describes debugging, not a parent using Criba. A real per-user figure has to
+// come from an ordinary account's steady week.
+//
+// Deliberately cost data ONLY — dollars, call counts and token totals per call
+// site. No subjects, senders, or anything drawn from another person's mail.
+// The question is what a user costs to serve, and that is fully answerable
+// from the meter without reading anything private.
+const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS || 'priya.zachariah@gmail.com')
+    .split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
+);
+
+app.get('/api/admin/spend', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const days = Math.min(14, Math.max(1, Number(req.query.days) || 7));
+  const emails = await redis.smembers('gmailWatchedUsers');
+  const users = [];
+  for (const email of emails) {
+    const perDay = [];
+    let total = 0, calls = 0;
+    for (let i = 0; i < days; i++) {
+      const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+      const key = `spendMicroUsd:${String(email).toLowerCase()}:${d}`;
+      const usd = (Number(await redis.get(key)) || 0) / 1e6;
+      const raw = (await redis.hgetall(`${key}:by`)) || {};
+      const byLabel = {};
+      for (const [k, v] of Object.entries(raw)) {
+        const [label, field] = k.split(':');
+        byLabel[label] = byLabel[label] || {};
+        byLabel[label][field] = Number(v);
+      }
+      const dayCalls = Object.values(byLabel).reduce((n, o) => n + (o.calls || 0), 0);
+      total += usd; calls += dayCalls;
+      perDay.push({ date: d, usd: Number(usd.toFixed(4)), calls: dayCalls, byLabel });
+    }
+    // Days with no activity are excluded from the average. A user who was away
+    // for four days is not a cheap user; averaging their silence in would
+    // understate what serving an active parent actually costs, which is the
+    // one number this endpoint exists to get right.
+    const activeDays = perDay.filter(d => d.usd > 0).length;
+    users.push({
+      email,
+      totalUsd: Number(total.toFixed(4)),
+      calls,
+      activeDays,
+      usdPerActiveDay: activeDays ? Number((total / activeDays).toFixed(4)) : 0,
+      projectedMonthlyUsd: activeDays ? Number((total / activeDays * 30).toFixed(2)) : 0,
+      usdPerCall: calls ? Number((total / calls).toFixed(5)) : 0,
+      perDay,
+    });
+  }
+  users.sort((a, b) => b.totalUsd - a.totalUsd);
+  const fleetTotal = users.reduce((n, u) => n + u.totalUsd, 0);
+  res.json({
+    days, userCount: users.length,
+    fleetTotalUsd: Number(fleetTotal.toFixed(4)),
+    note: 'Cost metering only. No message content is read or returned by this endpoint.',
+    users,
+  });
+});
+
 // ── Trusted senders API ───────────────────────────────────────────────────
 // The list that guarantees a school or team never gets filtered out. Learned
 // domains are returned alongside named ones but are not editable here: they

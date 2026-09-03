@@ -1414,6 +1414,7 @@
       <button class="dr-opt" onclick="sendDismissReason('wrong-grade-tier')">Wrong grade/tier</button>
       <button class="dr-opt" onclick="sendDismissReason('wrong-sender-activity')">Wrong sender / not our activity</button>
       <button class="dr-opt" onclick="sendDismissReason('duplicate')">Already on my calendar</button>
+      <button class="dr-opt" onclick="sendDismissReason('newsletter')">Marketing newsletter</button>
       <button class="dr-opt" onclick="sendDismissReason('not-interested')">Not interested</button>
       <button class="dr-opt" onclick="showDismissNote()">Something else</button>
     </div>
@@ -2435,6 +2436,33 @@ async function sendDismissReason(reason) {
     if (!res.ok) return;
     data = await res.json();
   } catch { return; }
+
+  // A marketing newsletter: the sender itself is the rule. Offered as an
+  // explicit choice rather than applied automatically, because this is the one
+  // setting in Criba that can cause an event to be missed.
+  if (data && data.muteOffer) {
+    const d = data.muteOffer.domain;
+    if (await cribaConfirm(
+      `Stop reading email from ${d}?\n\nCriba won't look at anything from this sender again, so its events will no longer reach Review. Use this for marketing lists — not for a school or club.\n\nYou can undo this any time under Circles.`,
+      { confirmLabel: `Stop reading ${d}` })) {
+      try {
+        const r = await fetch('/api/muted-senders', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ domain: d }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) cribaAlert(j.error || 'Could not save that.');
+        else cribaAlert(`Criba will stop reading ${d}.`);
+      } catch { cribaAlert('Network error \u2014 nothing was changed.'); }
+    }
+    return;
+  }
+  // Named as a school or club, so muting is refused. Saying so is important:
+  // silently doing nothing would look like the button was broken.
+  if (data && data.reasonNote === 'trusted-sender') {
+    cribaAlert(`${data.domain} is on your trusted list as a school or club, so Criba will keep reading it. Remove it from trusted senders first if you want it to stop.`);
+    return;
+  }
 
   // Nothing the text supports a rule about. Silence is the right outcome —
   // guessing a rule here is precisely the failure this design exists to avoid.

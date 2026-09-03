@@ -2868,7 +2868,7 @@ async function logDismissFeedback(email, entry) {
   await redis.expire(key, 90 * 24 * 60 * 60);
 }
 
-const DISMISS_REASONS = new Set(['wrong-grade-tier', 'wrong-sender-activity', 'duplicate', 'not-interested', 'other']);
+const DISMISS_REASONS = new Set(['wrong-grade-tier', 'wrong-sender-activity', 'duplicate', 'not-interested', 'newsletter', 'other']);
 
 app.post('/api/events/dismiss-reason', requireAuth, async (req, res) => {
   const { id, reason } = req.body || {};
@@ -2896,6 +2896,28 @@ app.post('/api/events/dismiss-reason', requireAuth, async (req, res) => {
       note: 'user says this was already on their calendar',
     });
     return res.json({ ok: true, candidates: [] });
+  }
+
+  // A commercial newsletter — the one dismissal where the sender IS the rule.
+  //
+  // Every other reason is ambiguous about scope: "not interested" might mean
+  // this week, this child or this activity. A marketing newsletter is different
+  // because the judgement is about the source itself, and the source is a
+  // stable, checkable fact. So this is the only reason that offers to stop
+  // reading a sender outright.
+  if (reason === 'newsletter') {
+    const senderEmail = event.sender_email || '';
+    const domain = String(senderEmail).toLowerCase().split('@').pop();
+    if (!domain || !domain.includes('.')) return res.json({ ok: true, candidates: [] });
+    // An upload or feed event has no sender to mute; and a school the user
+    // trusted is never offered, because the whole point of the trusted list is
+    // that it outranks this.
+    if (PUBLIC_MAIL_DOMAINS.has(domain)) return res.json({ ok: true, candidates: [], reasonNote: 'personal-domain' });
+    const trusted = await getTrustedDomains(req.user.email);
+    if (domainMatches(trusted, senderEmail)) {
+      return res.json({ ok: true, candidates: [], reasonNote: 'trusted-sender', domain });
+    }
+    return res.json({ ok: true, candidates: [], muteOffer: { domain } });
   }
 
   // Too ambiguous to convert. A dismissal can mean wrong child, wrong grade,

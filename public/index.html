@@ -246,6 +246,10 @@
   /* An open question, not an error — amber rather than the conflict red. */
   .review-ambiguous { font-size: 0.75rem; color: #92400e; background: #fffbeb; border-left: 3px solid #f59e0b; padding: 5px 8px; border-radius: 4px; margin-top: 5px; }
   .review-from { font-size: 13.5px; color: #777; font-style: italic; margin-top: 0.2rem; }
+  .trust-sender-btn { font-style: normal; font-size: 12px; margin-left: 0.5rem; background: none;
+    border: none; border-bottom: 1px dotted #999; color: #666; cursor: pointer; padding: 0; }
+  .trust-sender-btn:hover { color: var(--ink); border-bottom-color: var(--ink); }
+  .trust-sender-done { font-style: normal; font-size: 12px; margin-left: 0.5rem; color: #1a7f37; }
   /* Badge styles */
   .review-badge-gmail { display: inline-block; background: var(--pill); color: var(--ink); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; white-space: nowrap; }
   .review-badge { background: var(--bg2); color: var(--ink); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; white-space: nowrap; }
@@ -2733,6 +2737,10 @@ async function loadData() {
 // ── Data fetchers ─────────────────────────────────────────────────────────
 async function loadPendingEvents() {
   try {
+    // Alongside the queue, not before it: the cards need this to know whether
+    // to offer the button or the tick, and a serial fetch would delay the
+    // queue itself for a decoration.
+    loadTrustedDomains();
     const res = await fetch('/api/events/pending');
     if (res.ok) {
       pendingEvents = await res.json();
@@ -3233,7 +3241,7 @@ function renderPostWriteReviewCard(ev) {
       <div class="review-card-content">
         <div class="review-card-title">${dot}${escHtml(ev.title)} ${sourceTag} ${stateTag} ${dupTag}</div>
         <div class="review-card-meta">${meta}</div>
-        ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong></div>` : ''}
+        ${ev.sender_name ? `<div class="review-from">from <strong>${escHtml(ev.sender_name)}</strong>${trustSenderHtml(ev)}</div>` : ''}
         ${notesHtml}
         ${ev.conflict_note ? `<div class="review-conflict">${escHtml(ev.conflict_note)}</div>` : ''}
         ${renderAmbiguityNote(ev)}
@@ -4065,6 +4073,64 @@ async function answerInvite(id, endpoint, successMsg) {
   } catch {
     if (status) { status.textContent = 'Network error \u2014 nothing was changed'; status.style.color = 'var(--red)'; }
     btns.forEach(b => { b.disabled = false; });
+  }
+}
+
+// Consumer providers are refused by the server, so offering the button for one
+// would only produce an error the person cannot act on. Mirrored here rather
+// than shared because the server's copy is the one that actually enforces it —
+// this list only decides whether to show a button.
+const PUBLIC_MAIL_DOMAINS_UI = new Set(['gmail.com','googlemail.com','yahoo.com','ymail.com','hotmail.com',
+  'outlook.com','live.com','msn.com','icloud.com','me.com','mac.com','aol.com','proton.me','protonmail.com',
+  'gmx.com','mail.com','zoho.com']);
+
+function senderDomainOf(ev) {
+  const d = String(ev.sender_email || '').toLowerCase().trim().split('@').pop();
+  return d && d.includes('.') && !PUBLIC_MAIL_DOMAINS_UI.has(d) ? d : null;
+}
+
+// The learning half of the trusted-sender list. Onboarding can only capture the
+// senders a parent can name from memory; schools also mail via ParentSquare,
+// Konstella, TeamSnap and the PTA's mail service, and those names surface only
+// when their mail actually arrives — which is exactly here.
+function trustSenderHtml(ev) {
+  const d = senderDomainOf(ev);
+  if (!d) return '';
+  if (trustedDomains.has(d)) return '<span class="trust-sender-done">\u2713 Always read</span>';
+  return `<button class="trust-sender-btn" id="trust-${ev.id}" onclick="trustSender('${ev.id}','${escHtml(d)}')">Always read ${escHtml(d)}</button>`;
+}
+
+// Mirrors the server list so a card can render its state without a fetch.
+let trustedDomains = new Set();
+async function loadTrustedDomains() {
+  try {
+    const r = await fetch('/api/trusted-senders');
+    if (!r.ok) return;
+    const j = await r.json();
+    trustedDomains = new Set([...(j.named || []), ...(j.learned || [])]);
+  } catch {}
+}
+
+async function trustSender(id, domain) {
+  const btn = document.getElementById(`trust-${id}`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving\u2026'; }
+  try {
+    const r = await fetch('/api/trusted-senders', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (btn) { btn.disabled = false; btn.textContent = j.error || 'Could not save'; }
+      return;
+    }
+    trustedDomains.add(domain);
+    // Every card from this sender updates, not just the one clicked — the
+    // setting is about the sender, so leaving siblings unchanged would read as
+    // the click not having taken effect.
+    renderReviewNow();
+  } catch {
+    if (btn) { btn.disabled = false; btn.textContent = 'Network error — try again'; }
   }
 }
 

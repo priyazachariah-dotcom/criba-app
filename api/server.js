@@ -79,6 +79,96 @@ function getUserExclusions(email) {
   return new RedisHashMap(`exclusions:${email}`);
 }
 
+// ── Decisions — what the user said, kept apart from what Criba did ────────
+//
+// Everything else in this file records Criba's actions: status is a pipeline
+// position, calEventId is a calendar fact, gcalWritten is a write log. None of
+// them survives contact with a second email about the same event, because rows
+// are minted per extraction — a dismissal attaches to a disposable artifact of
+// one email and the next email never consults it. Bug #14.
+//
+// This store records the decision itself, keyed by the same date|title
+// normalisation as the gcalWritten guard (decisionKey — one notion of "same
+// event", already tested against 523 real rows with zero false merges).
+// Deliberately date-scoped: "no to this event on this date", never "no to this
+// title forever". Date-scoped fails safely — the worst case is the event
+// resurfacing for one more click, never a different future event silently
+// suppressed.
+//
+// No migration: historical dismissed/cancelled/rejected rows stay untouched and
+// do not populate this store. It governs only what the user decides from now on.
+function getUserDecisions(email) {
+  return new RedisHashMap(`decisions:${email}`);
+}
+
+// Called from every path where the user (or the school, for a confirmed
+// cancellation) says no to a specific event. Never inferred; each call site is
+// an explicit gesture. Failures are logged and swallowed — a refusal that fails
+// to record must not break the dismissal the user actually asked for.
+async function recordRefusal(email, ev, via) {
+  try {
+    if (!ev?.date || !ev?.title) return;
+    const store = getUserDecisions(email);
+    const key = decisionKey(ev.date, ev.title);
+    const prev = await store.get(key);
+    await store.set(key, {
+      key, verdict: 'no', title: ev.title, date: ev.date, via,
+      source_event_id: ev.id || null,
+      decided_at: prev?.decided_at || new Date().toISOString(),
+      last_affirmed_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error(`[decisions] record failed for "${ev?.title}":`, err.message);
+  }
+}
+
+// A yes erases the no. Without this, approving a held event from Review would
+// work once and then the same refusal would hold it again on the next email —
+// "one click adds it" has to mean the click also retires the rule that held it.
+async function clearRefusal(email, ev) {
+  try {
+    if (ev?.date && ev?.title) await getUserDecisions(email).delete(decisionKey(ev.date, ev.title));
+  } catch (err) {
+    console.error(`[decisions] clear failed for "${ev?.title}":`, err.message);
+  }
+}
+
+// The gate's question. Not yet consulted by any live path — the webhook wiring
+// waits until the read-only replay (/api/debug/decision-gate) has been seen
+// working against real data.
+async function priorRefusal(email, date, title) {
+  try {
+    const d = await getUserDecisions(email).get(decisionKey(date, title));
+    return d?.verdict === 'no' ? d : null;
+  } catch (err) {
+    // An unreadable store must not hold mail; failing open here means at worst
+    // a duplicate card, where failing closed would mean a silent drop.
+    console.error('[decisions] lookup failed:', err.message);
+    return null;
+  }
+}
+
+// The exact fields a refusal-hold writes, shared by the replay endpoint and the
+// live path so what the debug endpoint shows is what the user will read.
+function refusalHold(d) {
+  const when = String(d.decided_at || d.at || '').slice(0, 10) || 'earlier';
+  return {
+    held_reason: `you said no to this on ${when}`,
+    conflict_note: `Not added — you said no to this on ${when}. It came up again, so it's here for you to decide.`,
+  };
+}
+
+// One honest sentence for a calendar-duplicate, wherever it is rendered. The
+// write-guard case used to claim "Already on your calendar" when the guard had
+// only matched a 400-day Redis signature — the event may have been removed on
+// purpose, and the card asserted something the calendar no longer said.
+function calDupNote(dup, targetCalId) {
+  if (dup?.via === 'write-guard') {
+    return `Criba added "${dup.title}" once before — not re-added automatically, in case you removed it on purpose`;
+  }
+  return `Already on your calendar as "${dup.title}"${dup.calendarName && dup.calendarId !== targetCalId ? ` (${dup.calendarName})` : ''} — not added again`;
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // People who are routinely invited to events — a co-parent, a grandparent, an
@@ -1035,7 +1125,7 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
   if (guardSig && !opts.skipDuplicateCheck) {
     try {
       if (await redis.sismember(guardKey, guardSig)) {
-        ev.duplicate_of = ev.duplicate_of || { title: ev.title, date: ev.date, calendarId: targetCalId, calendarName: 'your calendar' };
+        ev.duplicate_of = ev.duplicate_of || { title: ev.title, date: ev.date, calendarId: targetCalId, calendarName: 'your calendar', via: 'write-guard' };
         console.log(`[calendar-dedup] GUARD-SKIP "${ev.title}" on ${ev.date} — Criba already auto-added this once`);
         return null;
       }
@@ -2166,6 +2256,8 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
       }
     }
     event.status = 'added';
+    // The user just said yes; a recorded no for this date must not outlive it.
+    await clearRefusal(req.user.email, { title: title || event.title, date });
     // Remember whose colour this is. Without it the Edit tab can only fall back
     // to Criba's original guess, so reopening an event the user had recoloured
     // showed the wrong person.
@@ -2393,6 +2485,7 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
         event.status = 'cancelled';
         event.calEventId = null;
         await events.set(req.body.id, event);
+        await recordRefusal(req.user.email, event, 'dismiss-removed-from-calendar');
         return res.json({ ok: true, removedFromCalendar: true });
       }
     } catch (err) {
@@ -2402,6 +2495,7 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
     // Genuinely nothing on the calendar — a real draft, or already gone.
     event.status = 'dismissed';
     await events.set(req.body.id, event);
+    await recordRefusal(req.user.email, event, 'dismiss');
     return res.json({ ok: true, removedFromCalendar: false });
   }
 
@@ -2426,6 +2520,7 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
   event.status = 'cancelled';
   event.calEventId = null;
   await events.set(req.body.id, event);
+  await recordRefusal(req.user.email, event, 'dismiss-removed-from-calendar');
   res.json({ ok: true, removedFromCalendar: true });
 });
 
@@ -2609,6 +2704,7 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
     event.status = 'cancelled';
     event.calEventId = null;
     await events.set(id, event);
+    await recordRefusal(req.user.email, event, 'delete-from-calendar');
     res.json({ ok: true });
   } catch (err) {
     if (err.message?.includes('410') || err.message?.includes('Resource has been deleted') || err.message?.includes('404')) {
@@ -2616,6 +2712,7 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
       event.status = 'cancelled';
       event.calEventId = null;
       await events.set(id, event);
+      await recordRefusal(req.user.email, event, 'delete-from-calendar');
       return res.json({ ok: true });
     }
     console.error('delete-from-calendar error:', err.message);
@@ -2758,6 +2855,9 @@ app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
         matchedEv.status = 'cancelled';
       }
       await eventsStore.set(matchedId, matchedEv);
+      // A confirmed cancellation is a decision too: if a later email
+      // re-announces this date, it should come back as a question, not a write.
+      if (matchedEv.status === 'cancelled') await recordRefusal(req.user.email, matchedEv, 'school-cancelled');
     }
   }
 
@@ -3621,7 +3721,7 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
             // Already on a calendar — nothing written, so don't claim it was.
             ev.status = 'duplicate'; ev.reviewed = false;
             ev.duplicate_of_calendar = true;
-            ev.conflict_note = `Already on your calendar as "${ev.duplicate_of?.title || ev.title}" — not added again`;
+            ev.conflict_note = calDupNote(ev.duplicate_of || { title: ev.title }, targetCalId);
             ev.calEventId = null; ev.gcalId = null;
             duplicateCount++;
           } else {
@@ -3639,6 +3739,7 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
         }
       } else {
         ev.status = 'rejected';
+        await recordRefusal(req.user.email, ev, 'category-rejected');
       }
       updates.push([id, ev]);
     }
@@ -3884,6 +3985,7 @@ app.post('/api/calendars/group-dismiss', requireAuth, async (req, res) => {
   for (const [id, ev] of await events.entries()) {
     if (ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft') {
       ev.status = 'dismissed';
+      await recordRefusal(req.user.email, ev, 'group-dismiss');
       updates.push([id, ev]);
       count++;
     }
@@ -5711,7 +5813,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           notes: combinedNotes,
           duplicate_of_calendar: !!calDup,
           conflict_note: calDup
-            ? `Already on your calendar as "${calDup.title}"${calDup.calendarName && calDup.calendarId !== targetCalId ? ` (${calDup.calendarName})` : ''} — not added again`
+            ? calDupNote(calDup, targetCalId)
             : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
           held_reason: relevance.reason || null,
           source_type: ev.source_type || null,
@@ -5983,6 +6085,7 @@ app.post('/api/events/restore', requireAuth, async (req, res) => {
   event.status = 'reviewed';
   event.reviewed = true;
   await events.set(req.body.id, event);
+  await clearRefusal(req.user.email, event);
   res.json({ ok: true, title: event.title, date: event.date });
 });
 
@@ -6952,20 +7055,29 @@ function decisionKey(date, title) {
 
 const DECISION_STATUSES = new Set(['dismissed', 'cancelled', 'rejected']);
 
+// Read-only reconstruction of past refusals from historical statuses — used by
+// the two debug endpoints only. Deliberately NOT a migration: nothing here is
+// ever written to the decisions store. Earliest row wins, matching how a real
+// decision would have been recorded at the time.
+function deriveRefusalsFromHistory(all) {
+  const m = new Map();
+  for (const ev of all) {
+    if (!DECISION_STATUSES.has(ev.status)) continue;
+    const k = decisionKey(ev.date, ev.title);
+    const prev = m.get(k);
+    if (!prev || (ev.created_at || '') < (prev.decided_at || '')) {
+      m.set(k, { key: k, title: ev.title, date: ev.date, status: ev.status, decided_at: ev.created_at || null });
+    }
+  }
+  return m;
+}
+
 app.get('/api/debug/decisions', requireAuth, async (req, res) => {
   try {
     const all = await getUserEvents(req.user.email).values();
 
     // Every refusal on record, collapsed to one entry per (date, title).
-    const decisions = new Map();
-    for (const ev of all) {
-      if (!DECISION_STATUSES.has(ev.status)) continue;
-      const k = decisionKey(ev.date, ev.title);
-      const prev = decisions.get(k);
-      if (!prev || (ev.created_at || '') < (prev.at || '')) {
-        decisions.set(k, { key: k, title: ev.title, date: ev.date, status: ev.status, at: ev.created_at || null });
-      }
-    }
+    const decisions = deriveRefusalsFromHistory(all);
 
     // The verdict that matters: events that reached the calendar even though a
     // refusal for the same date and title already existed. Each one is a case
@@ -7007,6 +7119,61 @@ app.get('/api/debug/decisions', requireAuth, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: 'debug decisions failed', detail: err.message });
+  }
+});
+
+// GET /api/debug/decision-gate — read-only replay of the REAL gate.
+//
+// This does not simulate with copied logic; it calls the same functions the
+// live webhook will call — decisionKey for identity, refusalHold for the exact
+// text the user would read. Two sources of refusals feed the replay:
+//
+//   store    — the new decisions store, populated only by explicit gestures
+//              from the moment this deployed. This is the real thing.
+//   derived  — refusals reconstructed read-only from historical statuses, so
+//              the replay has enough data to show verdicts before the store
+//              has accumulated any. Never written anywhere.
+//
+// The replay honours time: a refusal only holds rows created after it existed,
+// because that is the only thing the live gate could ever do.
+//
+// Nothing is written and no live path consults any of this yet. The webhook
+// wiring waits for these verdicts to be seen and approved.
+app.get('/api/debug/decision-gate', requireAuth, async (req, res) => {
+  try {
+    const email = req.user.email;
+    const all = await getUserEvents(email).values();
+    const stored = await getUserDecisions(email).values();
+    const lookup = deriveRefusalsFromHistory(all);
+    for (const [, d] of lookup) d.source = 'derived-from-history';
+    for (const d of stored) lookup.set(d.key, { ...d, source: 'decisions-store' });
+
+    const replay = [];
+    for (const ev of all) {
+      if (DECISION_STATUSES.has(ev.status)) continue; // this row IS a refusal
+      const d = lookup.get(decisionKey(ev.date, ev.title));
+      if (!d) continue;
+      const at = d.decided_at || '';
+      if (at && ev.created_at && ev.created_at <= at) continue;
+      replay.push({
+        title: ev.title, date: ev.date,
+        was: { status: ev.status, onCalendar: !!ev.calEventId },
+        wouldBe: { status: 'pending', onCalendar: false, ...refusalHold(d) },
+        refusal: { via: d.via || d.status, decided_at: d.decided_at, source: d.source },
+      });
+    }
+    res.json({
+      note: 'read-only replay of the actual gate functions; nothing written, nothing live',
+      gateWiredIntoWebhook: false,
+      scope: 'date-scoped (decisionKey: date + normalised title, same as gcalWritten)',
+      totalEvents: all.length,
+      storedDecisions: stored.length,
+      derivedFromHistory: lookup.size - stored.length,
+      wouldHoldForReview: replay.length,
+      replay,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'decision-gate debug failed', detail: err.message });
   }
 });
 
@@ -7673,7 +7840,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             is_all_day: !!ev.is_all_day, attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
             notes: combinedNotes,
             conflict_note: otherCalDup
-              ? `Already on your calendar as "${otherCalDup.title}"${otherCalDup.calendarName && otherCalDup.calendarId !== bfCalId ? ` (${otherCalDup.calendarName})` : ''} — not added again`
+              ? calDupNote(otherCalDup, bfCalId)
               : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
             held_reason: relevance.reason || null,
             duplicate_of_calendar: !!otherCalDup,

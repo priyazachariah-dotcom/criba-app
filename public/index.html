@@ -1035,7 +1035,8 @@
   <!-- Test mode banner — sticky warning shown whenever test mode is active -->
   <div id="test-mode-banner">
     <span class="test-mode-dot"></span>
-    TEST MODE — all approvals writing to test calendar, not real family calendars
+    Criba is in test mode — approved events are going to a test calendar, not your real one.
+    <button class="btn-outlined btn-sm" style="margin-left:10px" onclick="exitTestMode()">Turn off</button>
   </div>
 
   <!-- Gmail disconnect banner — shown when cron detects watch renewal failure -->
@@ -1064,7 +1065,7 @@
         <h2 class="ob-title">Who do you plan around?</h2>
         <p class="ob-sub">Add the people whose events you track — kids, family, friends. Each gets a colour, so events land already colour-coded. You can always add more later.</p>
         <div class="ob-add-row">
-          <input id="ob-name" class="ob-input" placeholder="Name (e.g. Aarav)" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();obAddPerson();}" />
+          <input id="ob-name" class="ob-input" placeholder="First name" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();obAddPerson();}" />
           <select id="ob-circle" class="ob-select" title="Which circle">
             <option value="family">Family</option>
             <option value="friends">Friends</option>
@@ -1139,7 +1140,7 @@
         <h3>Add calendar</h3>
         <div class="form-group">
           <label>Calendar name</label>
-          <input type="text" id="cal-name" placeholder="e.g. Arin's School Calendar" />
+          <input type="text" id="cal-name" placeholder="e.g. School calendar" />
         </div>
         <div class="form-group">
           <label>Source</label>
@@ -1163,7 +1164,7 @@
                  ("make these 1-2pm and invite Bharat"), or the sentence alone
                  with no file at all. -->
             <textarea id="cal-instructions" class="cal-instructions" rows="2"
-              placeholder="Tell Criba anything about it — or just describe an event, like &quot;lunch with Maya Aug 30 at 2pm&quot;"></textarea>
+              placeholder="Tell Criba anything about it — or just describe an event, like &quot;coffee with Sam next Tuesday at 2pm&quot;"></textarea>
             <div style="font-size:0.8rem;opacity:0.7;margin-top:0.5rem">
               Attach a file, type an instruction, or both. Anything you type here wins
               over what's in the file. Nothing reaches your calendar until you approve it.
@@ -1200,7 +1201,7 @@
       <div id="settings-members-list"></div>
       <button class="btn-secondary" id="settings-add-btn" onclick="toggleAddMemberForm()" style="margin-top:0.5rem">+ Add person</button>
       <div id="settings-add-form" style="display:none" class="add-member-form">
-        <input type="text" id="settings-member-name" placeholder="Name (e.g. Aarav)" />
+        <input type="text" id="settings-member-name" placeholder="First name" />
         <select id="settings-member-circle" class="member-circle" title="Which circle this person belongs to" style="margin-top:0.5rem">
           <option value="family">Family</option>
           <option value="friends">Friends</option>
@@ -1298,7 +1299,7 @@
       <div class="picker-members" id="picker-members-list"></div>
       <button class="picker-add-btn" onclick="showPickerInlineForm()">+ Add new person</button>
       <div id="picker-inline-form" style="display:none" class="picker-inline-form">
-        <input type="text" id="picker-new-name" placeholder="Name (e.g. Arin)" />
+        <input type="text" id="picker-new-name" placeholder="First name" />
         <div class="color-swatches" id="picker-color-swatches"></div>
         <div class="add-member-actions">
           <button class="btn-primary" onclick="addAndSelectMember()">Add &amp; select</button>
@@ -1706,10 +1707,10 @@ function renderMemberActivities(m) {
     ${chips}${senders}
     <button class="act-add" onclick="toggleActivityForm('${m.id}')">+ activity</button>
     <div class="act-form" id="act-form-${m.id}" style="display:none">
-      <input class="member-grade act-in" id="act-type-${m.id}" placeholder="football" title="Activity or sport" />
-      <input class="member-grade act-in" id="act-tier-${m.id}" placeholder="frosh" title="Team tier — frosh, JV or varsity. Left blank, any tier matches." />
-      <input class="member-grade act-in act-in-wide" id="act-org-${m.id}" placeholder="SI Prep" title="League or club" />
-      <input class="member-grade act-in act-in-wide" id="act-dom-${m.id}" placeholder="siprep.org" title="Email domain this arrives from" />
+      <input class="member-grade act-in" id="act-type-${m.id}" placeholder="sport or activity" title="Activity or sport" />
+      <input class="member-grade act-in" id="act-tier-${m.id}" placeholder="team level" title="Team tier — frosh, JV or varsity. Left blank, any tier matches." />
+      <input class="member-grade act-in act-in-wide" id="act-org-${m.id}" placeholder="club or school" title="League or club" />
+      <input class="member-grade act-in act-in-wide" id="act-dom-${m.id}" placeholder="theirschool.org" title="Email domain this arrives from" />
       <button class="act-add" onclick="addMemberActivity('${m.id}')">Save</button>
     </div>
   </div>`;
@@ -2205,6 +2206,18 @@ async function removeRecipient(email) {
 // but the banner stays: if a testCalendarId is somehow still set on an
 // account, the user must be told their approvals are not going where they
 // think. Silent test mode would be worse than no test mode.
+// One-click exit. Test mode with no way out is a trap: the user watches
+// approvals vanish from the calendar they are actually looking at.
+async function exitTestMode() {
+  try {
+    await fetch('/api/settings', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ testCalendarId: null }),
+    });
+    applyTestModeUI('');
+  } catch (err) { console.error('[test-mode] could not clear:', err); }
+}
+
 function applyTestModeUI(calId) {
   const active = !!calId;
   const checkbox = document.getElementById('test-mode-checkbox');
@@ -2700,7 +2713,7 @@ async function loadRecentEvents() {
     } else if (res.status === 401) {
       recentLoadError = 'Your session expired. Sign out and back in.';
     } else {
-      recentLoadError = `Could not load your events (error ${res.status}).`;
+      recentLoadError = 'Could not load your events just now. Refresh to try again.';
     }
   } catch {
     recentLoadError = 'Could not reach Criba. Check your connection and reload.';
@@ -2944,12 +2957,24 @@ function updateReviewHeader(days) {
 // ── Review queue render ───────────────────────────────────────────────────
 // The Review queue is reserved for Gmail, iMessage, and WhatsApp events
 // (Stages 2–4). Calendar/iCal events do not route through here.
+// The scan trace and dedup resets are how a missed school email gets
+// diagnosed, so they are kept — but they are engineering instruments, not
+// features, and a parent who clicks "Force reset" has been failed by the UI.
+// Visit /?debug=1 once to reveal them; the flag survives navigation for the
+// rest of the browser session and never appears for anyone who has not asked.
+const DEBUG_TOOLS = (() => {
+  try {
+    if (new URLSearchParams(location.search).get('debug') === '1') sessionStorage.setItem('cribaDebug', '1');
+    return sessionStorage.getItem('cribaDebug') === '1';
+  } catch { return false; }
+})();
+
 const BACKFILL_BAR_HTML = `
 <div class="scan-bar">
   <span class="scan-bar-label">Scan Gmail</span>
   <div class="scan-bar-btns">
     <button class="btn-filled btn-sm" id="backfill-btn-2" onclick="runBackfill(2)">Scan last 48 hours</button>
-    <button class="btn-outlined btn-sm" id="backfill-debug-toggle" onclick="toggleScanDebug()" title="Show debug tools — scan trace, reset dedup">Tools</button>
+    ${DEBUG_TOOLS ? `<button class="btn-outlined btn-sm" id="backfill-debug-toggle" onclick="toggleScanDebug()" title="Show debug tools — scan trace, reset dedup">Tools</button>` : ''}
   </div>
 </div>
 <div class="fixit-bar">
@@ -2959,7 +2984,7 @@ const BACKFILL_BAR_HTML = `
   </div>
   <div class="fixit-row">
     <button class="btn-outlined btn-sm" id="backfill-btn-reset" onclick="startFresh()" style="color:var(--red);border-color:var(--red)">Start fresh</button>
-    <span class="fixit-desc">Removes every event Criba has added to your calendar and empties the review queue, putting your calendar back the way it was before you signed up. Both buttons show you exactly what they found and ask you to confirm before anything is deleted.</span>
+    <span class="fixit-desc">Removes every event Criba has added to your calendar and empties the review queue, putting your calendar back the way it was before you signed up. You'll see exactly what it found and be asked to confirm first.</span>
   </div>
 </div>
 <div id="scan-debug-bar" style="display:none;gap:6px;flex-wrap:wrap;margin-top:6px;padding:0 2px">
@@ -2990,7 +3015,7 @@ async function startFresh() {
     plan = await res.json();
     if (!res.ok) throw new Error(plan.detail || plan.error || 'Scan failed');
   } catch (err) {
-    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">Could not read your calendar: ${escHtml(err.message)}</div>`);
+    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">${escHtml(friendlyError(err, "Couldn't read your calendar just now. Check your connection and try again — nothing was changed."))}</div>`);
     return;
   }
 
@@ -3038,7 +3063,7 @@ async function startFresh() {
     lastPendingIds = null;
     await loadPendingEvents();
   } catch (err) {
-    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">Reset failed: ${escHtml(err.message)}</div>`);
+    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">${escHtml(friendlyError(err, "That didn't finish. Nothing was deleted — try again in a moment."))}</div>`);
   }
 }
 
@@ -3060,7 +3085,7 @@ async function cleanupDuplicates() {
     plan = await res.json();
     if (!res.ok) throw new Error(plan.detail || plan.error || 'Scan failed');
   } catch (err) {
-    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">Could not scan your calendar: ${escHtml(err.message)}</div>`);
+    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">${escHtml(friendlyError(err, "Couldn't check your calendar just now. Try again in a moment — nothing was changed."))}</div>`);
     return;
   }
 
@@ -3101,7 +3126,7 @@ async function cleanupDuplicates() {
     const out2 = document.getElementById('backfill-result');
     if (out2) out2.innerHTML = `<div style="padding:8px 2px;font-size:0.8125rem">Removed ${r.deleted} duplicate${r.deleted === 1 ? '' : 's'}${r.failed ? `, ${r.failed} could not be removed` : ''}. Your calendar is de-duplicated.${skippedNote}</div>`;
   } catch (err) {
-    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">Cleanup failed: ${escHtml(err.message)}</div>`);
+    say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">${escHtml(friendlyError(err, "That didn't finish. Nothing was deleted — try again in a moment."))}</div>`);
   }
 }
 
@@ -3489,12 +3514,15 @@ function renderReview({ force = false } = {}) {
   updateReviewCount(pendingEvents.length);
 
   if (!pendingEvents.length) {
+    const everScanned = recentEvents.length > 0 || lastScanDays !== null;
     container.innerHTML = `
       ${BACKFILL_BAR_HTML}
       <div class="empty-state" style="margin-top:3rem">
-        <div class="empty-icon">✓</div>
-        <h3>All caught up</h3>
-        <p>Events Criba adds to your calendar show up here to review.<br>Remove anything it got wrong — and it never adds a duplicate.</p>
+        <div class="empty-icon">${everScanned ? '✓' : '·'}</div>
+        <h3>${everScanned ? 'All caught up' : 'Nothing here yet'}</h3>
+        <p>${everScanned
+          ? 'Events Criba adds to your calendar show up here to review.<br>Remove anything it got wrong — and it never adds a duplicate.'
+          : 'Press <strong>Scan last 48 hours</strong> above to read your recent email.<br>Anything Criba finds shows up here first.'}</p>
       </div>`;
     wireBackfillBar();
     return;
@@ -3802,9 +3830,8 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
       // there was no way to tell a broken scan from a quiet one. A failure is
       // never reported as a zero again: it is named, counted, and given the
       // reason in words the user can act on.
-      let msg = `Scanned ${data.scanned}/${data.totalFound} emails · ${data.claudeCalls} sent to AI`;
-      if (failed) msg += ` · ${failed} failed`;
-      msg += ` · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
+      let msg = `Read ${data.scanned} of ${data.totalFound} emails · ${eventsStored} new event${eventsStored !== 1 ? 's' : ''} added`;
+      if (failed) msg += ` · ${failed} couldn't be read`;
       lastScanDays = days;
       updateReviewHeader(days);
       // A scan that stops at its time budget has left real emails unread — the
@@ -3815,7 +3842,7 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
       // forever; emails already handled are skipped in milliseconds by the
       // dedup fingerprint, so each pass reaches further than the last.
       if (data.hitLimit && continuation < MAX_SCAN_CONTINUATIONS) {
-        msg += ` — more to read, continuing (${continuation + 2})…`;
+        msg += ' — still reading…';
         if (result) result.textContent = msg;
         if (btn2) { btn2.disabled = false; btn2.textContent = 'Scanning…'; }
         setTimeout(() => runBackfill(days, false, continuation + 1), 800);
@@ -3826,11 +3853,18 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
         result.textContent = msg;
         // The reason belongs next to the count. Without it the user is told
         // something failed and left to go digging in the scan trace for why.
+        // The failure must be named — a broken scan reported as a quiet one is
+        // how a real school email goes missing unnoticed. But the upstream API
+        // string is for whoever maintains Criba, not for a parent, so it goes
+        // to the console and the user gets a sentence they can act on.
         if (failed && data.lastClaudeError) {
+          console.error('[scan] upstream error:', data.lastClaudeError);
           const why = document.createElement('div');
           why.className = 'error-msg';
           why.style.marginTop = '0.35rem';
-          why.textContent = data.lastClaudeError;
+          why.textContent = DEBUG_TOOLS
+            ? data.lastClaudeError
+            : "Some emails couldn't be read this time. Try scanning again in a few minutes — nothing was lost.";
           result.appendChild(why);
         }
       }
@@ -4722,6 +4756,15 @@ async function saveEdit(id) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+// What went wrong belongs in the console for whoever maintains Criba; what to
+// do about it belongs on screen. Raw upstream strings ("ECONNRESET",
+// "invalid_grant") tell a parent nothing and read like the app broke itself.
+function friendlyError(err, advice) {
+  console.error('[criba]', err);
+  const raw = err && err.message ? err.message : String(err || '');
+  return DEBUG_TOOLS && raw ? `${advice} (${raw})` : advice;
+}
+
 function escHtml(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }

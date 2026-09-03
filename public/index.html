@@ -1782,7 +1782,7 @@ function renderExclusions() {
     const active = exclusionRules.filter(r => !r.overridden).length;
     const off = exclusionRules.length - active;
     countEl.textContent = !exclusionRules.length ? 'none yet'
-      : `${active} active${off ? `, ${off} no longer apply` : ''}`;
+      : `${active} active${off ? `, ${off} no longer ${off === 1 ? 'applies' : 'apply'}` : ''}`;
   }
   if (!exclusionRules.length) {
     el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">Nothing is being held back. Rules appear here when you dismiss an event and tell Criba why.</div>';

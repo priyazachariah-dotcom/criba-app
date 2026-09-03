@@ -1134,50 +1134,6 @@
       <div class="page-headline page-headline-sm">UPLOAD</div>
       <div class="page-desc">Connect calendar sources via URL, PDF or screenshot. Add all events at once or review each group first.</div>
     </div>
-    <!-- Test mode panel -->
-    <div class="test-mode-panel">
-      <div class="test-mode-panel-header">
-        <span class="test-mode-panel-title">Test Mode</span>
-        <label class="test-mode-toggle">
-          <input type="checkbox" id="test-mode-checkbox" onchange="toggleTestMode(this.checked)" />
-          <span class="test-mode-toggle-label" id="test-mode-toggle-label">Off</span>
-        </label>
-      </div>
-      <div class="test-mode-body" id="test-mode-body">
-        <div class="test-mode-desc">When active, all approvals write to this test calendar instead of real family calendars. Safe to use during QA and development.</div>
-        <div class="test-mode-field">
-          <input type="text" id="test-cal-id-input" placeholder="Google Calendar ID  (e.g. abc123@group.calendar.google.com)" />
-          <button class="btn-filled btn-sm" onclick="saveTestCalendar()">Save</button>
-          <button class="btn-outlined btn-sm" onclick="clearTestCalendar()">Clear</button>
-        </div>
-        <div id="test-cal-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
-      </div>
-    </div>
-
-
-    <!-- Migration: move per-person calendars to single primary calendar -->
-    <div class="test-mode-panel" style="margin-top:0">
-      <div class="test-mode-panel-header">
-        <span class="test-mode-panel-title">Migrate to Single Calendar</span>
-        <button class="btn-outlined btn-sm" id="migrate-btn" onclick="runMigration()">Run migration</button>
-      </div>
-      <div class="test-mode-body open">
-        <div class="test-mode-desc">Moves all events from per-person Google Calendars (Aarav's, Arin's, etc.) onto your primary calendar with person-color coding, de-duplicates, then deletes the old calendars. Run once.</div>
-        <div id="migrate-status" style="font-size:12px;margin-top:8px;color:var(--text2);font-style:italic"></div>
-      </div>
-    </div>
-
-    <div class="test-mode-panel" style="margin-top:0;border-color:#c1392b">
-      <div class="test-mode-panel-header">
-        <span class="test-mode-panel-title" style="color:#c1392b">Delete All Criba Events</span>
-        <button class="btn-outlined btn-sm" id="cleanup-btn" style="border-color:#c1392b;color:#c1392b" onclick="runCleanupAll()">Delete all</button>
-      </div>
-      <div class="test-mode-body open">
-        <div class="test-mode-desc">Removes every event Criba has written to Google Calendar and clears all records. Use to reset test data from development. Irreversible.</div>
-        <div id="cleanup-status" style="font-size:12px;margin-top:8px;color:var(--text2);font-style:italic"></div>
-      </div>
-    </div>
-
     <div id="cal-form-container" style="display:none">
       <div class="cal-form">
         <h3>Add calendar</h3>
@@ -2245,6 +2201,10 @@ async function removeRecipient(email) {
   } catch { if (status) status.textContent = 'Network error.'; }
 }
 
+// The panel that set a test calendar is gone (it was a development tool),
+// but the banner stays: if a testCalendarId is somehow still set on an
+// account, the user must be told their approvals are not going where they
+// think. Silent test mode would be worse than no test mode.
 function applyTestModeUI(calId) {
   const active = !!calId;
   const checkbox = document.getElementById('test-mode-checkbox');
@@ -2259,45 +2219,8 @@ function applyTestModeUI(calId) {
   if (banner) banner.classList.toggle('active', active);
 }
 
-async function toggleTestMode(on) {
-  const label = document.getElementById('test-mode-toggle-label');
-  const body = document.getElementById('test-mode-body');
-  if (label) label.textContent = on ? 'On' : 'Off';
-  if (body) body.classList.toggle('open', on);
-  if (!on) {
-    await clearTestCalendar();
-  } else {
-    // Just open the panel — user still needs to enter and save a calendar ID
-    document.getElementById('test-cal-status').textContent = 'Enter a Google Calendar ID below and click Save.';
-  }
-}
 
-async function saveTestCalendar() {
-  const input = document.getElementById('test-cal-id-input');
-  const status = document.getElementById('test-cal-status');
-  const calId = input?.value.trim();
-  if (!calId) { if (status) status.textContent = 'Please enter a calendar ID.'; return; }
-  try {
-    const res = await fetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ testCalendarId: calId }) });
-    if (res.ok) {
-      if (status) status.textContent = `✓ Saved — approvals will write to: ${calId}`;
-      applyTestModeUI(calId);
-    } else {
-      if (status) status.textContent = 'Failed to save. Try again.';
-    }
-  } catch { if (status) status.textContent = 'Network error.'; }
-}
 
-async function clearTestCalendar() {
-  const status = document.getElementById('test-cal-status');
-  const input = document.getElementById('test-cal-id-input');
-  try {
-    await fetch('/api/settings', { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ testCalendarId: null }) });
-    if (input) input.value = '';
-    if (status) status.textContent = '';
-    applyTestModeUI('');
-  } catch {}
-}
 
 // ── Undo toast (dismiss-from-calendar safety net) ─────────────────────────
 let _undoTimer = null;
@@ -2484,45 +2407,7 @@ async function markReviewedAndDismiss(id) {
   } catch {}
 }
 
-async function runCleanupAll() {
-  const btn = document.getElementById('cleanup-btn');
-  const status = document.getElementById('cleanup-status');
-  if (btn) btn.disabled = true;
-  if (status) status.textContent = 'Deleting…';
-  try {
-    const res = await fetch('/api/events/cleanup-all', { method: 'POST' });
-    const data = await res.json();
-    if (data.ok) {
-      if (status) status.textContent = `Done — deleted ${data.deleted} of ${data.total} events from Google Calendar and Redis.`;
-      await Promise.all([loadPendingEvents(), loadRecentEvents()]);
-    } else {
-      if (status) status.textContent = 'Failed.';
-    }
-  } catch (e) {
-    if (status) status.textContent = 'Error: ' + e.message;
-  }
-  if (btn) btn.disabled = false;
-}
 
-async function runMigration() {
-  const btn = document.getElementById('migrate-btn');
-  const status = document.getElementById('migrate-status');
-  if (btn) btn.disabled = true;
-  if (status) status.textContent = 'Migrating…';
-  try {
-    const res = await fetch('/api/migrate/single-calendar', { method: 'POST' });
-    const data = await res.json();
-    if (data.ok) {
-      if (status) status.textContent = data.message || `Done — moved ${data.moved} events, skipped ${data.skipped} duplicates.`;
-      await loadRecentEvents();
-    } else {
-      if (status) status.textContent = 'Migration failed.';
-    }
-  } catch (e) {
-    if (status) status.textContent = 'Error: ' + e.message;
-  }
-  if (btn) btn.disabled = false;
-}
 
 // Tell the server which timezone this browser is in. Criba writes wall-clock
 // times to Google Calendar, so it has to know which wall clock the user reads —

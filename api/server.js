@@ -6891,6 +6891,89 @@ app.get('/api/debug/writes', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/debug/decisions — read-only preview of a decision layer that does
+// not exist yet. Writes nothing, changes nothing, and is not consulted by any
+// live code path. Its whole purpose is to show what such a layer would have
+// done, against real data, before it is allowed to do anything.
+//
+// A decision is "the user said no to this event on this date". It is derived
+// here from the statuses that already record a refusal — dismissed, cancelled,
+// rejected — because those rows are currently the only record of intent that
+// exists anywhere. Date-scoped deliberately: a decision about one date can only
+// ever cause an event to resurface for review, while a title-scoped one could
+// silently suppress a genuinely different future event that happens to be
+// worded alike. Resurfacing is recoverable; silent suppression is the failure
+// this whole exercise exists to remove.
+//
+// Keyed with decisionKey below, which is Jishnu's write-guard normalisation
+// (:1034) — tested over 523 stored events with zero false merges. Its known
+// weakness is the other direction: a title reworded between emails yields a
+// different key. That limit is reported here rather than hidden, as
+// keyRewordingRisk.
+function decisionKey(date, title) {
+  return `${date || ''}|${String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
+}
+
+const DECISION_STATUSES = new Set(['dismissed', 'cancelled', 'rejected']);
+
+app.get('/api/debug/decisions', requireAuth, async (req, res) => {
+  try {
+    const all = await getUserEvents(req.user.email).values();
+
+    // Every refusal on record, collapsed to one entry per (date, title).
+    const decisions = new Map();
+    for (const ev of all) {
+      if (!DECISION_STATUSES.has(ev.status)) continue;
+      const k = decisionKey(ev.date, ev.title);
+      const prev = decisions.get(k);
+      if (!prev || (ev.created_at || '') < (prev.at || '')) {
+        decisions.set(k, { key: k, title: ev.title, date: ev.date, status: ev.status, at: ev.created_at || null });
+      }
+    }
+
+    // The verdict that matters: events that reached the calendar even though a
+    // refusal for the same date and title already existed. Each one is a case
+    // where the user said no and Criba wrote it anyway.
+    const overridden = all
+      .filter(ev => ev.calEventId && !DECISION_STATUSES.has(ev.status))
+      .map(ev => ({ ev, d: decisions.get(decisionKey(ev.date, ev.title)) }))
+      .filter(x => x.d)
+      .map(x => ({ title: x.ev.title, date: x.ev.date, status: x.ev.status, refusedAs: x.d.status }));
+
+    // Same-date pairs the key holds apart but a human would call one event.
+    // These are the decisions that would silently fail to match on rewording.
+    const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const byDate = {};
+    for (const ev of all) (byDate[ev.date] = byDate[ev.date] || []).push(ev);
+    let rewordRisk = 0;
+    for (const rows of Object.values(byDate)) {
+      for (let i = 0; i < rows.length; i++) {
+        for (let j = i + 1; j < rows.length; j++) {
+          if (decisionKey(rows[i].date, rows[i].title) === decisionKey(rows[j].date, rows[j].title)) continue;
+          const A = new Set(norm(rows[i].title).split(' ').filter(w => w.length > 2));
+          const B = new Set(norm(rows[j].title).split(' ').filter(w => w.length > 2));
+          if (!A.size || !B.size) continue;
+          let inter = 0;
+          A.forEach(w => { if (B.has(w)) inter++; });
+          if (inter / new Set([...A, ...B]).size >= 0.7) rewordRisk++;
+        }
+      }
+    }
+
+    res.json({
+      note: 'read-only preview; no decision layer is live and nothing was written',
+      scope: 'date-scoped (date + normalised title)',
+      totalEvents: all.length,
+      decisionsDerived: decisions.size,
+      wouldHaveBeenHeldForReview: overridden.length,
+      overridden,
+      keyRewordingRisk: rewordRisk,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'debug decisions failed', detail: err.message });
+  }
+});
+
 // GET /api/debug/dedup?title=...&date=YYYY-MM-DD[&time=HH:MM] — read-only.
 //
 // Answers "would an incoming email carrying this event be dropped, and by what?"

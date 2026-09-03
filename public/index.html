@@ -1103,13 +1103,13 @@
     <div class="ob-card">
       <div class="ob-step" id="ob-step-1">
         <div class="ob-logo">CRIBA</div>
-        <div class="ob-dots"><span class="on"></span><span></span><span></span></div>
+        <div class="ob-dots"><span class="on"></span><span></span><span></span><span></span></div>
         <h2 class="ob-title">Welcome to Criba</h2>
         <p class="ob-sub">Criba reads your Gmail, PDFs and calendar feeds and adds anything with a date to your Google Calendar — colour-coded by person, and never a duplicate. Two quick steps and you're set.</p>
         <button class="ob-btn-primary" onclick="obGoStep(2)">Get started</button>
       </div>
       <div class="ob-step" id="ob-step-2" style="display:none">
-        <div class="ob-dots"><span></span><span class="on"></span><span></span></div>
+        <div class="ob-dots"><span></span><span class="on"></span><span></span><span></span></div>
         <h2 class="ob-title">Who do you plan around?</h2>
         <p class="ob-sub">Add the people whose events you track — kids, family, friends. Each gets a colour, so events land already colour-coded. You can always add more later.</p>
         <div class="ob-add-row">
@@ -1125,12 +1125,32 @@
         </div>
         <div class="ob-people" id="ob-people"></div>
         <div class="ob-actions">
-          <button class="ob-btn-ghost" onclick="obFinish()">Skip for now</button>
-          <button class="ob-btn-primary" id="ob-continue" onclick="obFinish()">Continue</button>
+          <button class="ob-btn-ghost" onclick="obGoStep(3)">Skip for now</button>
+          <button class="ob-btn-primary" id="ob-continue" onclick="obGoStep(3)">Continue</button>
         </div>
       </div>
+      <!-- Schools and clubs. This is the one answer that makes the rest of the
+           pipeline safe to tune: mail from these senders bypasses every filter,
+           so the cost controls elsewhere can be tightened without any chance of
+           dropping the newsletter this product exists to catch. -->
       <div class="ob-step" id="ob-step-3" style="display:none">
-        <div class="ob-dots"><span></span><span></span><span class="on"></span></div>
+        <div class="ob-dots"><span></span><span></span><span class="on"></span><span></span></div>
+        <h2 class="ob-title">Where does their school email come from?</h2>
+        <p class="ob-sub">Add your school, team or club's email domain and Criba will always read their mail — even if Gmail files it as promotional. This is what makes sure a newsletter is never missed.</p>
+        <div class="ob-add-row">
+          <input id="ob-school" class="ob-input" placeholder="hillsdale.org, or paste an address" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();obAddSchool();}" />
+          <button class="ob-btn-add" onclick="obAddSchool()">Add</button>
+        </div>
+        <div class="ob-people" id="ob-schools"></div>
+        <div class="ob-err" id="ob-school-err" style="display:none;color:#b3261e;font-size:0.82rem;margin-top:0.5rem"></div>
+        <p class="ob-sub" style="font-size:0.8rem;opacity:0.75;margin-top:0.75rem">Don't know it? Skip — Criba learns senders as their mail arrives, and you can mark any sender "always read" from the review queue.</p>
+        <div class="ob-actions">
+          <button class="ob-btn-ghost" onclick="obFinish()">Skip for now</button>
+          <button class="ob-btn-primary" onclick="obFinish()">Continue</button>
+        </div>
+      </div>
+      <div class="ob-step" id="ob-step-4" style="display:none">
+        <div class="ob-dots"><span></span><span></span><span></span><span class="on"></span></div>
         <div class="ob-spinner">◴</div>
         <h2 class="ob-title">Setting up your calendar</h2>
         <p class="ob-sub" id="ob-scan-msg">Reading your last 48 hours of email to get you started — this takes up to a minute.</p>
@@ -2523,8 +2543,9 @@ function startOnboarding() {
   ov.style.display = 'flex';
 }
 function obShowStep(n) {
-  [1, 2, 3].forEach(i => { const e = document.getElementById(`ob-step-${i}`); if (e) e.style.display = i === n ? 'block' : 'none'; });
+  [1, 2, 3, 4].forEach(i => { const e = document.getElementById(`ob-step-${i}`); if (e) e.style.display = i === n ? 'block' : 'none'; });
   if (n === 2) { const inp = document.getElementById('ob-name'); if (inp) setTimeout(() => inp.focus(), 60); }
+  if (n === 3) { const inp = document.getElementById('ob-school'); if (inp) setTimeout(() => inp.focus(), 60); }
 }
 function obGoStep(n) { obShowStep(n); }
 async function obAddPerson() {
@@ -2553,9 +2574,44 @@ function obRenderPeople() {
   const cont = document.getElementById('ob-continue');
   if (cont) cont.textContent = obAdded.length ? 'Continue' : 'Continue';
 }
-// Step 3: run the catch-up scan behind the overlay, then reveal the app.
+let obSchools = [];
+async function obAddSchool() {
+  const el = document.getElementById('ob-school');
+  const err = document.getElementById('ob-school-err');
+  const raw = (el?.value || '').trim();
+  if (err) err.style.display = 'none';
+  if (!raw) { el?.focus(); return; }
+  try {
+    const r = await fetch('/api/trusted-senders', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: raw }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      // The server's message names the actual problem — a personal provider,
+      // or something that is not a domain — so show it rather than a generic
+      // failure the person cannot act on.
+      if (err) { err.textContent = j.error || 'Could not add that.'; err.style.display = 'block'; }
+      return;
+    }
+    if (!obSchools.includes(j.domain)) obSchools.push(j.domain);
+    trustedDomains.add(j.domain);
+    el.value = '';
+    el.focus();
+    obRenderSchools();
+  } catch {
+    if (err) { err.textContent = 'Network error — nothing was saved.'; err.style.display = 'block'; }
+  }
+}
+function obRenderSchools() {
+  const el = document.getElementById('ob-schools');
+  if (!el) return;
+  el.innerHTML = obSchools.map(d => `<span class="ob-chip">${escHtml(d)}</span>`).join('');
+}
+
+// Final step: run the catch-up scan behind the overlay, then reveal the app.
 async function obFinish() {
-  obShowStep(3);
+  obShowStep(4);
   try { await runOnboardingScan(); } catch {}
   const ov = document.getElementById('onboarding-overlay');
   if (ov) ov.style.display = 'none';

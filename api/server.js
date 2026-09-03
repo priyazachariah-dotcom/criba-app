@@ -281,6 +281,16 @@ async function callClaude(email, params, label = 'call') {
       const bd = `${key}:by`;
       await redis.hincrby(bd, `${label}:micro`, micro);
       await redis.hincrby(bd, `${label}:calls`, 1);
+      // Dollars alone cannot tell you WHICH lever to pull. A call costing 8
+      // cents because it shipped 15,000 tokens of email body needs a different
+      // fix from one costing 8 cents because the model wrote a long answer.
+      // Recording the split turns the next cost question into a lookup rather
+      // than another round of inference from averages.
+      const u = response?.usage || {};
+      await redis.hincrby(bd, `${label}:in`, Number(u.input_tokens || 0));
+      await redis.hincrby(bd, `${label}:out`, Number(u.output_tokens || 0));
+      await redis.hincrby(bd, `${label}:cacheRead`, Number(u.cache_read_input_tokens || 0));
+      await redis.hincrby(bd, `${label}:cacheWrite`, Number(u.cache_creation_input_tokens || 0));
       await redis.expire(bd, 7 * 24 * 60 * 60);
     }
   } catch (meterErr) {
@@ -5040,18 +5050,26 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
     : '';
 
   const context = [dateContext, rosterContext].filter(Boolean).join('\n\n');
-  const promptText = images.length > 0
-    ? `${FULL_EXTRACTION_PROMPT}\n\n${context}\n\nEmail text (may be minimal — event details may be in the attached image(s) or PDF):\n${textContent}`
-    : `${FULL_EXTRACTION_PROMPT}\n\n${context}\n\nEmail:\n${textContent}`;
+  // The extraction prompt is ~2,400 tokens of unchanging instructions, and it
+  // was being re-sent — and re-billed at full rate — on every single email.
+  // Split into its own block with a cache breakpoint, it bills at 0.1x on
+  // every call after the first in a five-minute window. A scan processes
+  // dozens of emails back to back, so in practice only the first pays.
+  //
+  // The breakpoint must sit at the END of the static part: caching is a prefix
+  // match, so anything varying (the date line, the family roster, the email
+  // itself) has to come after it or the cache misses every time.
+  const tailText = images.length > 0
+    ? `${context}\n\nEmail text (may be minimal — event details may be in the attached image(s) or PDF):\n${textContent}`
+    : `${context}\n\nEmail:\n${textContent}`;
 
-  const messageContent = images.length > 0
-    ? [
-        { type: 'text', text: promptText },
-        ...images.map(img => (VISION_DOC_TYPES.has(img.mimeType)
-          ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: img.base64data } }
-          : { type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.base64data } })),
-      ]
-    : promptText;
+  const messageContent = [
+    { type: 'text', text: FULL_EXTRACTION_PROMPT, cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: tailText },
+    ...images.map(img => (VISION_DOC_TYPES.has(img.mimeType)
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: img.base64data } }
+      : { type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.base64data } })),
+  ];
 
   const response = await callClaude(ownerEmail, {
     model: 'claude-fable-5',
@@ -6245,9 +6263,23 @@ app.get('/api/spend', requireAuth, async (req, res) => {
     const byLabel = {};
     for (const [k, v] of Object.entries(raw)) {
       const [label, field] = k.split(':');
-      byLabel[label] = byLabel[label] || { usd: 0, calls: 0 };
+      byLabel[label] = byLabel[label] || { usd: 0, calls: 0, inTok: 0, outTok: 0, cacheReadTok: 0, cacheWriteTok: 0 };
       if (field === 'micro') byLabel[label].usd = Number(v) / 1e6;
       if (field === 'calls') byLabel[label].calls = Number(v);
+      if (field === 'in') byLabel[label].inTok = Number(v);
+      if (field === 'out') byLabel[label].outTok = Number(v);
+      if (field === 'cacheRead') byLabel[label].cacheReadTok = Number(v);
+      if (field === 'cacheWrite') byLabel[label].cacheWriteTok = Number(v);
+    }
+    // Per-call averages, because that is the number a fix has to move. A day
+    // total goes up simply because more mail arrived; cost per call only goes
+    // up when something is actually wrong.
+    for (const v of Object.values(byLabel)) {
+      if (v.calls > 0) {
+        v.usdPerCall = Number((v.usd / v.calls).toFixed(5));
+        v.inTokPerCall = Math.round((v.inTok + v.cacheReadTok + v.cacheWriteTok) / v.calls);
+        v.outTokPerCall = Math.round(v.outTok / v.calls);
+      }
     }
     out.push({ date: d, usd: total / 1e6, byLabel });
   }

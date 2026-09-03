@@ -296,6 +296,14 @@
   .form-group input:focus { outline: none; background: white; }
   /* Reads as a quiet aside next to the label rather than a second label. */
   .label-optional { font-weight: 400; font-size: 0.75rem; color: var(--text2); text-transform: none; letter-spacing: 0; }
+  /* Brief highlight on the row a delete just changed, so it can be found again
+     after it moves out of "Recently added" and back into its date. */
+  .recent-card-flash { animation: recentFlash 2.2s ease-out; }
+  @keyframes recentFlash {
+    0%, 45% { background: #fff6d6; }
+    100% { background: transparent; }
+  }
+
   /* Section rules for the Approved page. Sits above the first card of each
      group rather than boxing it, so the list still reads as one column. */
   .recent-section { margin: 2rem 0 0.25rem; padding-bottom: 0.4rem; border-bottom: 1.5px solid var(--ink); }
@@ -3356,8 +3364,37 @@ async function deleteApproved(id) {
       if (status) { status.textContent = data.error || 'Delete failed'; status.style.color = 'var(--red)'; }
       return;
     }
-    recentEvents = recentEvents.filter(e => e.id !== id);
+    // The row used to be filtered out of state here, so the card vanished and
+    // the way back only appeared after a page refresh. The delete IS reversible
+    // — the server keeps the record and /api/events/approve re-creates it from
+    // the stored fields — but a misclick looked permanent, which is the same
+    // thing as being permanent for anyone who doesn't know to reload.
+    //
+    // So the row stays, flipped to exactly what a reload would have shown:
+    // "Not on calendar" with an "Add to calendar" button, right where the
+    // Synced pill was.
+    const ev = recentEvents.find(e => e.id === id);
+    if (ev) { ev.calEventId = null; ev.status = 'cancelled'; }
+    // It is no longer added, so it must not sit under a heading that says it is.
+    justAddedAt.delete(id);
     renderRecent();
+    // Losing the Recently-added pin drops it back among a hundred dated rows,
+    // so say where it went instead of making her hunt for it.
+    let moved = document.getElementById(`recent-${id}`);
+    // The dated lists are capped at 20 until "View more" is pressed, so an
+    // event far enough out lands past the cap and is still not on screen —
+    // which would leave the original vanishing-card problem exactly as it was
+    // for precisely the events hardest to remember. Lift the cap in that case.
+    if (!moved && !showingAll) {
+      showingAll = true;
+      renderRecent();
+      moved = document.getElementById(`recent-${id}`);
+    }
+    if (moved) {
+      moved.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      moved.classList.add('recent-card-flash');
+      setTimeout(() => moved.classList.remove('recent-card-flash'), 2200);
+    }
   } catch {
     if (status) { status.textContent = 'Network error — try again'; status.style.color = 'var(--red)'; }
   }

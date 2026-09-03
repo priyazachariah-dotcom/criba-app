@@ -296,6 +296,16 @@
   .form-group input:focus { outline: none; background: white; }
   /* Reads as a quiet aside next to the label rather than a second label. */
   .label-optional { font-weight: 400; font-size: 0.75rem; color: var(--text2); text-transform: none; letter-spacing: 0; }
+  /* One heading per day. The day column inside each card goes away when a
+     heading is carrying the date, so grouped rows indent to line up with the
+     ungrouped ones rather than jumping left. */
+  .recent-date-head { display: flex; align-items: baseline; gap: 0.6rem; font-family: 'Archivo Black', sans-serif;
+    font-size: 0.95rem; margin: 1.6rem 0 0; padding-bottom: 0.35rem; }
+  .recent-date-count { font-family: inherit; font-weight: 400; font-size: 0.75rem; color: var(--text2); }
+  .recent-card-grouped .recent-card-header { padding-left: calc(44px + 1.25rem); padding-top: 14px; padding-bottom: 14px; }
+  .recent-card-grouped .recent-card-meta { font-variant-numeric: tabular-nums; }
+  .recent-date-head + .recent-card { border-top: none; }
+
   /* Brief highlight on the row a delete just changed, so it can be found again
      after it moves out of "Recently added" and back into its date. */
   .recent-card-flash { animation: recentFlash 2.2s ease-out; }
@@ -4784,28 +4794,73 @@ function renderRecent() {
   upcoming.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
   past.sort((a, b) => sortKey(b).localeCompare(sortKey(a)));
 
-  // The cap applies only to the dated archive. Whatever the user just did stays
-  // visible however long the history behind it has grown.
-  const dated = [...upcoming, ...past];
-  const shownDated = showingAll ? dated : dated.slice(0, 20);
-  const hiddenCount = dated.length - shownDated.length;
-  const shownUpcoming = shownDated.filter(ev => (ev.date || '') >= TODAY);
-  const shownPast = shownDated.filter(ev => (ev.date || '') < TODAY);
+  // Grouping, not just sorting. Sorting by date fixed the order but left 59
+  // near-identical rows each restating a date the row above already said, and
+  // that repetition is what made the page a laundry list. One heading per day,
+  // events under it showing only their time, turns ~59 rows into ~20 days a
+  // person can actually scan.
+  const groupByDate = list => {
+    const out = [];
+    for (const ev of list) {
+      const d = ev.date || '';
+      if (!out.length || out[out.length - 1].date !== d) out.push({ date: d, events: [] });
+      out[out.length - 1].events.push(ev);
+    }
+    return out;
+  };
+
+  // The cap counts events but cuts on a day boundary, so a date is never shown
+  // half-open with the rest of its events stranded behind "View more".
+  const takeGroups = (groups, budget) => {
+    if (showingAll) return { shown: groups, hidden: 0 };
+    const shown = []; let used = 0, hidden = 0;
+    for (const g of groups) {
+      if (used >= budget) { hidden += g.events.length; continue; }
+      shown.push(g); used += g.events.length;
+    }
+    return { shown, hidden };
+  };
+
+  const up = takeGroups(groupByDate(upcoming), 30);
+  const pa = takeGroups(groupByDate(past), 15);
+  const hiddenCount = up.hidden + pa.hidden;
+
+  const dateHeading = d => {
+    if (!d) return 'No date';
+    const dt = new Date(d + 'T12:00:00');
+    const base = dt.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    const yr = dt.getFullYear() === new Date().getFullYear() ? '' : `, ${dt.getFullYear()}`;
+    if (d === TODAY) return `Today — ${base}${yr}`;
+    return base + yr;
+  };
 
   const section = (title, note, list) => list.length
     ? `<div class="recent-section">
          <div class="recent-section-head">${escHtml(title)} <span class="recent-section-count">${list.length}</span></div>
          ${note ? `<div class="recent-section-note">${note}</div>` : ''}
-       </div>${list.map(card).join('')}`
+       </div>${list.map(ev => card(ev, true)).join('')}`
     : '';
 
-  function card(ev) { return `
-    <div class="recent-card" id="recent-${ev.id}">
+  const dateSection = (title, groups) => groups.length
+    ? `<div class="recent-section">
+         <div class="recent-section-head">${escHtml(title)}</div>
+       </div>` + groups.map(g => `
+         <div class="recent-date-head">${escHtml(dateHeading(g.date))}<span class="recent-date-count">${g.events.length}</span></div>
+         ${g.events.map(ev => card(ev, false)).join('')}`).join('')
+    : '';
+
+  // showDate is false inside a date group: the heading has already said it, and
+  // restating it on every row is the noise this rewrite exists to remove.
+  // "Recently added" spans arbitrary dates, so there it stays on.
+  function card(ev, showDate) { return `
+    <div class="recent-card${showDate ? '' : ' recent-card-grouped'}" id="recent-${ev.id}">
       <div class="recent-card-header">
-        <div class="recent-row-day">${dayAbbr(ev.date)}</div>
+        ${showDate ? `<div class="recent-row-day">${dayAbbr(ev.date)}</div>` : ''}
         <div class="recent-row-info">
           <div class="recent-card-title">${eventDotHtml(ev)}${escHtml(ev.title)}</div>
-          <div class="recent-card-meta">${formatDate(ev.date)}${ev.time ? ' · ' + formatTime(ev.time) : ' · All day'}</div>
+          <div class="recent-card-meta">${showDate
+            ? `${formatDate(ev.date)}${ev.time ? ' \u00b7 ' + formatTime(ev.time) : ' \u00b7 All day'}`
+            : (ev.time ? formatTime(ev.time) : 'All day')}</div>
         </div>
         <div class="recent-card-right">
           ${ev.calEventId
@@ -4829,10 +4884,10 @@ function renderRecent() {
 
   container.innerHTML =
     section('Recently added', 'What you added just now, newest first. They move down into the dated lists next time this page loads.', recentlyAdded)
-    + section('Coming up', '', shownUpcoming)
-    + section('Past', '', shownPast)
+    + dateSection('Coming up', up.shown)
+    + dateSection('Past', pa.shown)
     + (hiddenCount > 0
-      ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${hiddenCount} older event${hiddenCount === 1 ? '' : 's'})</button>` : '');
+      ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${hiddenCount} more event${hiddenCount === 1 ? '' : 's'})</button>` : '');
 }
 
 function showAllRecent() { showingAll = true; renderRecent(); }

@@ -7213,7 +7213,8 @@ app.get('/api/debug/decision-gate', requireAuth, async (req, res) => {
 app.get('/api/debug/drafts', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
   const cals = getUserCalendars(req.user.email);
-  const liveCalIds = new Set((await cals.keys()));
+  // RedisHashMap exposes entries(), not keys().
+  const liveCalIds = new Set((await cals.entries()).map(([id]) => id));
   const today = new Date().toISOString().slice(0, 10);
   const drafts = (await events.values()).filter(e => e.status === 'draft');
   const bucket = { liveFuture: [], livePast: [], deadFuture: [], deadPast: [] };

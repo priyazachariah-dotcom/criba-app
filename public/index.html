@@ -2396,7 +2396,7 @@ async function markAllReviewed() {
   // purpose — they are not on the calendar, so "keep them" is meaningless and
   // clearing them would throw them away.
   const n = pendingEvents.filter(e => e.status === 'added' && !e.reviewed).length;
-  const drafts = pendingEvents.filter(e => e.status === 'pending').length;
+  const drafts = pendingEvents.filter(e => e.status === 'pending' || e.status === 'draft').length;
   if (!n) { cribaAlert(drafts ? `Nothing to clear — all ${drafts} remaining are drafts that aren't on your calendar yet. Add or discard them individually.` : 'Nothing to clear.'); return; }
   if (!(await cribaConfirm(`Keep all ${n} events on your calendar and clear them from the review list?\n\nNothing is deleted — they move to Edit Calendar Events.`
     + (drafts ? `\n\n${drafts} draft${drafts > 1 ? 's' : ''} not yet added will stay in the list.` : ''), { confirmLabel: 'Clear list' }))) return;
@@ -3171,7 +3171,11 @@ function renderPostWriteReviewCard(ev) {
   // from your Google Calendar" tooltip. That made the list impossible to
   // reconcile against the calendar: half the rows described something that was
   // never there. Say which is which.
-  const isDraft = ev.status === 'pending';
+  // Two statuses mean "extracted but not on the calendar": 'pending' from the
+  // mail path, 'draft' from an iCal or PDF import. Only 'pending' was listed
+  // here, so a draft rendered as an event that was already added — offering a
+  // Delete button for a calendar entry that does not exist.
+  const isDraft = ev.status === 'pending' || ev.status === 'draft';
   const stateTag = isDup ? '' : isDraft
     ? `<span class="pill state-pill state-draft">Not added yet</span>`
     : `<span class="pill state-pill state-added">On your calendar</span>`;
@@ -3263,7 +3267,11 @@ function renderReminderCard(ev) {
   const id = ev.id;
   const sourceTag = ev.source === 'gmail' ? `<span class="pill" style="font-size:9px">Gmail</span>` : ev.source ? `<span class="pill" style="font-size:9px">${escHtml(ev.source)}</span>` : '';
   const typeLabel = ev.source_type === 'deadline' ? 'deadline' : 'action item';
-  const isDraft = ev.status === 'pending';
+  // Two statuses mean "extracted but not on the calendar": 'pending' from the
+  // mail path, 'draft' from an iCal or PDF import. Only 'pending' was listed
+  // here, so a draft rendered as an event that was already added — offering a
+  // Delete button for a calendar entry that does not exist.
+  const isDraft = ev.status === 'pending' || ev.status === 'draft';
   const stateTag = isDraft
     ? `<span class="pill state-pill state-draft">Not added yet</span>`
     : `<span class="pill state-pill state-added">On your calendar</span>`;

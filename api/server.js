@@ -2010,6 +2010,16 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
     return cutoff < nowTs;
   };
   const all = await events.values();
+
+  // Bug #6: an iCal or PDF import is stored as 'draft' until its calendar write
+  // succeeds, and 'draft' appeared in no feed's status filter — so a write that
+  // failed left the event invisible everywhere, with no way to approve it, edit
+  // it or throw it away. Drafts belonging to a calendar the user has since
+  // deleted are deliberately left out: those are dead records (bug #7), and on
+  // this account they are 79 of the 81, which would bury the queue rather than
+  // fix anything. Deleting a calendar still needs to clean up its events.
+  const liveCalIds = new Set((await getUserCalendars(req.user.email).entries()).map(([id]) => id));
+
   const pending = all.filter(e => {
     // A change notice ages out like anything else. These used to be exempt, so
     // a cancellation for a date three days gone sat in the queue permanently
@@ -2028,6 +2038,10 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
     }
     // Post-write review: 'added' events not yet reviewed and not yet past
     if ((e.status === 'added' || e.status === 'pending') && !e.reviewed && !isPast(e)) return true;
+    // Never written to the calendar, and until now unreachable from anywhere.
+    // It renders with the same "Not added yet" card as a pending event: Add,
+    // Edit or Discard.
+    if (e.status === 'draft' && !e.reviewed && !isPast(e) && liveCalIds.has(e.calendar_id)) return true;
     // Found on the calendar already and deliberately not written. Shown so the
     // user can see Criba noticed it rather than silently dropping it.
     if (e.status === 'duplicate' && !e.reviewed && !isPast(e)) return true;

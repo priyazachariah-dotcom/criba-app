@@ -3025,18 +3025,33 @@ async function startFresh() {
     // how a broken reset gets mistaken for a clean calendar. Show what it saw.
     const errs = plan.calendarErrors || [];
     const scanned = plan.calendarsScanned || [];
+
+    // A calendar that could not be read is NOT the same as a clean calendar,
+    // and this branch is the only place the difference shows. So the failure
+    // stays loud for everyone; only the reassuring case gets quietened.
+    if (errs.length) {
+      say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">
+        Couldn't finish checking — ${errs.length} of your calendar${errs.length === 1 ? '' : 's'} couldn't be read,
+        so Criba can't tell you whether there's anything to remove. Nothing was changed. Try again in a few minutes.
+        <div style="margin-top:4px;font-size:11px;color:var(--text2)">${errs.map(e => escHtml(e.calendar + (DEBUG_TOOLS ? ' — ' + e.error : ''))).join('; ')}</div>
+      </div>`);
+      return;
+    }
+
+    // The window bounds, event counts and description fragments are how a
+    // failed match gets diagnosed — kept, but behind the debug flag. A parent
+    // reading "read 412 events, sample: desc: …" thinks something broke.
     say(`<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">
-      Nothing matched — no events stamped “Added via Criba” were found.
-      <div style="margin-top:4px;font-size:11px">
+      Nothing to remove — Criba hasn't added anything to your calendar yet.
+      ${DEBUG_TOOLS ? `<div style="margin-top:4px;font-size:11px">
         Looked at ${scanned.length} calendar${scanned.length === 1 ? '' : 's'}
         (${scanned.map(escHtml).join(', ') || 'none'}) from ${escHtml(plan.windowFrom || '?')} to ${escHtml(plan.windowTo || '?')}
         and read ${plan.totalEventsSeen ?? '?'} events in total.
-        ${errs.length ? `<span style="color:var(--red)">${errs.length} could not be read: ${errs.map(e => escHtml(e.calendar + ' — ' + e.error)).join('; ')}</span>` : ''}
       </div>
       ${(plan.sampleOfWhatWasSeen || []).length ? `<div style="margin-top:6px;font-size:11px;opacity:.8">
         Sample of what it did see:<br>${plan.sampleOfWhatWasSeen.map(s =>
           escHtml(`• ${s.date || '?'} ${s.title} [${s.calendar}] — ${s.hasDescription ? 'desc: ' + s.descriptionStart : 'no description'}`)
-        ).join('<br>')}</div>` : ''}
+        ).join('<br>')}</div>` : ''}` : ''}
       </div>`);
     return;
   }

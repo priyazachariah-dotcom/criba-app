@@ -542,7 +542,7 @@
   .settings-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
   .settings-section > summary::-webkit-details-marker { display: none; }
   .settings-section > summary .settings-section-title { margin-bottom: 0; }
-  .settings-section > summary::after { content: '+'; font-size: 0.95rem; color: var(--text2); line-height: 1; }
+  .settings-section > summary::after { content: '+'; font-size: 0.95rem; color: var(--text2); line-height: 1; order: 2; }
   .settings-section[open] > summary::after { content: '\2212'; }
   .settings-section > summary:hover .settings-section-title { color: var(--ink); }
   .settings-section > summary + .page-desc { margin-top: 0.875rem; }
@@ -1266,7 +1266,7 @@
       <summary style="flex-wrap:wrap">
         <span class="settings-section-title">Rules you created</span>
         <span class="excl-count" id="exclusion-count"></span>
-        <div class="page-desc" style="margin:0.6rem 0 0;flex-basis:100%;max-width:none"><span style="display:block;max-width:680px">Criba learned these from what you’ve dismissed — each rule was created when you answered “yes” to a question after dismissing an event, and is written here in the words you agreed to. If Criba got one wrong, remove it with one click. Nothing is ever deleted by a rule: matching events still reach Review with the reason attached, one click from being added.</span></div>
+        <div class="page-desc" style="margin:0.6rem 0 0;flex-basis:100%;max-width:none;order:3"><span style="display:block;max-width:680px">Criba learned these from what you’ve dismissed — each rule was created when you answered “yes” to a question after dismissing an event, and is written here in the words you agreed to. If Criba got one wrong, remove it with one click. Nothing is ever deleted by a rule: matching events still reach Review with the reason attached, one click from being added.</span></div>
       </summary>
       <div id="exclusion-list"></div>
     </details>

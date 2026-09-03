@@ -182,9 +182,26 @@ does describe three things — but one mass mailing can triple the review queue.
 ## Data integrity — mostly invisible, mostly Priya's account
 
 ### 6. `draft` status has no approval path
-**Verified.** `draft` is in neither `VISIBLE_IN_REVIEW` nor `VISIBLE_IN_EDIT`.
-Anything that reaches that status is stranded. One-line filter change; not done
-because it would surface all 81 at once.
+**FIXED 2026-09-03 (`1efad57`).**
+
+`draft` was in neither `VISIBLE_IN_REVIEW` nor `VISIBLE_IN_EDIT`, so an iCal or
+PDF import whose calendar write failed was stranded — unapprovable, uneditable,
+undiscardable.
+
+It was not the one-line filter change this entry claimed. Two halves were wrong:
+the server's pending filter never returned drafts, *and* the client's `isDraft`
+test was `status === 'pending'` only, so a draft that did arrive rendered as
+"On your calendar" with a Delete button for a Google event that never existed.
+
+The "would surface all 81 at once" objection was also wrong in shape. Measured
+via the new `/api/debug/drafts`: only **1** of the 81 is future-dated on a
+calendar that still exists (Team Practice, 2026-09-04 — bug #9's event). 79
+belong to deleted calendars. The fix surfaces live-calendar drafts only; the
+dead ones remain #7's problem.
+
+`/api/events/approve` needed no change — a draft has no `calEventId`, so it
+takes the insert branch, where `findExistingOnAnyCalendar` patches an existing
+copy rather than duplicating it.
 
 ### 7. 79 of the 81 drafts belong to deleted calendars
 **Verified.** "Aaravs SI calendar", "Arin's Flag football", "Arin's school

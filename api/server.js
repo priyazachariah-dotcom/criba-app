@@ -2301,6 +2301,12 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     // making later undo and update calls fail.
     event.gcalId = event.gcalId || targetCalId;
     event.approved_at = new Date().toISOString();
+    // approved_at is stamped by auto-add and by feed imports too, so it cannot
+    // answer "what did SHE do". This one is written only here and in
+    // delete-from-calendar — the two endpoints a person reaches by clicking —
+    // so the Recently added section can show a real 24-hour window instead of
+    // filling up with a backfill the user never saw.
+    event.user_action_at = new Date().toISOString();
     event.title = title || event.title;
     event.date = date;
     event.time = time || '';
@@ -2733,6 +2739,7 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
     // feeds, so a deleted event became unfindable as well as gone.
     event.status = 'cancelled';
     event.calEventId = null;
+    event.user_action_at = new Date().toISOString();
     await events.set(id, event);
     await recordRefusal(req.user.email, event, 'delete-from-calendar');
     res.json({ ok: true });
@@ -2741,6 +2748,7 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
       // Already deleted from GCal — still record the removal in Redis
       event.status = 'cancelled';
       event.calEventId = null;
+      event.user_action_at = new Date().toISOString();
       await events.set(id, event);
       await recordRefusal(req.user.email, event, 'delete-from-calendar');
       return res.json({ ok: true });

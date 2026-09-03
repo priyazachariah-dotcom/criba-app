@@ -1160,7 +1160,7 @@
   </div>
   <div class="page" id="page-recent">
     <div class="page-title-block">
-      <div class="page-headline page-headline-sm">APPROVED</div>
+      <div class="page-headline page-headline-sm">EDIT YOUR EVENTS</div>
       <div class="page-desc">Everything Criba has handled for you. Rows marked <strong>Synced</strong> are on your Google Calendar right now; <strong>Not on calendar</strong> ones aren&rsquo;t, and can be put back with one click. Edit any time.</div>
     </div>
     <div id="recent-list"></div>
@@ -3386,11 +3386,12 @@ async function deleteApproved(id) {
     // Synced pill was.
     const ev = recentEvents.find(e => e.id === id);
     if (ev) { ev.calEventId = null; ev.status = 'cancelled'; }
-    // It is no longer added, so it must not sit under a heading that says it is.
-    justAddedAt.delete(id);
+    // Stays pinned at the top: the section covers removals too, and the top of
+    // the page is exactly where the way back needs to be after a misclick.
+    markJustAdded(id);
     renderRecent();
-    // Losing the Recently-added pin drops it back among a hundred dated rows,
-    // so say where it went instead of making her hunt for it.
+    // The row moves to the top of Recently added or removed, so point at where
+    // it went rather than leaving her to hunt for it.
     let moved = document.getElementById(`recent-${id}`);
     // The dated lists are capped at 20 until "View more" is pressed, so an
     // event far enough out lands past the cap and is still not on screen —
@@ -4768,21 +4769,25 @@ function renderRecent() {
   // is for fixing what is about to happen, with past events kept below in
   // reverse order so the most recent is the nearest to hand.
   const TODAY = new Date().toISOString().slice(0, 10);
-  // "Recently added" means what THIS person just did, so it is driven by the
-  // clicks themselves and not by a timestamp window. A 24-hour window was the
-  // obvious first cut and it was wrong: one backfill touches dozens of events
-  // inside the same hour, so the section filled up with things spanning Sep
-  // 2026 to May 2027 and recreated the exact shuffle this page was fixing.
-  // A fresh load therefore starts empty, which is correct — nothing has just
-  // been added, so everything belongs under its own date.
-  const addedAt = ev => {
-    const ms = justAddedAt.get(ev.id) || Date.parse(ev.approved_at || ev.created_at || '');
+  // A 24-hour window over things the user actually clicked. The first attempt
+  // measured approved_at, which auto-add and feed imports also stamp, so one
+  // backfill filled this section with events spanning Sep 2026 to May 2027 —
+  // the exact shuffle the page was fixing. user_action_at is written only by
+  // the approve and delete endpoints, so the window now means what it says.
+  //
+  // justAddedAt is the same-visit fallback: it keeps a row pinned the instant
+  // it is clicked, without waiting for the server field to come back.
+  const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const actionedAt = ev => {
+    const ms = justAddedAt.get(ev.id) ?? Date.parse(ev.user_action_at || '');
     return isNaN(ms) ? 0 : ms;
   };
-  // Requires calEventId too: the heading says "added", so a row that is not
-  // actually on the calendar must not sit under it. Delete a just-added event
-  // and it drops straight out of here and back down into its own date.
-  const isRecentlyAdded = ev => !!ev.calEventId && justAddedAt.has(ev.id);
+  const addedAt = actionedAt;
+  // Deletes belong here too — this is where the "Add to calendar" way back
+  // lives, so the row you just removed by accident must be findable at the top
+  // rather than filed away under its own date.
+  const isRecentlyAdded = ev => (now - actionedAt(ev)) < RECENT_WINDOW_MS && actionedAt(ev) > 0;
   const sortKey = ev => `${ev.date || ''} ${ev.time || ''}`;
 
   const recentlyAdded = [], upcoming = [], past = [];
@@ -4884,7 +4889,7 @@ function renderRecent() {
     </div>`; }
 
   container.innerHTML =
-    section('Recently added', 'What you added just now, newest first. They move down into the dated lists next time this page loads.', recentlyAdded)
+    section('Recently added or removed', 'Everything you added or removed in the last 24 hours, newest first. After that they settle into the dated lists below.', recentlyAdded)
     + dateSection('Coming up', up.shown)
     + dateSection('Past', pa.shown)
     + (hiddenCount > 0

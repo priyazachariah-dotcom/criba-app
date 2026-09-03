@@ -547,9 +547,12 @@
   .settings-section .page-desc { text-align: left; max-width: 680px; }
 /* Uploaded files is a growing archive of things already dealt with, so it is
    collapsed by default — the add form above it is what the page is for. */
-.cal-section-collapsible > summary { cursor: pointer; list-style: none; display: block; }
+.cal-section-collapsible > summary { cursor: pointer; list-style: none; display: block; position: relative; padding-right: 1.5rem; }
 .cal-section-collapsible > summary::-webkit-details-marker { display: none; }
-.cal-section-collapsible > summary::after { content: '+'; float: right; font-size: 0.95rem; color: var(--text2); }
+/* Pinned to the top-right rather than floated: a float lands after the two-line
+   description, leaving the marker stranded halfway down the page away from the
+   heading it belongs to. */
+.cal-section-collapsible > summary::after { content: '+'; position: absolute; top: 0; right: 0; font-size: 0.95rem; color: var(--text2); }
 .cal-section-collapsible[open] > summary::after { content: '−'; }
 .cal-section-count { font-weight: 400; color: var(--text2); }
 .cal-section-hint { font-style: normal; color: var(--text2); }

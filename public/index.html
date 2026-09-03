@@ -288,8 +288,6 @@
   .dry-run-summary { display: flex; gap: 1.5rem; margin-top: 0.6rem; font-size: 0.8rem; color: var(--text2); flex-wrap: wrap; }
 
   /* ── Calendars page ─────────────────────────────────────────────────── */
-  .add-cal-btn { display: flex; align-items: center; gap: 6px; padding: 0.625rem 1.25rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.875rem; font-weight: 500; cursor: pointer; margin-bottom: 2rem; }
-  .add-cal-btn:hover { opacity: 0.82; }
   .cal-form { background: white; border: 1.5px solid var(--ink); padding: 1.5rem; margin-bottom: 2rem; }
   .cal-form h3 { font-size: 1rem; font-weight: 600; margin-bottom: 1.25rem; }
   .form-group { margin-bottom: 1rem; }
@@ -547,6 +545,14 @@
   .settings-section > summary:hover .settings-section-title { color: var(--ink); }
   .settings-section > summary + .page-desc { margin-top: 0.875rem; }
   .settings-section .page-desc { text-align: left; max-width: 680px; }
+/* Uploaded files is a growing archive of things already dealt with, so it is
+   collapsed by default — the add form above it is what the page is for. */
+.cal-section-collapsible > summary { cursor: pointer; list-style: none; display: block; }
+.cal-section-collapsible > summary::-webkit-details-marker { display: none; }
+.cal-section-collapsible > summary::after { content: '+'; float: right; font-size: 0.95rem; color: var(--text2); }
+.cal-section-collapsible[open] > summary::after { content: '−'; }
+.cal-section-count { font-weight: 400; color: var(--text2); }
+.cal-section-hint { font-style: normal; color: var(--text2); }
   .excl-count { font-size: 0.8rem; color: var(--text2); font-weight: 400; text-transform: none; letter-spacing: 0; }
   .member-row { display: flex; align-items: center; gap: 0.75rem; background: white; border: 1.5px solid var(--ink); padding: 0.75rem 1rem; margin-bottom: 0.5rem; }
   .member-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
@@ -1133,9 +1139,12 @@
   <div class="page" id="page-calendars">
     <div class="page-title-block">
       <div class="page-headline page-headline-sm">UPLOAD</div>
-      <div class="page-desc">Connect calendar sources via URL, PDF or screenshot. Add all events at once or review each group first.</div>
+      <div class="page-desc">Connect calendar sources via URL, PDF or screenshot — or simply say or type &ldquo;coffee with Sarah on Thursday at 8&rdquo;. All these events show up on your calendar, with an option to edit them in Criba.</div>
     </div>
-    <div id="cal-form-container" style="display:none">
+    <!-- Always open. Adding a calendar is the entire purpose of this page, so
+         hiding it behind a "+ Add calendar" button made the first thing a new
+         user needs the one thing they had to go looking for. -->
+    <div id="cal-form-container">
       <div class="cal-form">
         <h3>Add calendar</h3>
         <div class="form-group">
@@ -1182,11 +1191,10 @@
         <div id="extract-status"></div>
         <div class="form-actions">
           <button class="btn-primary" id="cal-submit-btn" onclick="submitCalendar()">Add calendar</button>
-          <button class="btn-secondary" onclick="hideCalForm()">Cancel</button>
+          <button class="btn-secondary" onclick="hideCalForm()">Clear</button>
         </div>
       </div>
     </div>
-    <button class="add-cal-btn" onclick="showCalForm()" id="add-cal-btn">+ Add calendar</button>
     <div id="cal-list"></div>
   </div>
 
@@ -4896,11 +4904,11 @@ function renderCalendars() {
 
   if (uploads.length) {
     out.push(`
-      <div class="cal-section">
-        <div class="cal-section-head">
-          <h3 class="cal-section-title">Uploaded files</h3>
-          <p class="cal-section-sub">Read once from a PDF or screenshot. You approve these before they reach your calendar.</p>
-        </div>
+      <details class="cal-section cal-section-collapsible">
+        <summary class="cal-section-head">
+          <h3 class="cal-section-title">Uploaded files <span class="cal-section-count">${uploads.length}</span></h3>
+          <p class="cal-section-sub">Read once from a PDF or screenshot. You approve these before they reach your calendar. <span class="cal-section-hint">(Expand to view them.)</span></p>
+        </summary>
         ${uploads.map((cal, i) => calRow(cal, i, `${cal.event_count
           ? `${cal.event_count} events`
           // event_count only counts events the user has APPROVED. A file that
@@ -4909,7 +4917,7 @@ function renderCalendars() {
           // that case creates no row at all. The count was being read as
           // "Criba found nothing" when it meant "nothing approved yet".
           : 'read — nothing approved yet'} · ${escHtml(memberNameFor(cal.memberId))}`)).join('')}
-      </div>`);
+      </details>`);
   }
 
   container.innerHTML = out.join('');
@@ -4957,9 +4965,10 @@ async function threeWayConfirm(msg) {
   return 'yes';
 }
 
+// The form is always on screen now, so this only ever resets it. Kept under
+// the old name because it is called from several places that mean "give me a
+// clean form" — after a successful add, and from the Clear button.
 function showCalForm() {
-  document.getElementById('cal-form-container').style.display = 'block';
-  document.getElementById('add-cal-btn').style.display = 'none';
   document.getElementById('extract-status').innerHTML = '';
   document.getElementById('cal-name').value = '';
   document.getElementById('cal-url').value = '';
@@ -5004,9 +5013,11 @@ function setCalMember(id) {
   renderCalMemberChips();
 }
 
+// There is nothing to hide any more — the form stays open and is emptied
+// instead. A successful add used to collapse the form, which read as the page
+// throwing away what you just did rather than finishing it.
 function hideCalForm() {
-  document.getElementById('cal-form-container').style.display = 'none';
-  document.getElementById('add-cal-btn').style.display = 'flex';
+  showCalForm();
 }
 
 function instructionText() {

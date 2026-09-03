@@ -2015,8 +2015,167 @@ app.get('/api/contacts/search', requireAuth, async (req, res) => {
     res.json([]);
   }
 });
+// ── Incoming calendar invites ────────────────────────────────────────────
+// An invite is the one kind of event Criba does not have to guess at. By the
+// time the mail lands, Google has already written the real event onto the
+// calendar with the user's own attendee record set to "needsAction" — so
+// reading the calendar is both more reliable than parsing text/calendar out of
+// the message and a truer statement of what is actually on the calendar right
+// now. Nothing is extracted, nothing is invented: the yes/no answers a real
+// invitation.
+const INVITE_SYNC_TTL_MS = 2 * 60 * 1000;
+
+async function syncIncomingInvites(user) {
+  const email = user.email;
+  const cacheKey = `invitesync:${email}`;
+  // The review page polls. Without this, every poll costs a calendar list call
+  // for an answer that changes at the speed of someone's inbox.
+  try {
+    const last = await redis.get(cacheKey);
+    if (last && Date.now() - Number(last) < INVITE_SYNC_TTL_MS) return;
+  } catch {}
+
+  const store = getUserEvents(email);
+  try {
+    const auth = await getUserOAuthClient(user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const list = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: new Date().toISOString(),
+      timeMax: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+      singleEvents: true,
+      maxResults: 250,
+      orderBy: 'startTime',
+    });
+
+    for (const g of list.data.items || []) {
+      const me = (g.attendees || []).find(a => a.self);
+      // Only genuinely unanswered invitations. An event she created herself has
+      // no attendee record marked self, and one she has already accepted or
+      // declined is not a question any more.
+      if (!me || me.responseStatus !== 'needsAction') continue;
+
+      // Keyed off the Google id so repeated syncs update one record rather than
+      // stacking a new card on every poll.
+      const id = `invite_${g.id}`;
+      const existing = await store.get(id);
+      // Answered in Criba already — do not resurrect it as a question. Google
+      // can lag behind the answer we just wrote.
+      if (existing && existing.status !== 'pending_invite') continue;
+
+      const date = g.start?.date || (g.start?.dateTime || '').slice(0, 10);
+      if (!date) continue;
+
+      await store.set(id, {
+        ...(existing || {}),
+        id,
+        status: 'pending_invite',
+        title: g.summary || '(no title)',
+        date,
+        time: g.start?.dateTime ? g.start.dateTime.slice(11, 16) : '',
+        end_date: g.end?.date || (g.end?.dateTime || '').slice(0, 10) || '',
+        end_time: g.end?.dateTime ? g.end.dateTime.slice(11, 16) : '',
+        location: g.location || '',
+        notes: g.description || '',
+        organizer: g.organizer?.displayName || g.organizer?.email || '',
+        // It is already on the calendar. Recording that is what makes "no"
+        // able to remove it and "yes" able to leave it exactly where it is.
+        calEventId: g.id,
+        gcalId: 'primary',
+        source: 'invite',
+        audience: 'you',
+        created_at: existing?.created_at || new Date().toISOString(),
+      });
+    }
+    await redis.set(cacheKey, String(Date.now()), 'PX', INVITE_SYNC_TTL_MS);
+  } catch (err) {
+    // An invite sync failure must never take down the review queue, which is
+    // the page's whole reason to exist.
+    console.error('[invites] sync failed:', err.message);
+  }
+}
+
+// Yes. The event is already on the calendar and stays exactly as it is; all
+// this does is tell Google she has accepted and clear the card from Review.
+app.post('/api/events/accept-invite', requireAuth, async (req, res) => {
+  const store = getUserEvents(req.user.email);
+  const ev = await store.get(req.body.id);
+  if (!ev) return res.status(404).json({ error: 'That invite no longer exists — refresh the page.' });
+  // Also the undo for a decline: the original invitation still exists on
+  // Google, so accepting it again is the honest way back. Inserting a fresh
+  // event would leave the organiser's invitation declined and put a private
+  // duplicate next to it.
+  const gcalEventId = ev.calEventId || ev.declined_gcal_id;
+  if (!gcalEventId) return res.status(400).json({ error: 'This invite is no longer on Google Calendar.' });
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const cur = await calendar.events.get({ calendarId: ev.gcalId || 'primary', eventId: gcalEventId });
+    const attendees = (cur.data.attendees || []).map(a => a.self ? { ...a, responseStatus: 'accepted' } : a);
+    await calendar.events.patch({
+      calendarId: ev.gcalId || 'primary', eventId: gcalEventId,
+      resource: { attendees }, sendUpdates: 'none',
+    });
+  } catch (err) {
+    console.error('[invites] accept failed:', err.message);
+    return res.status(500).json({ error: 'Could not accept on Google Calendar: ' + err.message });
+  }
+  ev.status = 'added';
+  ev.calEventId = gcalEventId;
+  ev.declined_gcal_id = null;
+  ev.reviewed = true;
+  ev.approved_at = new Date().toISOString();
+  ev.user_action_at = new Date().toISOString();
+  await store.set(ev.id, ev);
+  res.json({ ok: true });
+});
+
+// No. Decline so it leaves her calendar, then keep the record so it shows up
+// under Edit Your Events as "Not on calendar" with the way back attached —
+// declining an invite by mistake has to be as recoverable as deleting one.
+app.post('/api/events/decline-invite', requireAuth, async (req, res) => {
+  const store = getUserEvents(req.user.email);
+  const ev = await store.get(req.body.id);
+  if (!ev) return res.status(404).json({ error: 'That invite no longer exists — refresh the page.' });
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const cur = await calendar.events.get({ calendarId: ev.gcalId || 'primary', eventId: ev.calEventId });
+    const attendees = (cur.data.attendees || []).map(a => a.self ? { ...a, responseStatus: 'declined' } : a);
+    // sendUpdates:'none' deliberately. Declining changes her calendar, which is
+    // what she asked for; mailing the organiser is a message sent on her behalf
+    // and is not this button's job to decide.
+    await calendar.events.patch({
+      calendarId: ev.gcalId || 'primary', eventId: ev.calEventId,
+      resource: { attendees }, sendUpdates: 'none',
+    });
+  } catch (err) {
+    if (!err.message?.includes('410') && !err.message?.includes('404')) {
+      console.error('[invites] decline failed:', err.message);
+      return res.status(500).json({ error: 'Could not decline on Google Calendar: ' + err.message });
+    }
+  }
+  ev.status = 'cancelled';
+  // Remember the Google id BEFORE clearing it — reading it back afterwards
+  // would have stored null and thrown away the only handle on the original
+  // invitation, making "Add to calendar" insert a rival copy instead of
+  // re-accepting the real one.
+  ev.declined_gcal_id = ev.calEventId;
+  // Declined events drop out of her calendar view, so the id no longer points
+  // at something she can see. Clearing it is what puts "Add to calendar" on the
+  // row in Edit Your Events.
+  ev.calEventId = null;
+  ev.reviewed = true;
+  ev.user_action_at = new Date().toISOString();
+  await store.set(ev.id, ev);
+  res.json({ ok: true });
+});
+
 app.get('/api/events/pending', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
+  // Rate-limited inside, and failures are swallowed there: an invite sync must
+  // never be able to stop the queue from rendering.
+  await syncIncomingInvites(req.user);
   const nowTs = Date.now();
   const isPast = (ev) => {
     if (!ev.date) return true;
@@ -2061,6 +2220,8 @@ app.get('/api/events/pending', requireAuth, async (req, res) => {
     // Found on the calendar already and deliberately not written. Shown so the
     // user can see Criba noticed it rather than silently dropping it.
     if (e.status === 'duplicate' && !e.reviewed && !isPast(e)) return true;
+    // An unanswered invitation. Already on the calendar, waiting on a yes or no.
+    if (e.status === 'pending_invite' && !isPast(e)) return true;
     return false;
   }).sort((a, b) => (a.date || '') > (b.date || '') ? 1 : -1);
 
@@ -6116,7 +6277,7 @@ app.get('/api/spend', requireAuth, async (req, res) => {
 app.get('/api/events/status-breakdown', requireAuth, async (req, res) => {
   const events = getUserEvents(req.user.email);
   const all = await events.values();
-  const VISIBLE_IN_REVIEW = new Set(['added', 'pending', 'duplicate', 'pending_cancellation', 'pending_reschedule']);
+  const VISIBLE_IN_REVIEW = new Set(['added', 'pending', 'duplicate', 'pending_cancellation', 'pending_reschedule', 'pending_invite']);
   const VISIBLE_IN_EDIT = new Set(['added', 'reviewed', 'approved', 'cancelled']);
   const byStatus = {};
   for (const ev of all) {

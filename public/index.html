@@ -296,6 +296,13 @@
   .form-group input:focus { outline: none; background: white; }
   /* Reads as a quiet aside next to the label rather than a second label. */
   .label-optional { font-weight: 400; font-size: 0.75rem; color: var(--text2); text-transform: none; letter-spacing: 0; }
+  /* An invitation is a question with two answers, so the card opens flat
+     instead of hiding the buttons behind an accordion. */
+  .invite-card { border-left: 3px solid var(--ink); }
+  .review-badge-invite { background: var(--ink); color: var(--bg); font-size: 0.68rem; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 8px; border-radius: 2px; }
+  .invite-panel { padding: 0 1rem 1rem; }
+
   /* One heading per day. The day column inside each card goes away when a
      heading is carrying the date, so grouped rows indent to line up with the
      ungrouped ones rather than jumping left. */
@@ -3599,7 +3606,9 @@ function renderReview({ force = false } = {}) {
   // Separate cancellation/reschedule from regular post-write review
   const cancellations = pendingEvents.filter(e => e.status === 'pending_cancellation');
   const reschedules = pendingEvents.filter(e => e.status === 'pending_reschedule');
-  const allNew = pendingEvents.filter(e => e.status !== 'pending_cancellation' && e.status !== 'pending_reschedule');
+  const invites = pendingEvents.filter(e => e.status === 'pending_invite');
+  const allNew = pendingEvents.filter(e => e.status !== 'pending_cancellation'
+    && e.status !== 'pending_reschedule' && e.status !== 'pending_invite');
   const reminders = allNew.filter(isReminderEvent);
   const timedEvents = allNew.filter(e => !isReminderEvent(e));
 
@@ -3629,6 +3638,12 @@ function renderReview({ force = false } = {}) {
     <button class="${reviewViewMode === 'agenda' ? 'on' : ''}" onclick="setReviewView('agenda')">Agenda</button>
     <button class="${reviewViewMode === 'month' ? 'on' : ''}" onclick="setReviewView('month')">Month</button>
   </div>`;
+
+  // An invitation is already on the calendar and is waiting on one answer, so it
+  // goes above everything else and opens flat: no accordion in front of a yes/no.
+  if (invites.length) {
+    html += `<div style="margin-bottom:1rem;margin-top:1rem">${invites.map(renderInviteCard).join('')}</div>`;
+  }
 
   // Change notices are not calendar adds — always shown as cards, above either view.
   if (cancellations.length) {
@@ -3983,6 +3998,74 @@ function confidencePill(score) {
   const pct = Math.round(score * 100);
   const cls = pct >= 80 ? 'confidence-high' : pct >= 65 ? 'confidence-medium' : 'confidence-low';
   return `<span class="confidence-pill ${cls}">${pct}% match</span>`;
+}
+
+// An invitation someone sent her. Google put it on the calendar before Criba
+// saw it, so this card is not proposing anything — it is asking whether to keep
+// what is already there. That is why the wording is "keep"/"remove" rather than
+// "add", and why there is no Edit: the organiser owns these details.
+function renderInviteCard(ev) {
+  const id = ev.id;
+  const meta = [ev.date ? shortDate(ev.date) : '', ev.time ? formatTime(ev.time) : 'All day']
+    .filter(Boolean).join(' \u00b7 ');
+  return `
+  <div class="review-card invite-card" id="rcard-${id}">
+    <div class="review-card-row">
+      <div class="review-card-content">
+        <div class="review-card-title">${escHtml(ev.title)}</div>
+        <div class="review-card-meta">${meta}${ev.location ? ' \u00b7 ' + escHtml(ev.location) : ''}</div>
+      </div>
+      <div class="review-card-tags">
+        <span class="review-badge-invite">Invitation</span>
+        ${ev.organizer ? `<span class="review-from">from ${escHtml(ev.organizer)}</span>` : ''}
+      </div>
+    </div>
+    <div class="invite-panel">
+      <div class="cancel-panel-sub">This is already on your Google Calendar because you were invited.
+        <strong>Yes</strong> keeps it and clears this card. <strong>No</strong> declines it and takes it off your
+        calendar \u2014 you can put it back from Edit Your Events.</div>
+      <div class="gcal-actions">
+        <button class="btn-gcal-add" id="rinvite-yes-${id}" onclick="acceptInvite('${id}')">Yes, keep it</button>
+        <button class="btn-delete" id="rinvite-no-${id}" onclick="declineInvite('${id}')">No, remove it</button>
+        <span class="rv-status" id="rv-status-${id}"></span>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function acceptInvite(id) {
+  await answerInvite(id, 'accept-invite', '\u2713 Kept on your calendar');
+}
+
+async function declineInvite(id) {
+  await answerInvite(id, 'decline-invite', '\u2713 Declined and removed');
+}
+
+// One path for both answers: the only difference is the endpoint and the words.
+async function answerInvite(id, endpoint, successMsg) {
+  const status = document.getElementById(`rv-status-${id}`);
+  const btns = [document.getElementById(`rinvite-yes-${id}`), document.getElementById(`rinvite-no-${id}`)].filter(Boolean);
+  btns.forEach(b => { b.disabled = true; });
+  if (status) { status.textContent = 'Saving\u2026'; status.style.color = ''; }
+  try {
+    const res = await fetch(`/api/events/${endpoint}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (status) { status.textContent = err.error || 'Failed'; status.style.color = 'var(--red)'; }
+      btns.forEach(b => { b.disabled = false; });
+      return;
+    }
+    if (status) { status.innerHTML = `<span class="success-msg">${successMsg}</span>`; }
+    markJustAdded(id);
+    await loadRecentEvents();
+    setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReviewNow(); }, 2000);
+  } catch {
+    if (status) { status.textContent = 'Network error \u2014 nothing was changed'; status.style.color = 'var(--red)'; }
+    btns.forEach(b => { b.disabled = false; });
+  }
 }
 
 function renderCancellationCard(ev) {
@@ -6057,13 +6140,22 @@ async function restoreToCalendar(id) {
   const btn = card?.querySelector('.recent-card-right .btn-edit');
   if (btn) { btn.disabled = true; btn.textContent = 'Adding\u2026'; }
   try {
-    // Only identity and the fields this screen shows. /api/events/approve treats
-    // an absent key as "no opinion" and keeps what is stored, so omitting
-    // location and end time here preserves them instead of clearing them.
-    const res = await fetch('/api/events/approve', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, title: ev.title, date: ev.date, time: ev.time || '' }),
-    });
+    // A declined invitation still exists on Google — it is declined, not gone.
+    // Re-accepting it is the honest undo; inserting a fresh event would leave
+    // the organiser's invitation declined and put a private duplicate beside it.
+    const isInvite = ev.source === 'invite' && ev.declined_gcal_id;
+    const res = isInvite
+      ? await fetch('/api/events/accept-invite', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id }),
+        })
+      // Only identity and the fields this screen shows. /api/events/approve treats
+      // an absent key as "no opinion" and keeps what is stored, so omitting
+      // location and end time here preserves them instead of clearing them.
+      : await fetch('/api/events/approve', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, title: ev.title, date: ev.date, time: ev.time || '' }),
+        });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       if (btn) { btn.disabled = false; btn.textContent = 'Add to calendar'; }

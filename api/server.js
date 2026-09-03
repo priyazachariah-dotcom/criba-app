@@ -2891,6 +2891,15 @@ app.post('/api/events/approve-cancellation', requireAuth, async (req, res) => {
         matchedEv.skipped_dates = [...new Set([...(matchedEv.skipped_dates || []), cancelledOccurrence])];
       } else {
         matchedEv.status = 'cancelled';
+        // It is not on Google any more, so the id must go with it. Leaving it
+        // set made the row claim "Synced" on Edit Your Events for an event
+        // Criba had just deleted, and — worse — hid the "Add to calendar"
+        // button, which is the only way back if the cancellation was matched
+        // to the wrong event.
+        matchedEv.calEventId = null;
+        // Approving a cancellation is a click, so it belongs in the 24-hour
+        // "Recently added or removed" section, where the undo lives.
+        matchedEv.user_action_at = new Date().toISOString();
       }
       await eventsStore.set(matchedId, matchedEv);
       // A confirmed cancellation is a decision too: if a later email

@@ -299,9 +299,10 @@
   /* One heading per day. The day column inside each card goes away when a
      heading is carrying the date, so grouped rows indent to line up with the
      ungrouped ones rather than jumping left. */
-  .recent-date-head { display: flex; align-items: baseline; gap: 0.6rem; font-family: 'Archivo Black', sans-serif;
-    font-size: 0.95rem; margin: 1.6rem 0 0; padding-bottom: 0.35rem; }
-  .recent-date-count { font-family: inherit; font-weight: 400; font-size: 0.75rem; color: var(--text2); }
+  /* No per-day count here: "Thursday, September 3" followed by a "9" read as
+     "September 39". The events are directly below and countable by eye. */
+  .recent-date-head { font-family: 'Archivo Black', sans-serif; font-size: 0.95rem;
+    margin: 1.6rem 0 0; padding-bottom: 0.35rem; }
   .recent-card-grouped .recent-card-header { padding-left: calc(44px + 1.25rem); padding-top: 14px; padding-bottom: 14px; }
   .recent-card-grouped .recent-card-meta { font-variant-numeric: tabular-nums; }
   .recent-date-head + .recent-card { border-top: none; }
@@ -4845,7 +4846,7 @@ function renderRecent() {
     ? `<div class="recent-section">
          <div class="recent-section-head">${escHtml(title)}</div>
        </div>` + groups.map(g => `
-         <div class="recent-date-head">${escHtml(dateHeading(g.date))}<span class="recent-date-count">${g.events.length}</span></div>
+         <div class="recent-date-head">${escHtml(dateHeading(g.date))}</div>
          ${g.events.map(ev => card(ev, false)).join('')}`).join('')
     : '';
 

@@ -534,6 +534,19 @@
   /* ── Settings page ───────────────────────────────────────────────── */
   .settings-section { margin-bottom: 2rem; }
   .settings-section-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.875rem; }
+  /* Collapsed by default, because this list is consulted rarely and read
+     anxiously — it is where someone goes to ask "what is being hidden from me".
+     The count sits in the summary so that question is answered without opening
+     it. Native <details> rather than a JS toggle: one less thing that can fail
+     to render a list whose entire purpose is being visible. */
+  .settings-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
+  .settings-section > summary::-webkit-details-marker { display: none; }
+  .settings-section > summary .settings-section-title { margin-bottom: 0; }
+  .settings-section > summary::after { content: '+'; font-size: 0.95rem; color: var(--text2); line-height: 1; }
+  .settings-section[open] > summary::after { content: '\2212'; }
+  .settings-section > summary:hover .settings-section-title { color: var(--ink); }
+  .settings-section > summary + .page-desc { margin-top: 0.875rem; }
+  .excl-count { font-size: 0.8rem; color: var(--text2); font-weight: 400; text-transform: none; letter-spacing: 0; }
   .member-row { display: flex; align-items: center; gap: 0.75rem; background: white; border: 1.5px solid var(--ink); padding: 0.75rem 1rem; margin-bottom: 0.5rem; }
   .member-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
   .member-name { flex: 1; font-size: 0.9rem; font-weight: 500; }
@@ -1248,11 +1261,14 @@
     <!-- The answer to "why did that sender's events stop appearing". A filter
          you cannot see is indistinguishable from a bug, so every rule is listed
          in the words it was agreed to and removed with one click. -->
-    <div class="settings-section">
-      <div class="settings-section-title">What Criba is not showing</div>
-      <div class="page-desc" style="margin:0 0 0.75rem">Rules you agreed to when dismissing an event. Nothing is deleted — events matching a rule still reach Review with the reason attached, one click from being added. Remove a rule any time.</div>
+    <details class="settings-section">
+      <summary>
+        <span class="settings-section-title">Rules you created</span>
+        <span class="excl-count" id="exclusion-count"></span>
+      </summary>
+      <div class="page-desc" style="margin:0 0 0.75rem">You made these by answering "yes" to a question after dismissing an event. Every one can be reversed. Nothing is deleted — events matching a rule still reach Review with the reason attached, one click from being added.</div>
       <div id="exclusion-list"></div>
-    </div>
+    </details>
     <!-- Moved here from the Tools panel. Setting up who events go to belongs
          next to setting up whose events they are — both are things a new user
          does once, and neither is a debugging tool. -->
@@ -1757,6 +1773,17 @@ async function loadExclusions() {
 function renderExclusions() {
   const el = document.getElementById('exclusion-list');
   if (!el) return;
+  // The summary has to answer "is anything being hidden from me" while the
+  // section is still shut, or collapsing it would just move the worry somewhere
+  // harder to reach. Overridden rules are counted separately rather than
+  // lumped in: they exist, but they are not holding anything back today.
+  const countEl = document.getElementById('exclusion-count');
+  if (countEl) {
+    const active = exclusionRules.filter(r => !r.overridden).length;
+    const off = exclusionRules.length - active;
+    countEl.textContent = !exclusionRules.length ? 'none yet'
+      : `${active} active${off ? `, ${off} no longer apply` : ''}`;
+  }
   if (!exclusionRules.length) {
     el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">Nothing is being held back. Rules appear here when you dismiss an event and tell Criba why.</div>';
     return;

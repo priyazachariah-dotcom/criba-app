@@ -296,6 +296,13 @@
   .form-group input:focus { outline: none; background: white; }
   /* Reads as a quiet aside next to the label rather than a second label. */
   .label-optional { font-weight: 400; font-size: 0.75rem; color: var(--text2); text-transform: none; letter-spacing: 0; }
+  /* Section rules for the Approved page. Sits above the first card of each
+     group rather than boxing it, so the list still reads as one column. */
+  .recent-section { margin: 2rem 0 0.25rem; padding-bottom: 0.4rem; border-bottom: 1.5px solid var(--ink); }
+  .recent-section:first-child { margin-top: 0; }
+  .recent-section-head { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+  .recent-section-count { font-weight: 400; color: var(--text2); letter-spacing: 0; }
+  .recent-section-note { font-size: 0.78rem; color: var(--text2); margin-top: 0.3rem; text-transform: none; letter-spacing: 0; font-weight: 400; }
   .source-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
   .source-tab { padding: 0.5rem 1rem; border: 1.5px solid var(--ink); font-size: 0.875rem; cursor: pointer; background: transparent; color: var(--ink); }
   .source-tab.active { background: var(--ink); color: var(--bg); }
@@ -1135,7 +1142,7 @@
   <div class="page" id="page-recent">
     <div class="page-title-block">
       <div class="page-headline page-headline-sm">APPROVED</div>
-      <div class="page-desc">All events Criba has added to your Google Calendar. Edit any time.</div>
+      <div class="page-desc">Everything Criba has handled for you. Rows marked <strong>Synced</strong> are on your Google Calendar right now; <strong>Not on calendar</strong> ones aren&rsquo;t, and can be put back with one click. Edit any time.</div>
     </div>
     <div id="recent-list"></div>
   </div>
@@ -4540,6 +4547,7 @@ async function approveReviewEvent(id) {
     const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (res.ok) {
       if (status) status.innerHTML = '<span class="success-msg">✓ Added</span>';
+      markJustAdded(id);
       await loadRecentEvents();
       setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReviewNow(); }, 3000);
     } else {
@@ -4666,6 +4674,7 @@ async function promoteRescheduleAsNew(id) {
     const res = await fetch('/api/events/approve', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
     if (res.ok) {
       if (status) status.innerHTML = '<span class="success-msg">✓ Added</span>';
+      markJustAdded(id);
       await loadRecentEvents();
       setTimeout(() => { pendingEvents = pendingEvents.filter(e => e.id !== id); renderReviewNow(); }, 3000);
     } else {
@@ -4676,6 +4685,13 @@ async function promoteRescheduleAsNew(id) {
     if (status) status.innerHTML = '<span class="error-msg">Network error</span>';
   }
 }
+
+// Ids the user has put on the calendar during this visit, with the moment they
+// did it. Session-scoped on purpose: it answers "what did I just do?", which no
+// stored timestamp can, because the server records a backfill and a deliberate
+// click identically.
+const justAddedAt = new Map();
+function markJustAdded(id) { if (id) justAddedAt.set(id, Date.now()); }
 
 // ── Edit Calendar Events render ───────────────────────────────────────────
 function renderRecent() {
@@ -4693,8 +4709,60 @@ function renderRecent() {
     container.innerHTML = `<div class="empty-state"><h3>Nothing here yet</h3><p>Events you approve will appear here for editing.</p></div>`;
     return;
   }
-  const display = showingAll ? recentEvents : recentEvents.slice(0, 20);
-  container.innerHTML = display.map(ev => `
+  // The server returns these newest-handled-first, which is the order Criba
+  // did the work in, not an order anyone reads a calendar in — so a 2027
+  // performance sat between two events tonight and the page looked shuffled.
+  //
+  // Three sections instead. "Recently added" answers "what did I just do?",
+  // which is the only question the processing order was ever any good for, and
+  // it is the one thing that must stay pinned to the top. Everything else is
+  // ordered by the date of the event itself: soonest first, because this page
+  // is for fixing what is about to happen, with past events kept below in
+  // reverse order so the most recent is the nearest to hand.
+  const TODAY = new Date().toISOString().slice(0, 10);
+  // "Recently added" means what THIS person just did, so it is driven by the
+  // clicks themselves and not by a timestamp window. A 24-hour window was the
+  // obvious first cut and it was wrong: one backfill touches dozens of events
+  // inside the same hour, so the section filled up with things spanning Sep
+  // 2026 to May 2027 and recreated the exact shuffle this page was fixing.
+  // A fresh load therefore starts empty, which is correct — nothing has just
+  // been added, so everything belongs under its own date.
+  const addedAt = ev => {
+    const ms = justAddedAt.get(ev.id) || Date.parse(ev.approved_at || ev.created_at || '');
+    return isNaN(ms) ? 0 : ms;
+  };
+  // Requires calEventId too: the heading says "added", so a row that is not
+  // actually on the calendar must not sit under it. Delete a just-added event
+  // and it drops straight out of here and back down into its own date.
+  const isRecentlyAdded = ev => !!ev.calEventId && justAddedAt.has(ev.id);
+  const sortKey = ev => `${ev.date || ''} ${ev.time || ''}`;
+
+  const recentlyAdded = [], upcoming = [], past = [];
+  for (const ev of recentEvents) {
+    if (isRecentlyAdded(ev)) recentlyAdded.push(ev);
+    else if ((ev.date || '') >= TODAY) upcoming.push(ev);
+    else past.push(ev);
+  }
+  recentlyAdded.sort((a, b) => addedAt(b) - addedAt(a));
+  upcoming.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+  past.sort((a, b) => sortKey(b).localeCompare(sortKey(a)));
+
+  // The cap applies only to the dated archive. Whatever the user just did stays
+  // visible however long the history behind it has grown.
+  const dated = [...upcoming, ...past];
+  const shownDated = showingAll ? dated : dated.slice(0, 20);
+  const hiddenCount = dated.length - shownDated.length;
+  const shownUpcoming = shownDated.filter(ev => (ev.date || '') >= TODAY);
+  const shownPast = shownDated.filter(ev => (ev.date || '') < TODAY);
+
+  const section = (title, note, list) => list.length
+    ? `<div class="recent-section">
+         <div class="recent-section-head">${escHtml(title)} <span class="recent-section-count">${list.length}</span></div>
+         ${note ? `<div class="recent-section-note">${note}</div>` : ''}
+       </div>${list.map(card).join('')}`
+    : '';
+
+  function card(ev) { return `
     <div class="recent-card" id="recent-${ev.id}">
       <div class="recent-card-header">
         <div class="recent-row-day">${dayAbbr(ev.date)}</div>
@@ -4720,8 +4788,14 @@ function renderRecent() {
         onclick="deleteApproved('${ev.id}')">Delete</button>`,
         })}
       </div>
-    </div>`).join('') + (!showingAll && recentEvents.length > 20
-      ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${recentEvents.length - 20} older events)</button>` : '');
+    </div>`; }
+
+  container.innerHTML =
+    section('Recently added', 'What you added just now, newest first. They move down into the dated lists next time this page loads.', recentlyAdded)
+    + section('Coming up', '', shownUpcoming)
+    + section('Past', '', shownPast)
+    + (hiddenCount > 0
+      ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${hiddenCount} older event${hiddenCount === 1 ? '' : 's'})</button>` : '');
 }
 
 function showAllRecent() { showingAll = true; renderRecent(); }
@@ -4781,6 +4855,7 @@ async function saveEdit(id) {
       if (status) status.innerHTML = body.recreated
         ? '<span class="success-msg">✓ Re-added to your Google Calendar</span>'
         : '<span class="success-msg">✓ Updated</span>';
+      if (body.recreated) markJustAdded(id);
       await loadRecentEvents();
     } else {
       const err = await res.json().catch(() => ({}));
@@ -5890,6 +5965,7 @@ async function restoreToCalendar(id) {
     // Re-read rather than patching state by hand, so the badge is driven by
     // what the server actually stored.
     // loadRecentEvents re-renders on its own.
+    markJustAdded(id);
     await loadRecentEvents();
   } catch {
     if (btn) { btn.disabled = false; btn.textContent = 'Add to calendar'; }
@@ -5934,6 +6010,7 @@ async function cedApprove(evId, key, ci, ei) {
     });
     if (res.ok) {
       if (statusEl) statusEl.innerHTML = '<span style="color:var(--green)">✓ Added</span>';
+      markJustAdded(evId);
       await loadRecentEvents();
       // Remove this event from state and re-render after a brief success pause
       setTimeout(() => dismissCatEvent(ci, ei, { clearOnly: true }), 1000);

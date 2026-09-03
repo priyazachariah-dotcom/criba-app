@@ -294,6 +294,8 @@
   .form-group label { display: block; font-size: 0.8rem; color: var(--text2); margin-bottom: 5px; font-weight: 500; }
   .form-group input { width: 100%; padding: 0.625rem 0.875rem; border: 1.5px solid var(--ink); font-size: 0.875rem; background: var(--bg); color: var(--ink); font-family: inherit; }
   .form-group input:focus { outline: none; background: white; }
+  /* Reads as a quiet aside next to the label rather than a second label. */
+  .label-optional { font-weight: 400; font-size: 0.75rem; color: var(--text2); text-transform: none; letter-spacing: 0; }
   .source-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
   .source-tab { padding: 0.5rem 1rem; border: 1.5px solid var(--ink); font-size: 0.875rem; cursor: pointer; background: transparent; color: var(--ink); }
   .source-tab.active { background: var(--ink); color: var(--bg); }
@@ -1151,8 +1153,8 @@
       <div class="cal-form">
         <h3>Add calendar</h3>
         <div class="form-group">
-          <label>Calendar name</label>
-          <input type="text" id="cal-name" placeholder="e.g. School calendar" />
+          <label>Calendar name <span class="label-optional">optional</span></label>
+          <input type="text" id="cal-name" placeholder="Named from your file or link" oninput="calNameTouched = true" />
         </div>
         <div class="form-group">
           <label>Source</label>
@@ -1161,7 +1163,7 @@
             <button class="source-tab" data-source="pdf" onclick="switchSource('pdf', this)">Upload or type</button>
           </div>
           <div id="source-url">
-            <input type="url" id="cal-url" placeholder="https://calendar.google.com/calendar/ical/..." />
+            <input type="url" id="cal-url" placeholder="https://calendar.google.com/calendar/ical/..." oninput="refreshDerivedName()" />
             <div style="font-size:0.8rem;opacity:0.7;margin-top:0.5rem">
               Events go straight onto your calendar and Criba keeps this link up to
               date on its own — if the school moves or cancels something, so does your calendar.
@@ -1175,7 +1177,7 @@
             <!-- Works three ways: a file on its own, a file plus a correction
                  ("make these 1-2pm and invite Bharat"), or the sentence alone
                  with no file at all. -->
-            <textarea id="cal-instructions" class="cal-instructions" rows="2"
+            <textarea id="cal-instructions" class="cal-instructions" rows="2" oninput="refreshDerivedName()"
               placeholder="Tell Criba anything about it — or just describe an event, like &quot;coffee with Sam next Tuesday at 2pm&quot;"></textarea>
             <div style="font-size:0.8rem;opacity:0.7;margin-top:0.5rem">
               Attach a file, type an instruction, or both. Anything you type here wins
@@ -4974,6 +4976,7 @@ async function threeWayConfirm(msg) {
 function showCalForm() {
   document.getElementById('extract-status').innerHTML = '';
   document.getElementById('cal-name').value = '';
+  calNameTouched = false;
   document.getElementById('cal-url').value = '';
   // Left behind, a stale instruction silently reapplies itself to the next
   // unrelated upload.
@@ -5027,11 +5030,103 @@ function instructionText() {
   return document.getElementById('cal-instructions')?.value.trim() || '';
 }
 
+// Naming the calendar was a required field standing in front of the only thing
+// the page is for. Nobody arrives wanting to name a calendar; they arrive with
+// a link or a PDF. And the name is already sitting in what they brought — the
+// filename, the feed id, the sentence they typed — so asking for it separately
+// was asking them to retype something Criba could read.
+//
+// The field stays, and stays editable: the derived name is written into it as
+// soon as there is something to derive from, so it is visible and correctable
+// before submit rather than a surprise appearing in the calendar list after.
+let calNameTouched = false;
+
+// Path segments that are structure rather than name. A Google feed ends
+// /public/basic.ics on every calendar in the world, so naming a calendar
+// "Basic" would be worse than leaving it blank.
+const URL_NAME_NOISE = new Set(['ical', 'calendar', 'calendars', 'public', 'private', 'basic', 'basic.ics', 'feed', 'feeds', 'index', 'export', 'events', 'embed']);
+
+function tidyName(raw) {
+  const out = String(raw || '')
+    .replace(/\.(ics|ical|pdf|png|jpe?g|gif|webp)$/i, '')
+    .replace(/[_+.]+/g, ' ')
+    .replace(/-+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!out) return '';
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+
+// An opaque id is not a name. Google and most sports platforms key feeds by a
+// random hex blob; writing that into the field looks like a bug, so these fall
+// through to the hostname instead.
+function looksOpaque(v) {
+  return !v || v.length < 3 || /^[0-9a-f]{16,}$/i.test(v) || !/[a-z]/i.test(v);
+}
+
+function nameFromUrl(rawUrl) {
+  let u;
+  try { u = new URL(rawUrl); } catch { return ''; }
+  const segs = u.pathname.split('/').map(x => { try { return decodeURIComponent(x); } catch { return x; } }).filter(Boolean);
+
+  // Google-style feeds carry the calendar's own address in the path.
+  const icalAt = segs.indexOf('ical');
+  if (icalAt !== -1 && segs[icalAt + 1]) {
+    const local = segs[icalAt + 1].split('@')[0];
+    if (!looksOpaque(local)) return tidyName(local);
+  }
+  // Otherwise the last segment that is actually a name rather than plumbing.
+  for (let i = segs.length - 1; i >= 0; i--) {
+    // Already judged above and found opaque — reconsidering it here is how the
+    // raw feed id got through, since the full address contains "@" and so no
+    // longer looks like the bare hex blob that was rejected.
+    if (i === icalAt + 1 || i === icalAt) continue;
+    const bare = segs[i].replace(/\.(ics|ical)$/i, '').split('@')[0];
+    if (URL_NAME_NOISE.has(bare.toLowerCase()) || looksOpaque(bare)) continue;
+    return tidyName(bare);
+  }
+  // Nothing usable in the path: the site itself is still a better label than
+  // "Imported calendar" — "Teamsnap" tells you where it came from. Use the
+  // registrable label, not the first: "go.teamsnap.com" is Teamsnap, not "Go".
+  const host = u.hostname.replace(/^www\./i, '').split('.').filter(Boolean);
+  return tidyName(host.length > 1 ? host[host.length - 2] : host[0]);
+}
+
+// A typed instruction IS the name — "coffee with Sam next Tuesday at 2pm" reads
+// better as a label than anything that could be inferred from it. Cut at the
+// first line break and cap the length so a pasted paragraph does not become a
+// calendar title.
+function nameFromText(text) {
+  const first = String(text || '').split(/[\n\r]/)[0].trim();
+  if (!first) return '';
+  const cut = first.length > 48 ? first.slice(0, 48).replace(/\s+\S*$/, '') + '\u2026' : first;
+  return tidyName(cut);
+}
+
+function deriveCalendarName() {
+  const isUrl = document.querySelector('.source-tab.active')?.dataset.source === 'url';
+  if (isUrl) return nameFromUrl(document.getElementById('cal-url').value.trim());
+  // A file beats a typed note: the note is usually a correction to the file
+  // ("make these 1-2pm"), which would be a misleading name for the calendar.
+  if (selectedFile) return tidyName(selectedFile.name);
+  return nameFromText(instructionText());
+}
+
+// Only ever fills a field the user has not written in themselves.
+function refreshDerivedName() {
+  if (calNameTouched) return;
+  const el = document.getElementById('cal-name');
+  if (el) el.value = deriveCalendarName();
+}
+
 function switchSource(type, btn) {
   document.querySelectorAll('.source-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('source-url').style.display = type === 'url' ? 'block' : 'none';
   document.getElementById('source-pdf').style.display = type === 'pdf' ? 'block' : 'none';
+  // Switching tabs changes where the name comes from, so a name derived from
+  // the tab you just left must not linger over the one you moved to.
+  refreshDerivedName();
 }
 
 // League and school sites publish schedules as web tables with no feed and no
@@ -5053,6 +5148,7 @@ function acceptUploadFile(file) {
   const icon = /^image\//i.test(file.type || '') || /\.(png|jpe?g|gif|webp)$/i.test(file.name) ? '🖼️' : '📄';
   document.getElementById('drop-zone-text').textContent = `${icon} ${file.name}`;
   document.getElementById('drop-zone').classList.add('has-file');
+  refreshDerivedName();
 }
 
 function handleFileSelect(input) {
@@ -5068,12 +5164,14 @@ dropZone.addEventListener('drop', e => {
 });
 
 async function submitCalendar() {
-  const name = document.getElementById('cal-name').value.trim();
+  // Last resort only — the field is normally filled the moment a source is
+  // chosen. "Imported calendar" is deliberately dull: it is a label for
+  // something that could not be named, not a guess dressed up as one.
+  const name = document.getElementById('cal-name').value.trim() || deriveCalendarName() || 'Imported calendar';
   // Read from data-source, not the label. This used to sniff the button text
   // for "URL", so renaming the tab silently sent subscriptions down the upload
   // path — a rename should never be able to change behaviour.
   const isUrl = document.querySelector('.source-tab.active').dataset.source === 'url';
-  if (!name) { cribaAlert('Please enter a calendar name'); return; }
   const btn = document.getElementById('cal-submit-btn');
   const status = document.getElementById('extract-status');
 

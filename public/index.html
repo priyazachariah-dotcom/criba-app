@@ -4762,12 +4762,10 @@ function renderRecent() {
   // did the work in, not an order anyone reads a calendar in — so a 2027
   // performance sat between two events tonight and the page looked shuffled.
   //
-  // Three sections instead. "Recently added" answers "what did I just do?",
-  // which is the only question the processing order was ever any good for, and
-  // it is the one thing that must stay pinned to the top. Everything else is
-  // ordered by the date of the event itself: soonest first, because this page
-  // is for fixing what is about to happen, with past events kept below in
-  // reverse order so the most recent is the nearest to hand.
+  // Two sections instead. "Recently added or removed" answers "what did I just
+  // do?", which is the only question the processing order was ever any good
+  // for, and it is the one thing that must stay pinned to the top. Everything
+  // else is grouped under the date of the event itself, soonest first.
   const TODAY = new Date().toISOString().slice(0, 10);
   // A 24-hour window over things the user actually clicked. The first attempt
   // measured approved_at, which auto-add and feed imports also stamp, so one
@@ -4790,15 +4788,21 @@ function renderRecent() {
   const isRecentlyAdded = ev => (now - actionedAt(ev)) < RECENT_WINDOW_MS && actionedAt(ev) > 0;
   const sortKey = ev => `${ev.date || ''} ${ev.time || ''}`;
 
-  const recentlyAdded = [], upcoming = [], past = [];
+  // Past events are not shown here. This page exists to fix what is about to
+  // happen, and nothing on it can change an event that has already occurred —
+  // so 41 finished rows were pure scrolling cost between the user and the
+  // events she can still do something about. The records are untouched: they
+  // stay in Redis for duplicate detection and history, they are simply not
+  // rendered. A past-dated event still appears under "Recently added or
+  // removed" if she acted on it in the last 24 hours, because there the row is
+  // the undo, not the archive.
+  const recentlyAdded = [], upcoming = [];
   for (const ev of recentEvents) {
     if (isRecentlyAdded(ev)) recentlyAdded.push(ev);
     else if ((ev.date || '') >= TODAY) upcoming.push(ev);
-    else past.push(ev);
   }
   recentlyAdded.sort((a, b) => addedAt(b) - addedAt(a));
   upcoming.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
-  past.sort((a, b) => sortKey(b).localeCompare(sortKey(a)));
 
   // Grouping, not just sorting. Sorting by date fixed the order but left 59
   // near-identical rows each restating a date the row above already said, and
@@ -4828,8 +4832,15 @@ function renderRecent() {
   };
 
   const up = takeGroups(groupByDate(upcoming), 30);
-  const pa = takeGroups(groupByDate(past), 15);
-  const hiddenCount = up.hidden + pa.hidden;
+  const hiddenCount = up.hidden;
+
+  // recentEvents is non-empty or we would have returned already, so reaching
+  // here with nothing to show means everything Criba has handled is in the
+  // past. Without this the page would just go blank, which reads as breakage.
+  if (!recentlyAdded.length && !upcoming.length) {
+    container.innerHTML = `<div class="empty-state"><h3>Nothing coming up</h3><p>Past events aren\u2019t shown here \u2014 there is nothing to fix about an event that has already happened. Anything you add or change will appear at the top.</p></div>`;
+    return;
+  }
 
   const dateHeading = d => {
     if (!d) return 'No date';
@@ -4891,7 +4902,6 @@ function renderRecent() {
   container.innerHTML =
     section('Recently added or removed', 'Everything you added or removed in the last 24 hours, newest first. After that they settle into the dated lists below.', recentlyAdded)
     + dateSection('Coming up', up.shown)
-    + dateSection('Past', pa.shown)
     + (hiddenCount > 0
       ? `<button class="view-more-btn" onclick="showAllRecent()">View more (${hiddenCount} more event${hiddenCount === 1 ? '' : 's'})</button>` : '');
 }

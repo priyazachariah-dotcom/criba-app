@@ -1968,7 +1968,7 @@ app.get('/privacy', (req, res) => {
 
   <h2>6. Storage &amp; security</h2>
   <p>Extracted events, your settings, and the OAuth tokens required to operate the Service are stored in our database, protected by access controls and transport encryption (HTTPS). Sessions use signed, HTTP-only cookies. No method of storage or transmission is 100% secure, but we take commercially reasonable measures to protect your information.</p>
-  <p><b>We do not store copies of your email.</b> Message bodies are read to extract event details and are not written to our database. What we keep is the event itself &mdash; its title, date, time, location and the sender it came from &mdash; so that you can review it. We also keep a diagnostic record of what our pipeline decided for each message (which rule matched, whether it was skipped); that record contains message identifiers and decisions, <b>not</b> subject lines, senders or message text.</p>
+  <p><b>We do not store copies of your email.</b> Message bodies are read to extract event details and are not written to our database. What we keep is the event itself &mdash; its title, date, time, location and the sender it came from &mdash; so that you can review it. We also keep a diagnostic record of what our pipeline decided for each message (which rule matched, whether it was skipped); that record contains message identifiers, the sending domain (for example <i>yourschool.org</i>) and decisions &mdash; <b>not</b> subject lines, sender names or addresses, or message text. It is deleted after seven days.</p>
 
   <h2>7. Retention &amp; deletion</h2>
   <p><b>Event details are deleted once the event is over.</b> Thirty days after an event has passed, we delete its title, location, notes and sender from our database. For a repeating event, the thirty days run from the end of the series; where a repeating event has no stated end, we treat it as ending on 30 June &mdash; the end of the school year &mdash; and delete it thirty days after that.</p>
@@ -7410,10 +7410,22 @@ const SCAN_TRACE_MAX = 600;
 // diagnostic question the subject line did, without keeping any readable mail.
 const TRACE_CONTENT_FIELDS = new Set(['subject', 'from', 'sender_name', 'sender_email', 'title', 'snippet']);
 
+// The sender's domain — siprep.org, not the person — is kept during the beta.
+// Answering "did Criba ever see the newsletter from the school" needs to be a
+// one-line lookup, and the domain does that while the local part, the display
+// name and the subject stay out of the record.
+function senderDomain(entry) {
+  const raw = entry?.from || entry?.sender_email || '';
+  const m = String(raw).match(/@([A-Za-z0-9.-]+\.[A-Za-z]{2,})/);
+  return m ? m[1].toLowerCase() : null;
+}
+
 async function traceEmail(email, entry) {
   const key = `scanTrace:${email}`;
   const safe = {};
   for (const [k, v] of Object.entries(entry || {})) if (!TRACE_CONTENT_FIELDS.has(k)) safe[k] = v;
+  const dom = senderDomain(entry);
+  if (dom) safe.senderDomain = dom;
   await redis.lpush(key, JSON.stringify({ ts: Date.now(), ...safe }));
   await redis.ltrim(key, 0, SCAN_TRACE_MAX - 1);
   await redis.expire(key, 7 * 24 * 60 * 60); // 7-day TTL

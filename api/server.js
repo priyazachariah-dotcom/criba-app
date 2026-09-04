@@ -6692,6 +6692,49 @@ app.get('/api/admin/users', requireAuth, async (req, res) => {
   });
 });
 
+// POST /api/admin/repair-watch — re-register a watch server-side for a user
+// whose registration failed, using the refresh token they already granted.
+//
+// This repairs the connection the user asked for at sign-up; it does not widen
+// consent, and it reads no mail. It exists because the alternative is asking a
+// non-technical parent to debug their own OAuth state, and because a user in
+// this condition has no way to tell that anything is wrong.
+app.post('/api/admin/repair-watch', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const target = String(req.body?.email || '').trim().toLowerCase();
+  if (!target || !target.includes('@')) {
+    return res.status(400).json({ error: 'An email is required.' });
+  }
+  const refreshToken = await redis.get(`refreshToken:${target}`);
+  if (!refreshToken) {
+    return res.status(409).json({
+      error: 'No refresh token stored for that account — they must sign in again.',
+      email: target, repaired: false,
+    });
+  }
+  const r = await ensureGmailWatch(target, refreshToken, { attempts: 2 });
+  const watchRaw = await redis.get(`gmailWatch:${target}`);
+  let watchExpiresAt = null;
+  try {
+    const w = JSON.parse(watchRaw || 'null');
+    if (w?.expiration) watchExpiresAt = new Date(parseInt(w.expiration)).toISOString();
+  } catch {}
+  if (!r.ok) {
+    return res.status(502).json({ email: target, repaired: false, code: r.code, error: r.error });
+  }
+  await redis.del(`gmailDisconnected:${target}`);
+  console.log(`[admin] watch repaired for ${target} by ${req.user.email}`);
+  // A registered watch is not proof of delivery. lastWebhookAt is still null
+  // until Gmail actually publishes, so report it rather than declaring success.
+  res.json({
+    email: target, repaired: true, watchExpiresAt,
+    lastWebhookAt: await redis.get(`lastWebhookAt:${target}`) || null,
+    note: 'Watch registered. Delivery is confirmed only once lastWebhookAt is set.',
+  });
+});
+
 app.get('/api/admin/spend', requireAuth, async (req, res) => {
   if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
     return res.status(403).json({ error: 'Not authorised.' });

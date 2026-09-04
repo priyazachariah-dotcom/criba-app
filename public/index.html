@@ -1029,6 +1029,26 @@
   .excl-x { background: none; border: 1px solid var(--border, #ddd); color: var(--ink); font-size: 12px; padding: 3px 9px; cursor: pointer; font-family: inherit; border-radius: 4px; flex-shrink: 0; }
   .excl-x:hover { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 
+  /* ── Pre-sign-in explainer ──────────────────────────────────────────────
+     Criba is an unverified Google app, so the first thing a new user sees is
+     a full-page security warning. A non-technical parent reads that as "this
+     is unsafe" and stops. Telling them what is coming, before they click,
+     turns an alarm into an expected step. */
+  .presignin { margin-top: 1.25rem; text-align: left; }
+  .presignin-toggle { background: none; border: none; padding: 0; font-family: inherit;
+    font-size: 0.85rem; color: var(--text2); cursor: pointer; text-decoration: underline;
+    text-underline-offset: 3px; }
+  .presignin-toggle:hover { color: var(--ink); }
+  .presignin-body { display: none; margin-top: 0.9rem; border: 1px solid var(--border, #e3e3e3);
+    background: #fafafa; padding: 1rem 1.1rem; font-size: 0.85rem; line-height: 1.5; color: #444; }
+  .presignin-body.open { display: block; }
+  .presignin-body ol { margin: 0; padding-left: 1.15rem; }
+  .presignin-body li { margin-bottom: 0.85rem; }
+  .presignin-body li:last-child { margin-bottom: 0; }
+  .presignin-body strong { color: #1a1a1a; }
+  .presignin-warn { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 8px 11px;
+    margin-top: 0.5rem; color: #92400e; }
+
 </style>
 </head>
 <body>
@@ -1044,6 +1064,27 @@
       <svg viewBox="0 0 24 24" width="20" height="20"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
       Continue with Google
     </a>
+
+    <div class="presignin">
+      <button type="button" class="presignin-toggle" onclick="togglePreSignin()"
+        id="presignin-toggle">First time signing in? Here's exactly what Google will show you</button>
+      <div class="presignin-body" id="presignin-body">
+        <ol>
+          <li><strong>Google may warn you that Criba isn't verified.</strong>
+            You'll see a page saying &ldquo;Google hasn't verified this app.&rdquo; That's expected &mdash;
+            Criba is new and still going through Google's review process. Click
+            <strong>Advanced</strong>, then <strong>Continue to Criba</strong>.</li>
+          <li><strong>Then Google will ask which permissions to allow.</strong>
+            Please leave every box ticked.
+            <div class="presignin-warn">If you untick the Gmail permission, Criba can't read your
+              school email &mdash; it will look like it's working but never find anything.</div></li>
+          <li><strong>What Criba does with your email.</strong> It reads your mail to spot events,
+            deadlines and RSVPs, and adds them to your calendar. It never sends email, never replies
+            on your behalf, and never posts anything. You can disconnect it at any time from your
+            Google account's permissions page.</li>
+        </ol>
+      </div>
+    </div>
     <p class="auth-privacy">Criba reads your calendar to add events. We never store your messages or sell your data.</p>
   </div>
 </div>
@@ -6401,6 +6442,16 @@ async function cedApprove(evId, key, ci, ei) {
 }
 
 // ── Logout ───────────────────────────────────────────────────────────────
+function togglePreSignin() {
+  const body = document.getElementById('presignin-body');
+  const btn = document.getElementById('presignin-toggle');
+  if (!body || !btn) return;
+  const open = body.classList.toggle('open');
+  btn.textContent = open
+    ? 'Hide'
+    : "First time signing in? Here's exactly what Google will show you";
+}
+
 async function logout() { await fetch('/api/auth/logout', { method: 'POST' }); user = null; showAuth(); }
 </script>
 </body>

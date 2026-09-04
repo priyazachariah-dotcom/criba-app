@@ -1968,9 +1968,13 @@ app.get('/privacy', (req, res) => {
 
   <h2>6. Storage &amp; security</h2>
   <p>Extracted events, your settings, and the OAuth tokens required to operate the Service are stored in our database, protected by access controls and transport encryption (HTTPS). Sessions use signed, HTTP-only cookies. No method of storage or transmission is 100% secure, but we take commercially reasonable measures to protect your information.</p>
+  <p><b>We do not store copies of your email.</b> Message bodies are read to extract event details and are not written to our database. What we keep is the event itself &mdash; its title, date, time, location and the sender it came from &mdash; so that you can review it. We also keep a diagnostic record of what our pipeline decided for each message (which rule matched, whether it was skipped); that record contains message identifiers and decisions, <b>not</b> subject lines, senders or message text.</p>
 
   <h2>7. Retention &amp; deletion</h2>
-  <p>We retain data while your account is active. You may revoke Criba's access at any time in your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account permissions</a>, which stops all further access. To request deletion of the data we hold about you, email <a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>; we will delete it within a reasonable period except where retention is required by law.</p>
+  <p><b>Event details are deleted once the event is over.</b> Thirty days after an event has passed, we delete its title, location, notes and sender from our database. For a repeating event, the thirty days run from the end of the series; where a repeating event has no stated end, we treat it as ending on 30 June &mdash; the end of the school year &mdash; and delete it thirty days after that.</p>
+  <p>After that point we keep only two things, neither of which is content from your email: the identifier of the Google Calendar entry we created, so that Criba does not lose track of something it added to your calendar, and the identifier of the source message, so that the same email is not processed twice. We also keep a record of events you dismissed, so that we do not show you the same thing again.</p>
+  <p>Diagnostic records of pipeline decisions are deleted after seven days.</p>
+  <p>You may revoke Criba's access at any time in your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account permissions</a>, which stops all further access. To request deletion of the data we hold about you, email <a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>; we will delete it within a reasonable period except where retention is required by law.</p>
 
   <h2>8. Your rights</h2>
   <p>Depending on where you live (including under GDPR and the CCPA/CPRA), you may have the right to access, correct, delete, port, or restrict processing of your personal data, and to object to certain processing. We do not sell or "share" personal information as those terms are defined under US state privacy laws. To exercise any right, contact us at the address above.</p>
@@ -6640,6 +6644,17 @@ const ADMIN_EMAILS = new Set(
 // a different question. This endpoint exists to show the gap between the two.
 //
 // Account state only — no subjects, senders, or message content.
+// POST /api/admin/retention-sweep — run the retention sweep on demand.
+// Dry run unless { apply: true }, so the effect can be measured before it is
+// irreversible. Returns counts only.
+app.post('/api/admin/retention-sweep', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const summary = await sweepRetention({ dryRun: req.body?.apply !== true });
+  res.json(summary);
+});
+
 app.get('/api/admin/users', requireAuth, async (req, res) => {
   if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
     return res.status(403).json({ error: 'Not authorised.' });
@@ -7142,6 +7157,17 @@ app.get('/api/cron/gmail', async (req, res) => {
   const hasCronSecret = process.env.CRON_SECRET && req.headers['x-cron-secret'] === process.env.CRON_SECRET;
   if (!isVercelCron && !hasCronSecret) return res.status(401).json({ error: 'Unauthorized' });
 
+  // Delete event content that is past its retention window. Runs before the
+  // watch work so a failure there cannot silently skip it — retention is a
+  // promise to users, not a maintenance chore.
+  let retention = null;
+  try {
+    retention = await sweepRetention({ dryRun: false });
+  } catch (e) {
+    console.error('[retention] sweep failed:', e.message);
+    retention = { error: e.message };
+  }
+
   const watchedEmails = await redis.smembers('gmailWatchedUsers');
   const now = Date.now();
   const oneDayMs = 24 * 60 * 60 * 1000;
@@ -7228,7 +7254,7 @@ app.get('/api/cron/gmail', async (req, res) => {
     }
   }
 
-  res.json({ ok: true, watchedUsers: watchedEmails.length, renewedCount, notifiedCount, drainedCount });
+  res.json({ retention, ok: true, watchedUsers: watchedEmails.length, renewedCount, notifiedCount, drainedCount });
 });
 
 // Exposes non-secret client-side configuration. The Places API key is
@@ -7378,9 +7404,17 @@ const BACKFILL_COOLDOWN_SEC = 24 * 60 * 60;
 // any scan — no Vercel log access needed to debug missed emails.
 const SCAN_TRACE_MAX = 600;
 
+// The trace records why the pipeline did what it did. It used to store the
+// subject line and sender of every scanned message, which made "Criba forgets
+// the rest" untrue for seven days. Stage, ids and the matched rule answer every
+// diagnostic question the subject line did, without keeping any readable mail.
+const TRACE_CONTENT_FIELDS = new Set(['subject', 'from', 'sender_name', 'sender_email', 'title', 'snippet']);
+
 async function traceEmail(email, entry) {
   const key = `scanTrace:${email}`;
-  await redis.lpush(key, JSON.stringify({ ts: Date.now(), ...entry }));
+  const safe = {};
+  for (const [k, v] of Object.entries(entry || {})) if (!TRACE_CONTENT_FIELDS.has(k)) safe[k] = v;
+  await redis.lpush(key, JSON.stringify({ ts: Date.now(), ...safe }));
   await redis.ltrim(key, 0, SCAN_TRACE_MAX - 1);
   await redis.expire(key, 7 * 24 * 60 * 60); // 7-day TTL
 }
@@ -7928,6 +7962,101 @@ app.get('/api/debug/writes', requireAuth, async (req, res) => {
 // weakness is the other direction: a title reworded between emails yields a
 // different key. That limit is reported here rather than hidden, as
 // keyRewordingRisk.
+// ── Retention ────────────────────────────────────────────────────────────
+//
+// Criba reads a whole mailbox, so what it *keeps* is where the privacy risk
+// actually sits. Reading is transient; retention compounds. A year of stored
+// school mail is a portrait of a family — which children, which schools, which
+// activities, when the house is empty.
+//
+// So event content is deleted once the event is over. What survives is
+// deliberately not content: the Google Calendar id, so Criba never loses track
+// of something it created, and the Gmail message id, so the same mail is not
+// re-scanned and re-billed.
+const RETENTION_GRACE_DAYS = 30;
+
+// A recurring series with no stated end expires at the end of the school year:
+// the next 30 June falling on or after it starts. A series picked up in October
+// expires the following June; one picked up in May gets a full extra year
+// rather than six weeks, because it is far more likely to be next year's.
+const MIN_SERIES_LIFETIME_DAYS = 90;
+
+function schoolYearEnd(startDate) {
+  const d = new Date(`${startDate}T00:00:00Z`);
+  if (isNaN(d)) return null;
+  let year = d.getUTCMonth() > 5 || (d.getUTCMonth() === 5 && d.getUTCDate() > 30)
+    ? d.getUTCFullYear() + 1
+    : d.getUTCFullYear();
+  // A series that starts shortly before 30 June — a summer programme picked up
+  // in May — would otherwise be given a few weeks and deleted while it is still
+  // running. Too close to the year end means it belongs to the next one.
+  if (Date.parse(`${year}-06-30T00:00:00Z`) - d.getTime() < MIN_SERIES_LIFETIME_DAYS * 86400000) year++;
+  return `${year}-06-30`;
+}
+
+// The date after which an event is genuinely finished. For a series this is the
+// END of the series, never its start: "AYSO Practice (Fridays)" stores the first
+// Friday in `date`, so expiring on that would delete a series while it is still
+// running — and with it the closure logic that cancels its occurrences for
+// school holidays.
+function effectiveEndDate(ev) {
+  if (!ev || !ev.date) return null;
+  if (ev.recurrence_rule) return ev.recurrence_end_date || schoolYearEnd(ev.date);
+  return ev.end_date || ev.date;
+}
+
+// Content out, identifiers in. Deliberately a whitelist: a field added later is
+// dropped by default rather than silently retained forever.
+const RETAINED_EVENT_FIELDS = new Set([
+  'id', 'key', 'status', 'type', 'date', 'end_date',
+  'recurrence_rule', 'recurrence_end_date',
+  'calEventId', 'gcalId', 'declined_gcal_id', 'gmail_message_id',
+  'source', 'added_at', 'redactedAt',
+]);
+
+function redactExpiredEvent(ev) {
+  const out = {};
+  for (const [k, v] of Object.entries(ev)) if (RETAINED_EVENT_FIELDS.has(k)) out[k] = v;
+  out.redactedAt = new Date().toISOString();
+  return out;
+}
+
+function isExpired(ev, nowMs) {
+  if (ev?.redactedAt) return false;               // already done
+  const end = effectiveEndDate(ev);
+  if (!end) return false;                          // no date we can reason about
+  const endMs = Date.parse(`${end}T23:59:59Z`);
+  if (isNaN(endMs)) return false;
+  return nowMs - endMs > RETENTION_GRACE_DAYS * 86400000;
+}
+
+// Sweeps every user's events. Returns counts only — never content.
+async function sweepRetention({ dryRun = false } = {}) {
+  const now = Date.now();
+  const summary = { users: 0, scanned: 0, redacted: 0, dryRun };
+  let cursor = '0';
+  const keys = new Set();
+  do {
+    const [next, batch] = await redis.scan(cursor, 'MATCH', 'events:*', 'COUNT', 200);
+    cursor = next;
+    for (const k of batch) keys.add(k);
+  } while (cursor !== '0');
+
+  for (const key of keys) {
+    summary.users++;
+    const store = new RedisHashMap(key);
+    let entries;
+    try { entries = await store.entries(); } catch { continue; }
+    for (const [field, ev] of entries) {
+      summary.scanned++;
+      if (!isExpired(ev, now)) continue;
+      summary.redacted++;
+      if (!dryRun) await store.set(field, redactExpiredEvent(ev));
+    }
+  }
+  return summary;
+}
+
 function decisionKey(date, title) {
   return `${date || ''}|${String(title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
 }

@@ -1015,6 +1015,13 @@
   .ahead-content { flex: 1; min-width: 0; }
   .ahead-title { font-size: 0.9rem; line-height: 1.35; color: var(--ink); }
   .ahead-where { display: block; color: var(--text2); font-size: 12px; margin-top: 3px; }
+  /* Two lines by default: enough to see the gear list starts, not enough to
+     turn thirty events into a wall. Full text on click. */
+  .ahead-details { display: block; color: var(--text2); font-size: 12px; margin-top: 4px; line-height: 1.5; white-space: pre-wrap; }
+  .ahead-details.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .ahead-more { background: none; border: none; padding: 0; margin-top: 3px; font: inherit; font-size: 11.5px; color: var(--ink); text-decoration: underline; cursor: pointer; }
+  .ahead-source { display: block; color: var(--text2); font-size: 11.5px; margin-top: 4px; }
+  .ahead-source a { color: inherit; }
   .ahead-clash { display: inline-block; margin-top: 5px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
   .ahead-empty { color: var(--text2); font-size: 0.875rem; padding: 1.5rem 0; }
   .ahead-conflict-band { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; margin-bottom: 18px; font-size: 0.875rem; }
@@ -3004,6 +3011,15 @@ async function loadAhead(force) {
   }
 }
 
+// The clamp is CSS-only, so "More" just drops the class. Nothing to re-render
+// and nothing to refetch — the full text is already in the DOM.
+function toggleAheadDetails(btn) {
+  const el = btn.previousElementSibling;
+  if (!el) return;
+  const clamped = el.classList.toggle('clamped');
+  btn.textContent = clamped ? 'More' : 'Less';
+}
+
 function renderAheadControls() {
   const el = document.getElementById('ahead-windows');
   if (el) {
@@ -3083,6 +3099,9 @@ function renderAhead() {
       <span class="ahead-content">
         <span class="ahead-title">${escHtml(ev.title)}</span>
         ${ev.location ? `<span class="ahead-where">${escHtml(ev.location)}</span>` : ''}
+        ${ev.details ? `<span class="ahead-details clamped">${escHtml(ev.details)}</span>
+        <button class="ahead-more" onclick="toggleAheadDetails(this)">More</button>` : ''}
+        ${ev.source || ev.emailLink ? `<span class="ahead-source">${ev.source ? 'From ' + escHtml(ev.source) : ''}${ev.source && ev.emailLink ? ' \u00b7 ' : ''}${ev.emailLink ? `<a href="${escHtml(ev.emailLink)}" target="_blank" rel="noopener">original email</a>` : ''}</span>` : ''}
         ${clashing.has(ev.id) ? '<span class="ahead-clash">Clash</span>' : ''}
       </span>
     </div>`;

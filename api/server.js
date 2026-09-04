@@ -4563,6 +4563,37 @@ function normalizeAheadDays(raw) {
   return AHEAD_WINDOWS.includes(n) ? n : AHEAD_DEFAULT_DAYS;
 }
 
+// Criba writes a genuinely useful description onto every event it adds — the
+// gear list, the RSVP deadline, a link back to the source thread — and then
+// What's Ahead never asked Google for the field, so its best work was visible
+// only inside Google Calendar. Ask for it, and split it back into the parts
+// buildEventDescription joined together.
+//
+// Events from subscribed feeds have no such structure; their whole description
+// is simply the details.
+const AHEAD_DETAILS_MAX = 1200;
+
+function parseEventDescription(desc) {
+  const text = String(desc || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return { details: '', source: '', emailLink: '' };
+
+  let source = '', emailLink = '';
+  const details = [];
+  for (const para of text.split(/\n{2,}/)) {
+    const p = para.trim();
+    if (!p) continue;
+    // Our own footer. Repeating it under all thirty rows is noise.
+    if (p === 'Added via Criba') continue;
+    const link = p.match(/^Original email:\s*(\S+)/);
+    if (link) { emailLink = link[1]; continue; }
+    if (/^From /.test(p)) { source = p.split('\n')[0].replace(/^From /, '').trim(); continue; }
+    details.push(p);
+  }
+  let body = details.join('\n\n');
+  if (body.length > AHEAD_DETAILS_MAX) body = body.slice(0, AHEAD_DETAILS_MAX).trimEnd() + '\u2026';
+  return { details: body, source, emailLink };
+}
+
 async function fetchCalendarWindow(calendarApi, cal, timeMin, timeMax) {
   try {
     const resp = await calendarApi.events.list({
@@ -4572,7 +4603,7 @@ async function fetchCalendarWindow(calendarApi, cal, timeMin, timeMax) {
       singleEvents: true,      // a weekly practice should appear on each of its
       orderBy: 'startTime',    // dates, not once as a rule
       maxResults: 250,
-      fields: 'items(id,summary,location,start,end,colorId,status,htmlLink)',
+      fields: 'items(id,summary,location,start,end,description,colorId,status,htmlLink)',
     });
     return (resp.data.items || [])
       .filter(it => it.status !== 'cancelled')
@@ -4586,6 +4617,7 @@ async function fetchCalendarWindow(calendarApi, cal, timeMin, timeMax) {
         is_all_day: !!it.start?.date,
         colorId: it.colorId ? String(it.colorId) : null,
         htmlLink: it.htmlLink || null,
+        ...parseEventDescription(it.description),
         calendarId: cal.id,
         calendarName: cal.name || cal.id,
       }))

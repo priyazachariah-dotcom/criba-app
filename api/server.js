@@ -1914,6 +1914,129 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, '../public')));
 
+// ── Legal pages (required for OAuth verification) ───────────────────────────
+// Google's verification for sensitive/restricted scopes requires a public
+// privacy-policy URL, and the Gmail restricted scope requires an explicit
+// "Limited Use" disclosure. These pages provide both, on-brand and public.
+const LEGAL_PAGE = (title, bodyHtml) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Criba — ${title}</title>
+<style>
+  body{margin:0;background:#F0DAD8;color:#111;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;line-height:1.65}
+  .wrap{max-width:760px;margin:0 auto;padding:48px 22px 96px}
+  .brand{font-family:'Archivo Black',Arial Black,sans-serif;font-size:1.5rem;letter-spacing:.04em;text-transform:uppercase;margin-bottom:.25rem}
+  .tag{color:#555;font-style:italic;margin-bottom:2.5rem}
+  h1{font-size:1.7rem;margin:0 0 .25rem}
+  .updated{color:#555;font-size:.85rem;margin-bottom:2rem}
+  h2{font-size:1.1rem;margin:2rem 0 .5rem}
+  p,li{font-size:.95rem;color:#222}
+  a{color:#1a73e8}
+  .box{background:#fff;border:1.5px solid #111;padding:16px 18px;margin:1.25rem 0}
+  .foot{margin-top:3rem;color:#555;font-size:.85rem}
+</style></head><body><div class="wrap">
+  <div class="brand">Criba</div><div class="tag">Filter the noise.</div>
+  ${bodyHtml}
+  <div class="foot"><a href="/">← Back to Criba</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></div>
+</div></body></html>`;
+
+app.get('/privacy', (req, res) => {
+  res.set('Content-Type', 'text/html').send(LEGAL_PAGE('Privacy Policy', `
+  <h1>Privacy Policy</h1>
+  <div class="updated">Last updated: ${new Date().toISOString().slice(0, 10)}</div>
+  <p>This Privacy Policy explains how Criba ("Criba", "we", "us", or "the Service") collects, uses, stores, shares, and protects information when you use the Service. By using Criba you agree to the practices described here. If you do not agree, do not use the Service.</p>
+
+  <h2>1. Who we are</h2>
+  <p>Criba is a personal-productivity tool that detects calendar-worthy items (events, deadlines, reminders) in your connected sources — Gmail, PDFs and calendar feeds — and helps you add them to Google Calendar with your approval. For privacy questions, contact <a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>.</p>
+
+  <h2>2. Information we access and why</h2>
+  <ul>
+    <li><b>Google profile (name, email address).</b> To identify your account and personalise the Service.</li>
+    <li><b>Gmail — read-only.</b> To detect dates, events, deadlines and reminders in your messages and turn them into calendar entries. We read message content solely to extract event details; we do not send email on your behalf.</li>
+    <li><b>Google Calendar (events and calendar list).</b> To add the events you approve, to colour-code them, and to read your calendars so we can detect and prevent duplicate entries.</li>
+    <li><b>Google Contacts and directory (read-only).</b> To suggest people by name and email when you assign or invite them to an event — from your saved contacts, people you have corresponded with ("other contacts"), and, if your account belongs to a Google Workspace organisation, your organisation's directory.</li>
+  </ul>
+  <p>We request only the Google scopes needed to provide these features.</p>
+
+  <div class="box"><b>Google Limited Use disclosure.</b> Criba's use and transfer of information received from Google APIs to any other app adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, including its <b>Limited Use</b> requirements. Specifically: we use Google user data only to provide and improve the user-facing features of Criba; we do <b>not</b> sell Google user data; we do <b>not</b> use it for advertising; we do <b>not</b> transfer it to third parties except as necessary to provide or improve the Service, for security purposes, or to comply with applicable law; and we do <b>not</b> allow humans to read your Google user data unless we have your affirmative consent for specific messages, it is necessary for security or to comply with applicable law, or the data has been aggregated and anonymised.</p></div>
+
+  <h2>3. How we use your information</h2>
+  <p>We use the information above only to operate, maintain, secure and improve the Service — extracting events, preventing duplicates, colour-coding by person, and writing approved events to your calendar. We do not use it for advertising or profiling, and we do not sell it.</p>
+
+  <h2>4. AI processing</h2>
+  <p>To extract event details, relevant message and document text is sent to our AI provider, Anthropic, acting as our processor. This content is used only to return the extracted events to you and is <b>not</b> used to train AI models. We do not retain your raw mailbox.</p>
+
+  <h2>5. Service providers (sub-processors)</h2>
+  <p>We share data only with providers that help us run the Service, under contractual confidentiality and data-protection obligations: <b>Google</b> (source APIs), <b>Anthropic</b> (AI extraction), and our <b>hosting and database</b> providers (application hosting and encrypted data storage). They may process data only on our instructions.</p>
+
+  <h2>6. Storage &amp; security</h2>
+  <p>Extracted events, your settings, and the OAuth tokens required to operate the Service are stored in our database, protected by access controls and transport encryption (HTTPS). Sessions use signed, HTTP-only cookies. No method of storage or transmission is 100% secure, but we take commercially reasonable measures to protect your information.</p>
+
+  <h2>7. Retention &amp; deletion</h2>
+  <p>We retain data while your account is active. You may revoke Criba's access at any time in your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account permissions</a>, which stops all further access. To request deletion of the data we hold about you, email <a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>; we will delete it within a reasonable period except where retention is required by law.</p>
+
+  <h2>8. Your rights</h2>
+  <p>Depending on where you live (including under GDPR and the CCPA/CPRA), you may have the right to access, correct, delete, port, or restrict processing of your personal data, and to object to certain processing. We do not sell or "share" personal information as those terms are defined under US state privacy laws. To exercise any right, contact us at the address above.</p>
+
+  <h2>9. International transfers</h2>
+  <p>Your information may be processed in countries other than your own, including the United States. Where required, we rely on appropriate safeguards for such transfers.</p>
+
+  <h2>10. Children</h2>
+  <p>Criba is not directed to children under 16 and we do not knowingly collect their data. If you believe a child has provided us data, contact us and we will delete it.</p>
+
+  <h2>11. Changes to this policy</h2>
+  <p>We may update this policy from time to time; material changes will be reflected by the "Last updated" date above. Continued use after changes constitutes acceptance.</p>
+
+  <h2>12. Contact</h2>
+  <p>Questions or requests: <a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>.</p>`));
+});
+
+app.get('/terms', (req, res) => {
+  res.set('Content-Type', 'text/html').send(LEGAL_PAGE('Terms of Service', `
+  <h1>Terms of Service</h1>
+  <div class="updated">Last updated: ${new Date().toISOString().slice(0, 10)}</div>
+  <p>These Terms of Service ("Terms") govern your access to and use of Criba (the "Service"). By accessing or using the Service, you agree to be bound by these Terms and by our <a href="/privacy">Privacy Policy</a>. If you do not agree, do not use the Service.</p>
+
+  <h2>1. Eligibility</h2>
+  <p>You must be at least 16 years old and able to form a binding contract to use the Service, and you must have the right to connect any account you authorise.</p>
+
+  <h2>2. The Service</h2>
+  <p>Criba detects calendar-worthy items (events, deadlines, reminders) in your connected sources — Gmail, PDFs and calendar feeds — and helps you add them to Google Calendar. Automated extraction is inherently imperfect; <b>you are responsible for reviewing what is added to your calendar</b>, and you should independently confirm anything important.</p>
+
+  <h2>3. Your account &amp; authorisation</h2>
+  <p>You authorise Criba to access the Google data described in the Privacy Policy solely to provide the Service. You are responsible for activity under your account and for keeping your credentials secure. You may revoke access at any time via your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account permissions</a>.</p>
+
+  <h2>4. Acceptable use</h2>
+  <p>You agree not to: use the Service unlawfully; access accounts or data you do not own or have permission to use; interfere with or disrupt the Service; attempt to reverse engineer, scrape, or circumvent security; or use the Service to build a competing product.</p>
+
+  <h2>5. Your data</h2>
+  <p>As between you and us, your content remains yours. You grant us a limited licence to process it only to operate and improve the Service as described in the Privacy Policy. Our handling of Google user data complies with the Google API Services User Data Policy, including the Limited Use requirements.</p>
+
+  <h2>6. Third-party services</h2>
+  <p>The Service relies on third parties (including Google and Anthropic). Your use of Google services is also subject to Google's terms. We are not responsible for third-party services or for changes or outages in their APIs.</p>
+
+  <h2>7. Intellectual property</h2>
+  <p>The Service, including its software, design and branding, is owned by Criba and protected by law. These Terms grant you no rights in it except the limited right to use the Service.</p>
+
+  <h2>8. Disclaimers</h2>
+  <p>THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, AND NON-INFRINGEMENT. We do not warrant that the Service will be uninterrupted, error-free, or that every event will be detected or extracted correctly.</p>
+
+  <h2>9. Limitation of liability</h2>
+  <p>TO THE MAXIMUM EXTENT PERMITTED BY LAW, CRIBA AND ITS OPERATORS WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF DATA, PROFITS, OR GOODWILL, OR FOR MISSED, DUPLICATED, OR INCORRECTLY EXTRACTED EVENTS, ARISING FROM OR RELATED TO YOUR USE OF THE SERVICE. OUR TOTAL LIABILITY FOR ANY CLAIM WILL NOT EXCEED USD 100 OR THE AMOUNT YOU PAID US IN THE 12 MONTHS BEFORE THE CLAIM, WHICHEVER IS GREATER.</p>
+
+  <h2>10. Indemnification</h2>
+  <p>You agree to indemnify and hold harmless Criba and its operators from any claims, losses, or expenses arising from your use of the Service or your violation of these Terms.</p>
+
+  <h2>11. Termination</h2>
+  <p>You may stop using the Service and revoke access at any time. We may suspend or terminate access if you violate these Terms or to protect the Service or its users.</p>
+
+  <h2>12. Governing law</h2>
+  <p>These Terms are governed by the laws of the State of California, USA, without regard to conflict-of-laws rules, and you consent to the exclusive jurisdiction of the courts located there, except where prohibited by your local law.</p>
+
+  <h2>13. Changes</h2>
+  <p>We may update these Terms; material changes will be reflected by the "Last updated" date. Continued use after changes constitutes acceptance.</p>
+
+  <h2>14. Contact</h2>
+  <p><a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>.</p>`));
+});
+
 function requireAuth2(req, res, next) {
   const user = getUser(req);
   if (!user) return res.status(401).json({ error: 'Not authenticated' });

@@ -2110,11 +2110,17 @@ app.get('/api/auth/google/callback', async (req, res) => {
     // on the first consent or when prompt=consent is forced (which we always do).
     if (tokens.refresh_token) {
       await redis.set(`refreshToken:${data.email}`, tokens.refresh_token);
-      // Register Gmail push notifications (fire-and-forget — don't block login)
-      registerGmailWatch(data.email, tokens.refresh_token).catch(e =>
-        console.error('Gmail watch registration failed:', e.message)
-      );
     }
+    // Google only issues a refresh token on first consent, so a re-consent can
+    // arrive without one. The old `if` then fell straight through, leaving the
+    // account signed in, unwatched, and with nothing recorded anywhere. Fall
+    // back to the stored token, and record the failure when there is none.
+    const watchToken = tokens.refresh_token || await redis.get(`refreshToken:${data.email}`);
+    // Fire-and-forget — don't block login — but ensureGmailWatch persists the
+    // outcome, so a failure is now visible instead of silent.
+    ensureGmailWatch(data.email, watchToken).catch(e =>
+      console.error('Gmail watch registration failed:', e.message)
+    );
 
     res.redirect('/');
   } catch (err) {
@@ -5931,6 +5937,39 @@ async function registerGmailWatch(email, refreshToken) {
   return watchRes.data;
 }
 
+// registerGmailWatch is called fire-and-forget at login, so a failure — no
+// refresh token, a Pub/Sub permission problem — went to a console log nobody
+// reads. The user then saw a working app that was silently scanning nothing,
+// which is the one failure this pipeline exists to prevent. Record the
+// outcome in Redis so it can be shown to the user and to the fleet view, and
+// retry once: most failures here are transient Google API errors.
+async function ensureGmailWatch(email, refreshToken, { attempts = 2 } = {}) {
+  if (!refreshToken) {
+    await redis.set(`gmailWatchError:${email}`, JSON.stringify({
+      at: new Date().toISOString(), code: 'no-refresh-token',
+      error: 'No refresh token stored — sign out and sign in again to reconnect Gmail.',
+    }));
+    return { ok: false, code: 'no-refresh-token' };
+  }
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const data = await registerGmailWatch(email, refreshToken);
+      await redis.del(`gmailWatchError:${email}`);
+      return { ok: true, data };
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, 1200));
+    }
+  }
+  await redis.set(`gmailWatchError:${email}`, JSON.stringify({
+    at: new Date().toISOString(), code: 'register-failed',
+    error: lastErr?.message || String(lastErr),
+  }));
+  console.error(`[gmail watch] registration failed for ${email}: ${lastErr?.message}`);
+  return { ok: false, code: 'register-failed', error: lastErr?.message };
+}
+
 // How long one invocation may spend extracting before it stops and leaves the
 // rest for the next run. Vercel kills the function at 60s; a kill mid-batch is
 // the one outcome that loses mail, so we stop ourselves first with room to
@@ -6490,10 +6529,26 @@ app.get('/api/user/status', requireAuth, async (req, res) => {
     }
   }
 
+  // A user can be fully signed in and silently unwatched. Check on every page
+  // load, attempt one repair when a refresh token is available, and report the
+  // result so the UI can say so plainly rather than showing a decorative pill.
+  let watchActive = !!(await redis.get(`gmailWatch:${req.user.email}`));
+  let watchErrRaw = await redis.get(`gmailWatchError:${req.user.email}`);
+  if (!watchActive) {
+    const rt = await redis.get(`refreshToken:${req.user.email}`);
+    const r = await ensureGmailWatch(req.user.email, rt, { attempts: 1 });
+    if (r.ok) { watchActive = true; watchErrRaw = null; }
+    else watchErrRaw = await redis.get(`gmailWatchError:${req.user.email}`);
+  }
+  let watchError = null;
+  try { watchError = watchErrRaw ? JSON.parse(watchErrRaw) : null; } catch {}
+
   res.json({
     gmailDisconnected: !!disconnectedAt,
     gmailDisconnectedAt: disconnectedAt || null,
     needsOnboardingScan: !onboardedAt,
+    gmailWatchActive: watchActive,
+    gmailWatchError: watchError,
   });
 });
 
@@ -6577,6 +6632,65 @@ const ADMIN_EMAILS = new Set(
   (process.env.ADMIN_EMAILS || 'priya.zachariah@gmail.com')
     .split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
 );
+
+// Accounts are enumerated from stored refresh tokens, not from
+// gmailWatchedUsers: the watch set contains only users whose registration
+// succeeded, so using it to answer "how many users" hides precisely the people
+// who are broken. The cost view still uses the watch set, because it is asking
+// a different question. This endpoint exists to show the gap between the two.
+//
+// Account state only — no subjects, senders, or message content.
+app.get('/api/admin/users', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const emails = new Set();
+  let cursor = '0';
+  do {
+    const [next, keys] = await redis.scan(cursor, 'MATCH', 'refreshToken:*', 'COUNT', 200);
+    cursor = next;
+    for (const k of keys) emails.add(k.slice('refreshToken:'.length));
+  } while (cursor !== '0');
+  for (const e of await redis.smembers('gmailWatchedUsers')) emails.add(e);
+
+  const users = [];
+  for (const email of emails) {
+    const [watchRaw, errRaw, tok, onboarded, lastWebhookAt, disconnectedAt] = await Promise.all([
+      redis.get(`gmailWatch:${email}`),
+      redis.get(`gmailWatchError:${email}`),
+      redis.get(`refreshToken:${email}`),
+      redis.get(`onboarded:${email}`),
+      redis.get(`lastWebhookAt:${email}`),
+      redis.get(`gmailDisconnected:${email}`),
+    ]);
+    let watchExpiresAt = null;
+    try {
+      const w = JSON.parse(watchRaw || 'null');
+      if (w?.expiration) watchExpiresAt = new Date(parseInt(w.expiration)).toISOString();
+    } catch {}
+    let watchError = null;
+    try { watchError = errRaw ? JSON.parse(errRaw) : null; } catch {}
+    const watching = !!watchRaw;
+    users.push({
+      email, watching, watchExpiresAt, watchError,
+      hasRefreshToken: !!tok,
+      onboardedAt: onboarded || null,
+      lastWebhookAt: lastWebhookAt || null,
+      disconnected: !!disconnectedAt,
+      // The whole point of this endpoint: signed in, believes it is working,
+      // and no mail is being read.
+      silentlyBroken: !!tok && !watching,
+    });
+  }
+  users.sort((x, y) =>
+    Number(y.silentlyBroken) - Number(x.silentlyBroken) || x.email.localeCompare(y.email));
+  res.json({
+    userCount: users.length,
+    watching: users.filter(u => u.watching).length,
+    silentlyBroken: users.filter(u => u.silentlyBroken).length,
+    users,
+  });
+});
 
 app.get('/api/admin/spend', requireAuth, async (req, res) => {
   if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {

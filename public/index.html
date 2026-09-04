@@ -1091,8 +1091,8 @@
   <div id="gmail-disconnect-banner" class="hidden">
     <span class="material-icons disconnect-banner-icon">warning</span>
     <div class="disconnect-banner-text">
-      <strong>Gmail connection needs to be reconnected</strong>
-      Criba is no longer receiving new events from your Gmail. Click to reconnect.
+      <strong id="disconnect-banner-title">Gmail connection needs to be reconnected</strong>
+      <span id="disconnect-banner-body">Criba is no longer receiving new events from your Gmail. Click to reconnect.</span>
     </div>
     <button class="reconnect-btn" id="reconnect-btn" onclick="reconnectGmail()">Reconnect Gmail</button>
   </div>
@@ -2543,7 +2543,32 @@ async function checkGmailStatus() {
     if (!res.ok) return;
     const data = await res.json();
     const banner = document.getElementById('gmail-disconnect-banner');
-    if (data.gmailDisconnected) {
+    // Two different failures land here. gmailDisconnected means a watch that
+    // worked and then lapsed. gmailWatchActive === false means one that was
+    // never registered at all — a user who signed in, saw a normal-looking
+    // app, and has been scanning nothing since. The second used to show no
+    // banner whatsoever, which is how it stayed invisible.
+    const neverRegistered = data.gmailWatchActive === false;
+    if (data.gmailDisconnected || neverRegistered) {
+      const title = document.getElementById('disconnect-banner-title');
+      const body = document.getElementById('disconnect-banner-body');
+      const btn = document.getElementById('reconnect-btn');
+      const needsSignIn = data.gmailWatchError?.code === 'no-refresh-token';
+      if (neverRegistered && !data.gmailDisconnected) {
+        if (title) title.textContent = 'Criba is not reading your email yet';
+        if (body) body.textContent = needsSignIn
+          ? 'Your Gmail connection did not finish setting up. Sign in again to complete it — nothing is being scanned until you do.'
+          : 'Your Gmail connection did not finish setting up, so no new email is being scanned. Click to finish connecting.';
+        if (btn) {
+          btn.textContent = needsSignIn ? 'Sign in again' : 'Finish connecting';
+          btn.onclick = needsSignIn
+            ? () => { location.href = '/api/auth/google'; }
+            : reconnectGmail;
+        }
+      } else if (btn) {
+        btn.textContent = 'Reconnect Gmail';
+        btn.onclick = reconnectGmail;
+      }
       banner.classList.remove('hidden');
     } else {
       banner.classList.add('hidden');

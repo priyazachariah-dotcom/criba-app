@@ -4554,7 +4554,7 @@ app.get('/api/settings', requireAuth, async (req, res) => {
 //
 // Criba's records are still consulted, but only ever to answer "whose is this",
 // which is a question about learning rather than about what is happening.
-const AHEAD_WINDOWS = [7, 14, 30];
+const AHEAD_WINDOWS = [1, 7, 14, 30];
 const AHEAD_DEFAULT_DAYS = 14;
 // Only how much of the calendar this one screen displays. It has no effect on
 // what gets extracted or written, which is deliberately uncapped.
@@ -4755,6 +4755,91 @@ app.get('/api/ahead', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[ahead] failed:', err.message);
     res.status(502).json({ error: 'Could not read your calendar: ' + err.message });
+  }
+});
+
+// ── Week ahead, in words ──────────────────────────────────────────────────
+//
+// The rows already say what is happening. What they cannot say is what the week
+// FEELS like: that Wednesday is the pinch, that two things need buying before
+// Friday, that the clash on Saturday is the one worth resolving now. That is a
+// reading of the week, and it costs a model call, so it is deliberately not
+// wired to page load or to Refresh. It is generated when someone asks for it,
+// and then cached for the rest of the day — a week does not change enough
+// between breakfast and dinner to be worth paying twice for.
+const AHEAD_SUMMARY_DAYS = 7;
+const AHEAD_SUMMARY_TTL_S = 12 * 60 * 60;
+// Enough events to describe a real family week, few enough that a household
+// with a busy shared calendar cannot turn one click into a large bill.
+const AHEAD_SUMMARY_MAX_EVENTS = 60;
+
+function aheadSummaryKey(email) {
+  return `aheadSummary:${email}:${new Date().toISOString().slice(0, 10)}`;
+}
+
+// Only the fields a summary can actually use. Descriptions are where the gear
+// lists and the RSVP deadlines live, so they go in — trimmed, because a single
+// verbose newsletter event should not crowd out the other six days.
+function aheadSummaryPayload(view) {
+  const nameFor = new Map((view.people || []).map(p => [p.id, p.name]));
+  return (view.events || []).slice(0, AHEAD_SUMMARY_MAX_EVENTS).map(ev => ({
+    date: ev.date,
+    time: ev.is_all_day ? 'all day' : (ev.time || null),
+    title: ev.title,
+    who: nameFor.get(ev.memberId) || null,
+    where: ev.location || null,
+    details: ev.details ? String(ev.details).slice(0, 400) : null,
+  }));
+}
+
+async function buildAheadSummary(user) {
+  const view = await buildAheadView(user, AHEAD_SUMMARY_DAYS);
+  const events = aheadSummaryPayload(view);
+  if (!events.length) {
+    return { text: 'Nothing on the calendar for the next seven days.', events: 0, generatedAt: new Date().toISOString() };
+  }
+
+  const prompt = `You are writing a short week-ahead briefing for a busy parent. Today is ${new Date().toISOString().slice(0, 10)} (timezone ${view.timezone}).
+
+Here are their next seven days, straight from their calendar:
+${JSON.stringify(events)}
+
+${view.conflicts.length ? `These overlap: ${JSON.stringify(view.conflicts.map(c => ({ date: c.date, a: c.a.title, b: c.b.title })))}` : 'Nothing overlaps.'}
+
+Write the briefing as plain text, no markdown, no headings, no bullets characters other than "- ". Structure it as:
+1. One or two sentences on the shape of the week — which days are heavy, which are clear.
+2. A short list, one "- " line each, of things that need doing BEFORE the event: gear to pack, forms to return, RSVPs, things to buy. Only include ones you can actually see in the details. If there are none, say so in one line instead of inventing any.
+3. One closing line naming the single thing most likely to go wrong (a clash, a tight turnaround between two places, an early start) and nothing else.
+
+Be concrete and name real events and days. Never invent an event, a time, a place or a deadline that is not in the data above. Keep the whole thing under 200 words.`;
+
+  const response = await callClaude(user.email, {
+    model: 'claude-opus-4-7',
+    max_tokens: 1200,
+    messages: [{ role: 'user', content: prompt }],
+  }, 'ahead-summary');
+
+  return {
+    text: getResponseText(response).trim(),
+    events: events.length,
+    conflicts: view.conflicts.length,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+app.get('/api/ahead/summary', requireAuth, async (req, res) => {
+  const key = aheadSummaryKey(req.user.email);
+  try {
+    if (req.query.force !== '1') {
+      const cached = await redis.get(key);
+      if (cached) return res.json({ ...JSON.parse(cached), cached: true });
+    }
+    const summary = await buildAheadSummary(req.user);
+    await redis.set(key, JSON.stringify(summary), 'EX', AHEAD_SUMMARY_TTL_S);
+    res.json({ ...summary, cached: false });
+  } catch (err) {
+    console.error('[ahead-summary] failed:', err.message);
+    res.status(502).json({ error: err.message });
   }
 });
 

@@ -1022,6 +1022,14 @@
   .ahead-more { background: none; border: none; padding: 0; margin-top: 3px; font: inherit; font-size: 11.5px; color: var(--ink); text-decoration: underline; cursor: pointer; }
   .ahead-source { display: block; color: var(--text2); font-size: 11.5px; margin-top: 4px; }
   .ahead-source a { color: inherit; }
+  .ahead-summary { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 10px 0 14px; background: var(--card, transparent); }
+  .asum-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .asum-title { font-size: 12.5px; font-weight: 600; letter-spacing: .02em; }
+  .asum-btn { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; font: inherit; font-size: 11.5px; cursor: pointer; }
+  .asum-btn[disabled] { opacity: .5; cursor: default; }
+  .asum-body { font-size: 13px; line-height: 1.6; white-space: pre-wrap; margin-top: 8px; }
+  .asum-body:empty { display: none; }
+  .asum-note { display: block; color: var(--text2); font-size: 11.5px; margin-top: 8px; }
   .ahead-clash { display: inline-block; margin-top: 5px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
   .ahead-empty { color: var(--text2); font-size: 0.875rem; padding: 1.5rem 0; }
   .ahead-conflict-band { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; margin-bottom: 18px; font-size: 0.875rem; }
@@ -1236,6 +1244,15 @@
       <button class="ahead-refresh" onclick="loadAhead(true)" title="Read the calendar again">Refresh</button>
     </div>
     <div class="ahead-meta" id="ahead-meta"></div>
+    <!-- The week in words. Costs a model call, so it is never generated on page
+         load or on Refresh — only when someone asks, and then cached for the day. -->
+    <div class="ahead-summary" id="ahead-summary">
+      <div class="asum-head">
+        <span class="asum-title">The week in a nutshell</span>
+        <button class="asum-btn" id="asum-btn" onclick="loadAheadSummary(false)">Write it for me</button>
+      </div>
+      <div class="asum-body" id="asum-body"></div>
+    </div>
     <div id="ahead-conflicts"></div>
     <div id="ahead-body"></div>
   </div>
@@ -2964,7 +2981,7 @@ function pageIsActive(page) {
 // this screen, and no invite or sharing control either. It answers one
 // question — what is coming up, and does any of it collide.
 
-const AHEAD_WINDOW_LABELS = { 7: '1 week', 14: '2 weeks', 30: '1 month' };
+const AHEAD_WINDOW_LABELS = { 1: 'Next 24h', 7: '1 week', 14: '2 weeks', 30: '1 month' };
 let aheadData = null;
 let aheadDays = 14;
 let aheadMode = 'person';
@@ -3011,6 +3028,41 @@ async function loadAhead(force) {
   }
 }
 
+// Asked for, not pushed. The button is the whole cost control: no summary is
+// written until someone clicks it, and the server hands back the cached one for
+// the rest of the day unless we explicitly ask it to rewrite.
+let _aheadSummaryLoading = false;
+async function loadAheadSummary(force) {
+  if (_aheadSummaryLoading) return;
+  _aheadSummaryLoading = true;
+  const btn = document.getElementById('asum-btn');
+  const body = document.getElementById('asum-body');
+  if (btn) { btn.disabled = true; btn.textContent = 'Reading your week\u2026'; }
+  if (body) body.textContent = '';
+  try {
+    const res = await fetch('/api/ahead/summary' + (force ? '?force=1' : ''));
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || 'Could not write the summary');
+    if (body) {
+      body.textContent = j.text || '';
+      const note = document.createElement('span');
+      note.className = 'asum-note';
+      note.textContent = j.cached
+        ? 'Written earlier today. Rewrite to read the calendar again.'
+        : `Written just now from ${j.events} event${j.events === 1 ? '' : 's'}.`;
+      body.appendChild(note);
+    }
+    if (btn) btn.onclick = () => loadAheadSummary(true);
+    if (btn) btn.textContent = 'Rewrite';
+  } catch (e) {
+    if (body) body.textContent = e.message;
+    if (btn) btn.textContent = 'Try again';
+  } finally {
+    _aheadSummaryLoading = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
 // The clamp is CSS-only, so "More" just drops the class. Nothing to re-render
 // and nothing to refetch — the full text is already in the DOM.
 function toggleAheadDetails(btn) {
@@ -3023,7 +3075,7 @@ function toggleAheadDetails(btn) {
 function renderAheadControls() {
   const el = document.getElementById('ahead-windows');
   if (el) {
-    el.innerHTML = [7, 14, 30].map(d =>
+    el.innerHTML = [1, 7, 14, 30].map(d =>
       `<button class="ahead-win ${d === aheadDays ? 'on' : ''}" onclick="setAheadDays(${d})">${AHEAD_WINDOW_LABELS[d]}</button>`).join('');
   }
   const p = document.getElementById('ahead-mode-person');

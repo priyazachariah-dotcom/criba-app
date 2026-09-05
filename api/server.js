@@ -217,14 +217,31 @@ const DAILY_SPEND_CAP_USD = Number(process.env.DAILY_SPEND_CAP_USD || 5);
 // Dollars per million tokens. An unrecognised model is priced at the most
 // expensive tier we know of: an unknown model must never be silently cheap,
 // because that turns the cap into a no-op exactly when it is most needed.
+//
+// cacheRead is the multiplier on the base input price for a cache hit. It is
+// 0.1x on every model except Fable 5.1 / Mythos 5.1, which read at 0.025x —
+// so it is stored per model rather than assumed, because assuming it is how
+// this table went wrong the first time.
+//
+// Cache WRITES are 1.25x for the 5-minute TTL and 2x for the 1-hour TTL. Those
+// are uniform across models, so they live in costMicroUsd rather than here.
 const MODEL_PRICING = {
-  'claude-opus-4-7': { in: 5, out: 25 },
-  'claude-opus-4-6': { in: 5, out: 25 },
-  'claude-opus-4-5': { in: 5, out: 25 },
-  'claude-sonnet-4-6': { in: 3, out: 15 },
-  'claude-haiku-4-5': { in: 1, out: 5 },
+  'claude-fable-5':    { in: 10, out: 50, cacheRead: 0.1 },
+  'claude-fable-5-1':  { in: 10, out: 50, cacheRead: 0.025 },
+  'claude-opus-4-7':   { in: 5,  out: 25, cacheRead: 0.1 },
+  'claude-opus-4-6':   { in: 5,  out: 25, cacheRead: 0.1 },
+  'claude-opus-4-5':   { in: 5,  out: 25, cacheRead: 0.1 },
+  'claude-sonnet-4-6': { in: 3,  out: 15, cacheRead: 0.1 },
+  'claude-haiku-4-5':  { in: 1,  out: 5,  cacheRead: 0.1 },
 };
-const FALLBACK_PRICING = { in: 5, out: 25 };
+// The comment above this table always said an unknown model must never be
+// silently cheap. It then sat at 5/25 while the extraction path moved to
+// claude-fable-5 at 10/50, so every extraction was metered at exactly half
+// price and the $5 cap was really a $10 cap. Pinned to the most expensive
+// tier we know of, and loudly logged, so the next unlisted model overstates
+// rather than understates.
+const FALLBACK_PRICING = { in: 10, out: 50, cacheRead: 0.1 };
+const _warnedModels = new Set();
 
 // Marker string. The webhook aborts a whole run on this rather than retrying
 // per message, and summariseApiError turns it into something a user can read.
@@ -238,16 +255,27 @@ function spendKey(email) {
 // Micro-dollars as an integer, so Redis INCRBY stays exact. Floating-point
 // cents accumulated over thousands of calls drift.
 function costMicroUsd(model, usage) {
-  const p = MODEL_PRICING[model] || FALLBACK_PRICING;
+  const p = MODEL_PRICING[model];
+  if (!p && !_warnedModels.has(model)) {
+    _warnedModels.add(model);
+    console.error(`[spend] UNPRICED MODEL "${model}" — metering at fallback ${FALLBACK_PRICING.in}/${FALLBACK_PRICING.out}. Add it to MODEL_PRICING.`);
+  }
+  const price = p || FALLBACK_PRICING;
   const cacheRead = Number(usage?.cache_read_input_tokens || 0);
-  const cacheWrite = Number(usage?.cache_creation_input_tokens || 0);
   const inTok = Number(usage?.input_tokens || 0);
   const outTok = Number(usage?.output_tokens || 0);
-  // Cache reads bill at ~0.1x and cache writes at ~1.25x. Neither is in use
-  // yet, but counting them now means enabling caching later cannot quietly
-  // desynchronise the meter from the invoice.
-  const inCost = (inTok + cacheWrite * 1.25 + cacheRead * 0.1) * p.in;
-  const outCost = outTok * p.out;
+
+  // Writes are billed by TTL: 1.25x for 5 minutes, 2x for an hour. Newer API
+  // versions break the split out under cache_creation; older ones report only
+  // the total. Absent the split we assume 5m, which is what the code requests,
+  // and the assumption is stated here so a later move to 1h that forgets to
+  // send the split shows up as an under-count rather than as a silent one.
+  const cc = usage?.cache_creation;
+  const w5 = cc ? Number(cc.ephemeral_5m_input_tokens || 0) : Number(usage?.cache_creation_input_tokens || 0);
+  const w1h = cc ? Number(cc.ephemeral_1h_input_tokens || 0) : 0;
+
+  const inCost = (inTok + w5 * 1.25 + w1h * 2 + cacheRead * (price.cacheRead ?? 0.1)) * price.in;
+  const outCost = outTok * price.out;
   return Math.ceil((inCost + outCost));
 }
 

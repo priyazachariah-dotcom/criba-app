@@ -5272,6 +5272,10 @@ async function householdBusyBlocks(h) {
       for (const ev of view.events) {
         const range = busyRange(ev);
         if (!range) continue;
+        if (aheadEventIsCancelled(ev)) {
+          informationalSkipped.push({ owner: m.email, date: ev.date, title: ev.title, reason: 'cancelled' });
+          continue;
+        }
         if (calendarIsNonBusy(ev.calendarName)) {
           informationalSkipped.push({ owner: m.email, date: ev.date, title: ev.title, reason: 'non-busy calendar', calendarName: ev.calendarName });
           continue;
@@ -5713,10 +5717,36 @@ function attributeCalendarEvent(ev, members, storedByCalEventId) {
 
 // Two timed things overlapping on the same day. Reported as pairs rather than
 // as a note stuck on one event, because a clash belongs to both halves of it.
+// Google's own status:cancelled entries are already dropped at fetch time. These
+// are the ones that survive it: a club that renames the fixture to "CANCELLED:
+// Practice" instead of cancelling it, which leaves a live, timed, hour-long
+// event on the calendar that nobody is going to. Three of eleven clashes on a
+// real week came from exactly one of these.
+const TITLE_CANCELLED = /^\s*[\[(]?\s*(cancell?ed|postponed|rained?[\s-]?out|no practice|no game)\b/i;
+
+// Day-level facts that arrived carrying a time. "Labor Day- No Classes" sat at
+// 4pm on a real calendar and clashed with everything near it. Whatever wrote the
+// hour, the fact is about the day, and a day cannot be double-booked against a
+// football practice.
+const TITLE_DAY_MARKER = /\b(no classes|no school|school closed|closed all day|day off|holiday|minimum day|early dismissal|no rsm)\b/i;
+
+function aheadEventIsCancelled(ev) {
+  return TITLE_CANCELLED.test(String(ev?.title || ''));
+}
+
+function aheadEventIsDayMarker(ev) {
+  return TITLE_DAY_MARKER.test(String(ev?.title || ''));
+}
+
 function findAheadConflicts(events) {
   const byDate = new Map();
   for (const ev of events) {
     if (ev.is_all_day || !ev.time) continue;   // an all-day marker clashes with nothing
+    // Neither of these occupies the hour it claims. They stay ON the screen --
+    // a cancelled practice is exactly the kind of thing you want to see -- they
+    // just stop manufacturing clashes with everything around them.
+    if (aheadEventIsCancelled(ev)) continue;
+    if (aheadEventIsDayMarker(ev)) continue;
     if (!byDate.has(ev.date)) byDate.set(ev.date, []);
     byDate.get(ev.date).push(ev);
   }

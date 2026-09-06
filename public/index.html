@@ -1249,7 +1249,7 @@
          load or on Refresh — only when someone asks, and then cached for the day. -->
     <div class="ahead-summary" id="ahead-summary">
       <div class="asum-head">
-        <span class="asum-title">The week in a nutshell</span>
+        <span class="asum-title" id="asum-title">The week in a nutshell</span>
         <button class="asum-btn" id="asum-btn" onclick="loadAheadSummary(false)">Write it for me</button>
       </div>
       <div class="asum-body" id="asum-body"></div>
@@ -3245,6 +3245,12 @@ function renderAhead() {
     const read = aheadData.calendarsRead === 1 ? '1 calendar' : `${aheadData.calendarsRead} calendars`;
     meta.textContent = `${evs.length} event${evs.length === 1 ? '' : 's'} across ${read}, read just now.`;
   }
+  // The summary always covers the week, whichever view is on screen. Saying so
+  // beats letting the heading imply it follows the toggle.
+  const asumTitle = document.getElementById('asum-title');
+  if (asumTitle) asumTitle.textContent = aheadView === 'tomorrow'
+    ? 'The week in a nutshell (the whole week, not just tomorrow)'
+    : 'The week in a nutshell';
 
   // Conflicts sit above everything. They are the one thing on this screen that
   // is worth interrupting a glance for. Household clashes come first: they need

@@ -6,7 +6,7 @@ import ical from 'node-ical';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import fs from 'fs';
 import crypto from 'crypto';
 import Redis from 'ioredis';
@@ -212,7 +212,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // starts that one on purpose, knowing what it costs.
 const WEBHOOK_MAX_EMAIL_AGE_DAYS = Number(process.env.WEBHOOK_MAX_EMAIL_AGE_DAYS || 1);
 
-const DAILY_SPEND_CAP_USD = Number(process.env.DAILY_SPEND_CAP_USD || 5);
+const DAILY_SPEND_CAP_USD = Number(process.env.DAILY_SPEND_CAP_USD || 10);
 
 // Dollars per million tokens. An unrecognised model is priced at the most
 // expensive tier we know of: an unknown model must never be silently cheap,
@@ -4562,6 +4562,327 @@ app.delete('/api/family/:id', requireAuth, async (req, res) => {
   await getUserFamily(req.user.email).delete(req.params.id);
   res.json({ ok: true });
 });
+
+// ── Households ────────────────────────────────────────────────────────────
+//
+// A household is a set of Criba accounts that plan around the same children.
+// Two parents each get their own inbox, their own extraction pipeline and
+// their own calendar; the household is the join that later lets Criba notice
+// that both of them are booked when only one of them can do the pickup.
+//
+// This layer is storage and membership ONLY. It deliberately contains no
+// conflict detection, no person linking and no privacy projection — those are
+// separate steps, and shipping the join first means the risky parts land on a
+// membership model that has already been exercised.
+//
+// Keys:
+//   householdOf:{email}         -> household id (a user is in at most one)
+//   household:{hid}             -> hash, field 'meta' -> household record
+//   householdMembers:{hid}      -> hash, field {email} -> membership record
+//   householdInvites:{hid}      -> hash, field {token} -> invite record
+//   householdInviteToken:{tok}  -> household id, with a TTL for expiry
+//
+// The token key is what makes redemption a single lookup, and giving it the
+// TTL means an expired invite disappears on its own rather than relying on a
+// sweep we would have to remember to run.
+
+const HOUSEHOLD_MAX_MEMBERS = 8;
+const HOUSEHOLD_INVITE_TTL_S = 7 * 24 * 60 * 60;
+const HOUSEHOLD_ROLES = new Set(['adult', 'teen']);
+const HOUSEHOLD_SHARE_MODES = new Set(['summary', 'full']);
+
+function getHouseholdMeta(hid) { return new RedisHashMap(`household:${hid}`); }
+function getHouseholdMembers(hid) { return new RedisHashMap(`householdMembers:${hid}`); }
+function getHouseholdInvites(hid) { return new RedisHashMap(`householdInvites:${hid}`); }
+
+function normEmail(raw) { return String(raw || '').trim().toLowerCase(); }
+
+// Teens are full accounts with their own pipeline, but are excluded from the
+// decision-maker role by default. This is a default, not a prohibition: an
+// adult member can grant it explicitly, which is the only way canBeDecisionMaker
+// ever becomes true for a teen.
+function normalizeHouseholdRole(raw) {
+  const r = String(raw || '').toLowerCase().trim();
+  return HOUSEHOLD_ROLES.has(r) ? r : 'adult';
+}
+
+function normalizeShareMode(raw) {
+  const m = String(raw || '').toLowerCase().trim();
+  return HOUSEHOLD_SHARE_MODES.has(m) ? m : 'summary';
+}
+
+async function householdIdFor(email) {
+  return (await redis.get(`householdOf:${normEmail(email)}`)) || null;
+}
+
+// The full picture for one member: the household, everyone in it, and which
+// row is theirs. Returns null rather than throwing when the user is solo,
+// because being in no household is the normal state, not an error.
+async function loadHousehold(email) {
+  const me = normEmail(email);
+  const hid = await householdIdFor(me);
+  if (!hid) return null;
+  const meta = await getHouseholdMeta(hid).get('meta');
+  if (!meta) {
+    // Pointer outlived the household (disband raced a join). Heal it rather
+    // than serving a dangling reference.
+    await redis.del(`householdOf:${me}`);
+    return null;
+  }
+  const members = await getHouseholdMembers(hid).values();
+  return { hid, meta, members, membership: members.find(m => m.email === me) || null };
+}
+
+function inviteLink(token) {
+  const base = process.env.PUBLIC_BASE_URL || 'https://app.criba.app';
+  return `${base}/?joinHousehold=${token}`;
+}
+
+// Invites are shown with the token intact to members of the household — it is
+// the thing they need to send. They are never returned to anyone else.
+function publicInvite(inv) {
+  return { token: inv.token, email: inv.email, role: inv.role, createdBy: inv.createdBy,
+           createdAt: inv.createdAt, expiresAt: inv.expiresAt, link: inviteLink(inv.token) };
+}
+
+app.get('/api/households/me', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h) return res.json({ household: null, members: [], membership: null });
+    res.json({ household: h.meta, members: h.members, membership: h.membership });
+  } catch (err) {
+    console.error('[household] load failed:', err.message);
+    res.status(500).json({ error: 'Could not load household' });
+  }
+});
+
+app.post('/api/households', requireAuth, async (req, res) => {
+  const me = normEmail(req.user.email);
+  try {
+    if (await householdIdFor(me)) return res.status(409).json({ error: 'You are already in a household' });
+    const hid = randomUUID();
+    const now = new Date().toISOString();
+    const meta = { id: hid, name: String(req.body?.name || '').trim() || 'Our household',
+                   createdAt: now, createdBy: me, decisionMaker: me };
+    const member = { email: me, name: req.user.name || me, role: 'adult', canBeDecisionMaker: true,
+                     shareMode: normalizeShareMode(req.body?.shareMode), joinedAt: now, invitedBy: null };
+    await getHouseholdMeta(hid).set('meta', meta);
+    await getHouseholdMembers(hid).set(me, member);
+    await redis.set(`householdOf:${me}`, hid);
+    res.json({ household: meta, members: [member], membership: member });
+  } catch (err) {
+    console.error('[household] create failed:', err.message);
+    res.status(500).json({ error: 'Could not create household' });
+  }
+});
+
+app.patch('/api/households', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    const meta = h.meta;
+    if (req.body?.name !== undefined) {
+      const n = String(req.body.name).trim();
+      if (!n) return res.status(400).json({ error: 'Household name cannot be empty' });
+      meta.name = n;
+    }
+    if (req.body?.decisionMaker !== undefined) {
+      const dm = normEmail(req.body.decisionMaker);
+      const target = h.members.find(m => m.email === dm);
+      if (!target) return res.status(400).json({ error: 'That person is not in this household' });
+      // Enforced server-side, not just hidden in a picker: a teen can only hold
+      // this role if an adult has explicitly granted it on their membership.
+      if (!target.canBeDecisionMaker) {
+        return res.status(400).json({ error: `${target.name} is not eligible to be the decision-maker` });
+      }
+      meta.decisionMaker = dm;
+    }
+    await getHouseholdMeta(h.hid).set('meta', meta);
+    res.json(meta);
+  } catch (err) {
+    console.error('[household] update failed:', err.message);
+    res.status(500).json({ error: 'Could not update household' });
+  }
+});
+
+app.get('/api/households/invites', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    const invites = await getHouseholdInvites(h.hid).values();
+    const now = Date.now();
+    res.json(invites.filter(i => new Date(i.expiresAt).getTime() > now).map(publicInvite));
+  } catch (err) {
+    console.error('[household] invite list failed:', err.message);
+    res.status(500).json({ error: 'Could not list invites' });
+  }
+});
+
+app.post('/api/households/invites', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    if (h.members.length >= HOUSEHOLD_MAX_MEMBERS) {
+      return res.status(400).json({ error: `A household can hold at most ${HOUSEHOLD_MAX_MEMBERS} people` });
+    }
+    // An invite may be pinned to one address or left open. Pinned is the safer
+    // default for a link that will travel through email, so the UI should
+    // prefer it; open links exist because a parent often does not know which
+    // address the other one will sign in with.
+    const email = req.body?.email ? normEmail(req.body.email) : null;
+    if (email && h.members.some(m => m.email === email)) {
+      return res.status(409).json({ error: 'That person is already in this household' });
+    }
+    const token = randomBytes(24).toString('base64url');
+    const inv = { token, hid: h.hid, email, role: normalizeHouseholdRole(req.body?.role),
+                  createdBy: normEmail(req.user.email), createdAt: new Date().toISOString(),
+                  expiresAt: new Date(Date.now() + HOUSEHOLD_INVITE_TTL_S * 1000).toISOString() };
+    await getHouseholdInvites(h.hid).set(token, inv);
+    await redis.set(`householdInviteToken:${token}`, h.hid, 'EX', HOUSEHOLD_INVITE_TTL_S);
+    res.json(publicInvite(inv));
+  } catch (err) {
+    console.error('[household] invite create failed:', err.message);
+    res.status(500).json({ error: 'Could not create invite' });
+  }
+});
+
+app.delete('/api/households/invites/:token', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    await getHouseholdInvites(h.hid).delete(req.params.token);
+    await redis.del(`householdInviteToken:${req.params.token}`);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[household] invite revoke failed:', err.message);
+    res.status(500).json({ error: 'Could not revoke invite' });
+  }
+});
+
+// Redeeming an invite is the only way into a household. There is no "add by
+// email" — the person joining must hold the token and be signed in as
+// themselves, so nobody is enrolled into a shared view without acting.
+app.post('/api/households/join', requireAuth, async (req, res) => {
+  const me = normEmail(req.user.email);
+  const token = String(req.body?.token || '').trim();
+  if (!token) return res.status(400).json({ error: 'Invite token required' });
+  try {
+    if (await householdIdFor(me)) return res.status(409).json({ error: 'You are already in a household' });
+    const hid = await redis.get(`householdInviteToken:${token}`);
+    if (!hid) return res.status(404).json({ error: 'That invite has expired or been revoked' });
+    const invites = getHouseholdInvites(hid);
+    const inv = await invites.get(token);
+    if (!inv) return res.status(404).json({ error: 'That invite has expired or been revoked' });
+    if (inv.email && inv.email !== me) {
+      return res.status(403).json({ error: `That invite was issued to ${inv.email}` });
+    }
+    const meta = await getHouseholdMeta(hid).get('meta');
+    if (!meta) return res.status(404).json({ error: 'That household no longer exists' });
+    const membersMap = getHouseholdMembers(hid);
+    const existing = await membersMap.values();
+    if (existing.length >= HOUSEHOLD_MAX_MEMBERS) {
+      return res.status(400).json({ error: `That household is full (${HOUSEHOLD_MAX_MEMBERS} people)` });
+    }
+    const role = normalizeHouseholdRole(inv.role);
+    const member = { email: me, name: req.user.name || me, role,
+                     canBeDecisionMaker: role === 'adult',
+                     shareMode: 'summary', joinedAt: new Date().toISOString(), invitedBy: inv.createdBy };
+    await membersMap.set(me, member);
+    await redis.set(`householdOf:${me}`, hid);
+    // Single-use: burn the token so a forwarded link cannot enrol a third party.
+    await invites.delete(token);
+    await redis.del(`householdInviteToken:${token}`);
+    res.json({ household: meta, members: [...existing, member], membership: member });
+  } catch (err) {
+    console.error('[household] join failed:', err.message);
+    res.status(500).json({ error: 'Could not join that household' });
+  }
+});
+
+// Your own membership is the one row you can always edit — specifically how
+// much of your calendar the rest of the household sees.
+app.patch('/api/households/members/me', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h || !h.membership) return res.status(404).json({ error: 'You are not in a household' });
+    const member = h.membership;
+    if (req.body?.shareMode !== undefined) member.shareMode = normalizeShareMode(req.body.shareMode);
+    if (req.body?.name !== undefined) member.name = String(req.body.name).trim() || member.name;
+    await getHouseholdMembers(h.hid).set(member.email, member);
+    res.json(member);
+  } catch (err) {
+    console.error('[household] member update failed:', err.message);
+    res.status(500).json({ error: 'Could not update your membership' });
+  }
+});
+
+// Adults can adjust another member's role and decision-maker eligibility.
+// Teens cannot, which is what keeps a teen from granting the role to themselves.
+app.patch('/api/households/members/:email', requireAuth, async (req, res) => {
+  const target = normEmail(req.params.email);
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h || !h.membership) return res.status(404).json({ error: 'You are not in a household' });
+    if (h.membership.role !== 'adult') return res.status(403).json({ error: 'Only an adult can change roles' });
+    const member = h.members.find(m => m.email === target);
+    if (!member) return res.status(404).json({ error: 'That person is not in this household' });
+    if (req.body?.role !== undefined) {
+      member.role = normalizeHouseholdRole(req.body.role);
+      if (member.role === 'teen' && req.body?.canBeDecisionMaker === undefined) member.canBeDecisionMaker = false;
+    }
+    if (req.body?.canBeDecisionMaker !== undefined) member.canBeDecisionMaker = !!req.body.canBeDecisionMaker;
+    await getHouseholdMembers(h.hid).set(target, member);
+    // A demotion must not leave a household pointing at an ineligible decision-maker.
+    if (!member.canBeDecisionMaker && h.meta.decisionMaker === target) {
+      const fallback = h.members.find(m => m.email !== target && m.canBeDecisionMaker);
+      h.meta.decisionMaker = fallback ? fallback.email : null;
+      await getHouseholdMeta(h.hid).set('meta', h.meta);
+    }
+    res.json({ member, household: h.meta });
+  } catch (err) {
+    console.error('[household] role update failed:', err.message);
+    res.status(500).json({ error: 'Could not update that member' });
+  }
+});
+
+// Leaving, or removing someone else. Removing another member requires being an
+// adult. Nothing belonging to the leaver is deleted — their events, family and
+// settings are their own and survive the household.
+app.delete('/api/households/members/:email', requireAuth, async (req, res) => {
+  const me = normEmail(req.user.email);
+  const target = normEmail(req.params.email);
+  try {
+    const h = await loadHousehold(me);
+    if (!h || !h.membership) return res.status(404).json({ error: 'You are not in a household' });
+    if (target !== me && h.membership.role !== 'adult') {
+      return res.status(403).json({ error: 'Only an adult can remove someone else' });
+    }
+    if (!h.members.some(m => m.email === target)) {
+      return res.status(404).json({ error: 'That person is not in this household' });
+    }
+    await getHouseholdMembers(h.hid).delete(target);
+    await redis.del(`householdOf:${target}`);
+    const remaining = h.members.filter(m => m.email !== target);
+    if (!remaining.length) {
+      // Last one out disbands it, so we never accumulate empty households
+      // holding a stale decision-maker and a pile of live invite tokens.
+      const invites = await getHouseholdInvites(h.hid).values();
+      for (const inv of invites) await redis.del(`householdInviteToken:${inv.token}`);
+      await redis.del(`household:${h.hid}`, `householdMembers:${h.hid}`, `householdInvites:${h.hid}`);
+      return res.json({ ok: true, disbanded: true });
+    }
+    if (h.meta.decisionMaker === target) {
+      const fallback = remaining.find(m => m.canBeDecisionMaker);
+      h.meta.decisionMaker = fallback ? fallback.email : null;
+      await getHouseholdMeta(h.hid).set('meta', h.meta);
+    }
+    res.json({ ok: true, disbanded: false, household: h.meta, members: remaining });
+  } catch (err) {
+    console.error('[household] remove failed:', err.message);
+    res.status(500).json({ error: 'Could not update household membership' });
+  }
+});
+
 
 // ── User settings (test mode, etc.) ───────────────────────────────────────
 

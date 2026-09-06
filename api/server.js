@@ -4767,7 +4767,10 @@ app.post('/api/households/join', requireAuth, async (req, res) => {
   const token = String(req.body?.token || '').trim();
   if (!token) return res.status(400).json({ error: 'Invite token required' });
   try {
-    if (await householdIdFor(me)) return res.status(409).json({ error: 'You are already in a household' });
+    // Order matters. Facts about the INVITE are checked before facts about the
+    // caller, so someone holding a link meant for another person is told that,
+    // rather than being told they are already in a household — which is both the
+    // less accurate message and the one that hid this branch from testing.
     const hid = await redis.get(`householdInviteToken:${token}`);
     if (!hid) return res.status(404).json({ error: 'That invite has expired or been revoked' });
     const invites = getHouseholdInvites(hid);
@@ -4776,6 +4779,7 @@ app.post('/api/households/join', requireAuth, async (req, res) => {
     if (inv.email && inv.email !== me) {
       return res.status(403).json({ error: `That invite was issued to ${inv.email}` });
     }
+    if (await householdIdFor(me)) return res.status(409).json({ error: 'You are already in a household' });
     const meta = await getHouseholdMeta(hid).get('meta');
     if (!meta) return res.status(404).json({ error: 'That household no longer exists' });
     const membersMap = getHouseholdMembers(hid);

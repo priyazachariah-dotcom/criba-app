@@ -4663,7 +4663,8 @@ app.post('/api/households', requireAuth, async (req, res) => {
     const hid = randomUUID();
     const now = new Date().toISOString();
     const meta = { id: hid, name: String(req.body?.name || '').trim() || 'Our household',
-                   createdAt: now, createdBy: me, decisionMaker: me };
+                   createdAt: now, createdBy: me, decisionMaker: me,
+                   conflictDetection: false };
     const member = { email: me, name: req.user.name || me, role: 'adult', canBeDecisionMaker: true,
                      shareMode: normalizeShareMode(req.body?.shareMode), joinedAt: now, invitedBy: null };
     await getHouseholdMeta(hid).set('meta', meta);
@@ -4686,6 +4687,9 @@ app.patch('/api/households', requireAuth, async (req, res) => {
       if (!n) return res.status(400).json({ error: 'Household name cannot be empty' });
       meta.name = n;
     }
+    // Off by default, and every household starts off. Detection is inert until
+    // someone turns it on for their own household.
+    if (req.body?.conflictDetection !== undefined) meta.conflictDetection = !!req.body.conflictDetection;
     if (req.body?.decisionMaker !== undefined) {
       const dm = normEmail(req.body.decisionMaker);
       const target = h.members.find(m => m.email === dm);
@@ -5134,6 +5138,227 @@ app.delete('/api/households/people/:personId/link/:memberId', requireAuth, async
     res.status(500).json({ error: 'Could not unlink that person' });
   }
 });
+
+// ── Household conflict detection (step 4: detect-only, behind a flag) ──────
+//
+// DETECT-ONLY BY DESIGN. This computes conflicts and stores them. It routes
+// nothing, notifies nobody and feeds no view. The point of landing it this way
+// is to look at real output on real calendars before anyone is shown anything,
+// because the failure mode of a conflict feature is not missing a conflict —
+// it is crying wolf until people stop reading it.
+//
+//   householdConflicts:{hid} -> hash, {conflictId} -> conflict record
+//
+// Tiering, per the agreed design:
+//   same-person       — one child in two places. interrupt-worthy.
+//   guardian-overlap  — a child has something and no adult is free. interrupt-worthy.
+//   household-overlap — two adults both busy. Stored for the narrative only,
+//                       and deliberately NOT interrupt-worthy: a flat
+//                       intersection of two busy diaries is noise, and noise
+//                       kills adoption.
+
+const HOUSEHOLD_CONFLICT_DAYS = 14;
+const HOUSEHOLD_CONFLICT_TTL_S = 3 * 24 * 60 * 60;
+
+function getHouseholdConflicts(hid) { return new RedisHashMap(`householdConflicts:${hid}`); }
+
+// A global kill switch that sits above the per-household flag, so this can be
+// turned off fleet-wide without a deploy if the output turns out to be noisy.
+function householdConflictsEnabled(meta) {
+  if (String(process.env.HOUSEHOLD_CONFLICTS || 'on').toLowerCase() === 'off') return false;
+  return !!meta?.conflictDetection;
+}
+
+// All-day events are included deliberately. The school-closure-versus-workday
+// case is the reason this feature exists, and an all-day event that swallows a
+// working parent's whole day is the highest-value conflict there is — so an
+// all-day event occupies its entire day rather than being skipped.
+function busyRange(ev) {
+  const day = ev.date;
+  if (!day) return null;
+  if (ev.is_all_day || !ev.time) return { day, start: 0, end: 1440, allDay: true };
+  const toMin = t => {
+    const m = String(t || '').match(/^(\d{1,2}):(\d{2})/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  };
+  const start = toMin(ev.time);
+  if (start === null) return { day, start: 0, end: 1440, allDay: true };
+  let end = toMin(ev.end_time);
+  // An untimed end defaults to an hour, the same assumption the single-account
+  // conflict check already makes.
+  if (end === null || end <= start) end = Math.min(start + 60, 1440);
+  return { day, start, end, allDay: false };
+}
+
+function rangesOverlap(a, b) {
+  if (!a || !b || a.day !== b.day) return false;
+  return a.start < b.end && b.start < a.end;
+}
+
+// Two parents subscribed to the same club feed both have "Arin soccer" at 4pm.
+// That is ONE event seen twice, not a conflict, and failing to collapse it
+// would make every shared calendar look like a crisis.
+function sameUnderlyingEvent(a, b) {
+  if (a.ev.date !== b.ev.date) return false;
+  if ((a.ev.time || '') !== (b.ev.time || '')) return false;
+  // titleTokens returns a Set, not an array.
+  const ta = [...titleTokens(a.ev.title || '')];
+  const tb = [...titleTokens(b.ev.title || '')];
+  if (!ta.length || !tb.length) return false;
+  const small = ta.length <= tb.length ? ta : tb;
+  const big = new Set(ta.length <= tb.length ? tb : ta);
+  const shared = small.filter(w => big.has(w)).length;
+  return shared / small.length >= 0.7;
+}
+
+function conflictId(kind, blocks) {
+  const parts = blocks.map(b => `${b.owner}:${b.ev.date}:${b.ev.time || 'allday'}:${personNameKey(b.ev.title)}`).sort();
+  return `${kind}|${parts.join('|')}`;
+}
+
+// Gather every household member's next fortnight as comparable busy blocks,
+// each tagged with the canonical person it is about (when it is about anyone).
+async function householdBusyBlocks(h) {
+  const blocks = [];
+  const skipped = [];
+  for (const m of h.members) {
+    try {
+      const fam = await getUserFamily(m.email).values();
+      const personOf = new Map(fam.map(f => [f.id, f.householdPersonId || null]));
+      const nameOf = new Map(fam.map(f => [f.id, f.name]));
+      const view = await buildAheadView({ email: m.email, name: m.name }, HOUSEHOLD_CONFLICT_DAYS);
+      for (const ev of view.events) {
+        const range = busyRange(ev);
+        if (!range) continue;
+        blocks.push({
+          owner: m.email, ownerName: m.name, ownerRole: m.role,
+          personId: ev.memberId ? (personOf.get(ev.memberId) || null) : null,
+          aboutName: ev.memberId ? (nameOf.get(ev.memberId) || null) : null,
+          ev, range,
+        });
+      }
+    } catch (err) {
+      // One member's calendar failing must not blind the household to the rest.
+      console.error('[household-conflicts] could not read', m.email, '-', err.message);
+      skipped.push({ email: m.email, reason: err.message });
+    }
+  }
+  return { blocks, skipped };
+}
+
+function detectHouseholdConflicts(h, blocks) {
+  const adults = new Set(h.members.filter(m => m.role === 'adult').map(m => m.email));
+  const out = [];
+  const seen = new Set();
+  const push = (kind, severity, parts, extra = {}) => {
+    const id = conflictId(kind, parts);
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push({
+      id, kind, severity,
+      date: parts[0].ev.date,
+      personId: parts[0].personId || null,
+      about: parts[0].aboutName || null,
+      events: parts.map(b => ({
+        owner: b.owner, ownerName: b.ownerName, title: b.ev.title,
+        time: b.ev.is_all_day ? 'all day' : (b.ev.time || null),
+        endTime: b.ev.end_time || null, allDay: !!b.ev.is_all_day,
+        location: b.ev.location || null, calendarName: b.ev.calendarName || null,
+      })),
+      detectedAt: new Date().toISOString(),
+      ...extra,
+    });
+  };
+
+  for (let i = 0; i < blocks.length; i++) {
+    for (let j = i + 1; j < blocks.length; j++) {
+      const a = blocks[i], b = blocks[j];
+      if (!rangesOverlap(a.range, b.range)) continue;
+      if (sameUnderlyingEvent(a, b)) continue;
+
+      // One child, two places. The linking work in step 3 is what makes this
+      // possible at all — without a canonical person these are two unrelated
+      // rows on two unrelated calendars.
+      if (a.personId && a.personId === b.personId) {
+        push('same-person', 'interrupt', [a, b], { crossAccount: a.owner !== b.owner });
+        continue;
+      }
+      // Two adults, both busy, nobody's child involved. Recorded quietly.
+      if (!a.personId && !b.personId && adults.has(a.owner) && adults.has(b.owner) && a.owner !== b.owner) {
+        push('household-overlap', 'quiet', [a, b]);
+      }
+    }
+  }
+
+  // Nobody free to take them. Evaluated per child event rather than pairwise,
+  // because the question is not "do two things clash" but "is there anyone left".
+  const childBlocks = blocks.filter(b => b.personId);
+  for (const child of childBlocks) {
+    const free = [];
+    const busyWith = [];
+    for (const email of adults) {
+      const theirs = blocks.filter(b => b.owner === email && !b.personId && rangesOverlap(b.range, child.range));
+      if (theirs.length) busyWith.push(theirs[0]); else free.push(email);
+    }
+    if (adults.size && !free.length && busyWith.length) {
+      push('guardian-overlap', 'interrupt', [child, ...busyWith], { noAdultFree: true });
+    }
+  }
+  return out;
+}
+
+app.get('/api/households/conflicts', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    const stored = await getHouseholdConflicts(h.hid).values();
+    res.json({
+      enabled: householdConflictsEnabled(h.meta),
+      conflicts: stored.sort((a, b) => String(a.date).localeCompare(String(b.date))),
+    });
+  } catch (err) {
+    console.error('[household-conflicts] list failed:', err.message);
+    res.status(500).json({ error: 'Could not load conflicts' });
+  }
+});
+
+// Runs detection and stores the result. Returns the conflicts so they can be
+// inspected directly. Nothing else in the product reads this store yet.
+app.post('/api/households/conflicts/detect', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h || !h.membership) return res.status(404).json({ error: 'You are not in a household' });
+    if (h.membership.role !== 'adult') return res.status(403).json({ error: 'Only an adult can run detection' });
+    if (!householdConflictsEnabled(h.meta)) {
+      return res.status(403).json({ error: 'Conflict detection is off for this household', enabled: false });
+    }
+    const { blocks, skipped } = await householdBusyBlocks(h);
+    const conflicts = detectHouseholdConflicts(h, blocks);
+    const store = getHouseholdConflicts(h.hid);
+    // Replace rather than accumulate: a conflict the calendars no longer show
+    // must not survive as a ghost.
+    await redis.del(`householdConflicts:${h.hid}`);
+    if (conflicts.length) {
+      await store.setMany(conflicts.map(c => [c.id, c]));
+      await redis.expire(`householdConflicts:${h.hid}`, HOUSEHOLD_CONFLICT_TTL_S);
+    }
+    res.json({
+      enabled: true, windowDays: HOUSEHOLD_CONFLICT_DAYS,
+      membersRead: h.members.length - skipped.length, skipped,
+      blocks: blocks.length,
+      counts: {
+        'same-person': conflicts.filter(c => c.kind === 'same-person').length,
+        'guardian-overlap': conflicts.filter(c => c.kind === 'guardian-overlap').length,
+        'household-overlap': conflicts.filter(c => c.kind === 'household-overlap').length,
+      },
+      conflicts,
+    });
+  } catch (err) {
+    console.error('[household-conflicts] detect failed:', err.message);
+    res.status(500).json({ error: 'Could not run detection' });
+  }
+});
+
 
 
 

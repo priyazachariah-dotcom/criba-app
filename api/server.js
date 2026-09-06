@@ -6,7 +6,7 @@ import ical from 'node-ical';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { randomUUID, randomBytes } from 'crypto';
+import { randomUUID, randomBytes, createHash } from 'crypto';
 import fs from 'fs';
 import crypto from 'crypto';
 import Redis from 'ioredis';
@@ -5412,8 +5412,22 @@ function projectConflictEvent(e, viewerEmail, shareModeByEmail) {
   return { ...e, title: REDACTED_TITLE, location: null, calendarName: null, redacted: true };
 }
 
+// The internal conflict id is built from owner emails and lowercased event
+// TITLES, which makes it a perfectly good cache key and a privacy hole the
+// moment it crosses the wire -- redacting the event body while shipping
+// "...:pre-game warm-ups, tactical review & referee check-in" in the id would
+// have leaked exactly what the projection just withheld. Hashed on the way out;
+// still stable, so the client can dedupe and dismiss by id.
+function publicConflictId(id) {
+  return createHash('sha1').update(String(id || '')).digest('hex').slice(0, 16);
+}
+
 function projectConflict(c, viewerEmail, shareModeByEmail) {
-  return { ...c, events: (c.events || []).map(e => projectConflictEvent(e, viewerEmail, shareModeByEmail)) };
+  return {
+    ...c,
+    id: publicConflictId(c.id),
+    events: (c.events || []).map(e => projectConflictEvent(e, viewerEmail, shareModeByEmail)),
+  };
 }
 
 // Routed conflicts are the ones a person is shown. household-overlap is

@@ -4670,6 +4670,7 @@ app.post('/api/households', requireAuth, async (req, res) => {
     await getHouseholdMeta(hid).set('meta', meta);
     await getHouseholdMembers(hid).set(me, member);
     await redis.set(`householdOf:${me}`, hid);
+    await redis.sadd('households', hid);
     res.json({ household: meta, members: [member], membership: member });
   } catch (err) {
     console.error('[household] create failed:', err.message);
@@ -4885,7 +4886,9 @@ app.delete('/api/households/members/:email', requireAuth, async (req, res) => {
       // holding a stale decision-maker and a pile of live invite tokens.
       const invites = await getHouseholdInvites(h.hid).values();
       for (const inv of invites) await redis.del(`householdInviteToken:${inv.token}`);
-      await redis.del(`household:${h.hid}`, `householdMembers:${h.hid}`, `householdInvites:${h.hid}`);
+      await redis.del(`household:${h.hid}`, `householdMembers:${h.hid}`, `householdInvites:${h.hid}`,
+                      `householdPeople:${h.hid}`, `householdConflicts:${h.hid}`);
+      await redis.srem('households', h.hid);
       return res.json({ ok: true, disbanded: true });
     }
     if (h.meta.decisionMaker === target) {
@@ -5023,8 +5026,14 @@ app.post('/api/households/people', requireAuth, async (req, res) => {
     if (!h) return res.status(404).json({ error: 'You are not in a household' });
     const name = String(req.body?.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Name required' });
+    // Whether this person is someone the household looks after, or one of the
+    // adults doing the looking after. Asked explicitly on the linking screen —
+    // guardian-overlap is meaningless without it, and guessing from a roster
+    // that has no child/adult flag would be exactly the silent inference we
+    // ruled out for person matching.
     const person = { id: randomUUID(), name,
                      grade: String(req.body?.grade || '').trim() || null,
+                     isDependent: req.body?.isDependent === undefined ? true : !!req.body.isDependent,
                      createdAt: new Date().toISOString(), createdBy: normEmail(req.user.email) };
     await getHouseholdPeople(h.hid).set(person.id, person);
     // Creating and linking in one step is the common path off the setup screen,
@@ -5058,6 +5067,7 @@ app.patch('/api/households/people/:personId', requireAuth, async (req, res) => {
       person.name = n;
     }
     if (req.body?.grade !== undefined) person.grade = String(req.body.grade).trim() || null;
+    if (req.body?.isDependent !== undefined) person.isDependent = !!req.body.isDependent;
     await people.set(person.id, person);
     res.json(person);
   } catch (err) {
@@ -5173,6 +5183,24 @@ function householdConflictsEnabled(meta) {
 // case is the reason this feature exists, and an all-day event that swallows a
 // working parent's whole day is the highest-value conflict there is — so an
 // all-day event occupies its entire day rather than being skipped.
+// Not every all-day entry occupies a day. "School Closed" genuinely swallows a
+// working parent's day; "Deadline: Submit Claim", "Tuition Auto-Payment $2,850"
+// and "West Wear Spirit Fridays" occupy nobody's time at all. Treating those as
+// 00:00-24:00 busy generated eleven of thirteen conflicts on a real calendar,
+// which is the difference between a feature people read and one they mute.
+//
+// Deliberately narrow: this only ever SUPPRESSES a conflict, it never hides an
+// event from a calendar, so it cannot cause a missed event. It can cause a
+// missed clash, so the matched entries are counted and returned for audit
+// rather than silently dropped.
+const ALLDAY_ADMIN = /\b(deadline|due|submit|submission|rsvp|sign[\s-]?ups?|register|registration|payment|auto[\s-]?pay|autopay|invoice|billing|tuition|reminder|renewal?|apply|application|order|last day to|pay by)\b/i;
+const ALLDAY_DRESSCODE = /\b(spirit (day|week|friday|fridays)|wear|dress[\s-]?up|free dress|pajama|pyjama|crazy (hair|sock)|jersey day)\b/i;
+
+function allDayIsInformational(title) {
+  const t = String(title || '');
+  return ALLDAY_ADMIN.test(t) || ALLDAY_DRESSCODE.test(t);
+}
+
 function busyRange(ev) {
   const day = ev.date;
   if (!day) return null;
@@ -5221,6 +5249,7 @@ function conflictId(kind, blocks) {
 async function householdBusyBlocks(h) {
   const blocks = [];
   const skipped = [];
+  const informationalSkipped = [];
   for (const m of h.members) {
     try {
       const fam = await getUserFamily(m.email).values();
@@ -5230,6 +5259,8 @@ async function householdBusyBlocks(h) {
       for (const ev of view.events) {
         const range = busyRange(ev);
         if (!range) continue;
+        const informational = range.allDay && allDayIsInformational(ev.title);
+        if (informational) { informationalSkipped.push({ owner: m.email, date: ev.date, title: ev.title }); continue; }
         blocks.push({
           owner: m.email, ownerName: m.name, ownerRole: m.role,
           personId: ev.memberId ? (personOf.get(ev.memberId) || null) : null,
@@ -5243,11 +5274,16 @@ async function householdBusyBlocks(h) {
       skipped.push({ email: m.email, reason: err.message });
     }
   }
-  return { blocks, skipped };
+  return { blocks, skipped, informationalSkipped };
 }
 
-function detectHouseholdConflicts(h, blocks) {
+function detectHouseholdConflicts(h, blocks, people = []) {
   const adults = new Set(h.members.filter(m => m.role === 'adult').map(m => m.email));
+  // Only dependents can generate a guardian question. Without this, an adult's
+  // own roster entry makes them simultaneously the child who needs covering and
+  // the only grown-up available — which is how "Lunch with Stellas" became an
+  // interrupt-worthy conflict on a real calendar.
+  const dependents = new Set(people.filter(p => p.isDependent !== false).map(p => p.id));
   const out = [];
   const seen = new Set();
   const push = (kind, severity, parts, extra = {}) => {
@@ -5292,7 +5328,12 @@ function detectHouseholdConflicts(h, blocks) {
 
   // Nobody free to take them. Evaluated per child event rather than pairwise,
   // because the question is not "do two things clash" but "is there anyone left".
-  const childBlocks = blocks.filter(b => b.personId);
+  //
+  // Requires at least two adults. With a single adult the answer is trivially
+  // "nobody is free" every time they have anything at all, which tells a solo
+  // parent nothing they do not already know — that is the single-account
+  // conflict check's job, not this one's.
+  const childBlocks = adults.size >= 2 ? blocks.filter(b => b.personId && dependents.has(b.personId)) : [];
   for (const child of childBlocks) {
     const free = [];
     const busyWith = [];
@@ -5300,7 +5341,7 @@ function detectHouseholdConflicts(h, blocks) {
       const theirs = blocks.filter(b => b.owner === email && !b.personId && rangesOverlap(b.range, child.range));
       if (theirs.length) busyWith.push(theirs[0]); else free.push(email);
     }
-    if (adults.size && !free.length && busyWith.length) {
+    if (!free.length && busyWith.length) {
       push('guardian-overlap', 'interrupt', [child, ...busyWith], { noAdultFree: true });
     }
   }
@@ -5332,8 +5373,9 @@ app.post('/api/households/conflicts/detect', requireAuth, async (req, res) => {
     if (!householdConflictsEnabled(h.meta)) {
       return res.status(403).json({ error: 'Conflict detection is off for this household', enabled: false });
     }
-    const { blocks, skipped } = await householdBusyBlocks(h);
-    const conflicts = detectHouseholdConflicts(h, blocks);
+    const { blocks, skipped, informationalSkipped } = await householdBusyBlocks(h);
+    const people = await getHouseholdPeople(h.hid).values();
+    const conflicts = detectHouseholdConflicts(h, blocks, people);
     const store = getHouseholdConflicts(h.hid);
     // Replace rather than accumulate: a conflict the calendars no longer show
     // must not survive as a ghost.
@@ -5346,6 +5388,7 @@ app.post('/api/households/conflicts/detect', requireAuth, async (req, res) => {
       enabled: true, windowDays: HOUSEHOLD_CONFLICT_DAYS,
       membersRead: h.members.length - skipped.length, skipped,
       blocks: blocks.length,
+      informationalSkipped,
       counts: {
         'same-person': conflicts.filter(c => c.kind === 'same-person').length,
         'guardian-overlap': conflicts.filter(c => c.kind === 'guardian-overlap').length,
@@ -8071,6 +8114,50 @@ app.post('/api/gmail/webhook', async (req, res) => {
 // makes the calendar match it. Silent by design: no email, no review queue.
 // The user's point was that a parent adds a feed and forgets it, so a change
 // months out is noise rather than news.
+// GET /api/cron/household-conflicts — Vercel cron.
+//
+// Detection runs here rather than in a request because it reads every household
+// member's next fortnight across up to twelve calendars each, which is a minute
+// or more of work for a family of four. This is a background surfacing layer,
+// not something that has to react to an individual calendar write, and running
+// it in batch matches how the rest of detection already works.
+app.get('/api/cron/household-conflicts', async (req, res) => {
+  const isVercelCron = req.headers['x-vercel-cron'] === '1';
+  const hasCronSecret = process.env.CRON_SECRET && req.headers['x-cron-secret'] === process.env.CRON_SECRET;
+  if (!isVercelCron && !hasCronSecret) return res.status(401).json({ error: 'Unauthorized' });
+
+  const hids = await redis.smembers('households');
+  const out = { households: 0, skippedDisabled: 0, conflicts: 0, errors: [] };
+
+  for (const hid of hids) {
+    try {
+      const meta = await getHouseholdMeta(hid).get('meta');
+      if (!meta) { await redis.srem('households', hid); continue; }
+      if (!householdConflictsEnabled(meta)) { out.skippedDisabled++; continue; }
+      const members = await getHouseholdMembers(hid).values();
+      if (!members.length) { await redis.srem('households', hid); continue; }
+
+      const h = { hid, meta, members };
+      const { blocks, informationalSkipped } = await householdBusyBlocks(h);
+      const people = await getHouseholdPeople(hid).values();
+      const conflicts = detectHouseholdConflicts(h, blocks, people);
+
+      await redis.del(`householdConflicts:${hid}`);
+      if (conflicts.length) {
+        await getHouseholdConflicts(hid).setMany(conflicts.map(c => [c.id, c]));
+        await redis.expire(`householdConflicts:${hid}`, HOUSEHOLD_CONFLICT_TTL_S);
+      }
+      out.households++;
+      out.conflicts += conflicts.length;
+      console.log(`[household-conflicts] ${hid}: ${conflicts.length} from ${blocks.length} blocks (${informationalSkipped.length} informational all-day ignored)`);
+    } catch (err) {
+      console.error('[household-conflicts] cron failed for', hid, '-', err.message);
+      out.errors.push({ hid, error: err.message });
+    }
+  }
+  res.json({ ok: true, ...out });
+});
+
 app.get('/api/cron/ical', async (req, res) => {
   const isVercelCron = req.headers['x-vercel-cron'] === '1';
   const hasCronSecret = process.env.CRON_SECRET && req.headers['x-cron-secret'] === process.env.CRON_SECRET;

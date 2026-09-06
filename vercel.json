@@ -23,6 +23,10 @@
     {
       "path": "/api/cron/ical",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/household-conflicts",
+      "schedule": "0 4,12,20 * * *"
     }
   ]
 }

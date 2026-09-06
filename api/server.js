@@ -5196,6 +5196,19 @@ function householdConflictsEnabled(meta) {
 const ALLDAY_ADMIN = /\b(deadline|due|submit|submission|rsvp|sign[\s-]?ups?|register|registration|payment|auto[\s-]?pay|autopay|invoice|billing|tuition|reminder|renewal?|apply|application|order|last day to|pay by)\b/i;
 const ALLDAY_DRESSCODE = /\b(spirit (day|week|friday|fridays)|wear|dress[\s-]?up|free dress|pajama|pyjama|crazy (hair|sock)|jersey day)\b/i;
 
+// Subscribed read-only feeds. "Labor Day" from Google's holiday calendar is not
+// a commitment anybody made, and no keyword list will ever catch it -- the tell
+// is the calendar it came from, not the words in the title. Structural, so it
+// holds for every locale's holiday feed rather than the English-language ones.
+// Anchored to the WHOLE calendar name on purpose. A substring match would also
+// swallow a school feed called "SI Athletics - Holidays and Breaks", and school
+// closure days really do occupy a working parent's day.
+const NON_BUSY_CALENDAR = /^(holidays? in .+|holidays|birthdays|week numbers|phases of the moon|contacts)$/i;
+
+function calendarIsNonBusy(calendarName) {
+  return NON_BUSY_CALENDAR.test(String(calendarName || '').trim());
+}
+
 function allDayIsInformational(title) {
   const t = String(title || '');
   return ALLDAY_ADMIN.test(t) || ALLDAY_DRESSCODE.test(t);
@@ -5259,8 +5272,12 @@ async function householdBusyBlocks(h) {
       for (const ev of view.events) {
         const range = busyRange(ev);
         if (!range) continue;
+        if (calendarIsNonBusy(ev.calendarName)) {
+          informationalSkipped.push({ owner: m.email, date: ev.date, title: ev.title, reason: 'non-busy calendar', calendarName: ev.calendarName });
+          continue;
+        }
         const informational = range.allDay && allDayIsInformational(ev.title);
-        if (informational) { informationalSkipped.push({ owner: m.email, date: ev.date, title: ev.title }); continue; }
+        if (informational) { informationalSkipped.push({ owner: m.email, date: ev.date, title: ev.title, reason: 'informational all-day' }); continue; }
         blocks.push({
           owner: m.email, ownerName: m.name, ownerRole: m.role,
           personId: ev.memberId ? (personOf.get(ev.memberId) || null) : null,
@@ -5338,7 +5355,15 @@ function detectHouseholdConflicts(h, blocks, people = []) {
     const free = [];
     const busyWith = [];
     for (const email of adults) {
-      const theirs = blocks.filter(b => b.owner === email && !b.personId && rangesOverlap(b.range, child.range));
+      // A parent standing on the touchline at the child's own practice is
+      // present, not unavailable. Both real guardian-overlap hits on the first
+      // two-adult run were this: the adult counted as "busy" was busy AT the
+      // very event the child supposedly needed covering for.
+      const theirs = blocks.filter(b =>
+        b.owner === email &&
+        !b.personId &&
+        rangesOverlap(b.range, child.range) &&
+        !sameUnderlyingEvent(b, child));
       if (theirs.length) busyWith.push(theirs[0]); else free.push(email);
     }
     if (!free.length && busyWith.length) {

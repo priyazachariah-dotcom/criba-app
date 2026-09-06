@@ -5336,6 +5336,19 @@ function detectHouseholdConflicts(h, blocks, people = []) {
         push('same-person', 'interrupt', [a, b], { crossAccount: a.owner !== b.owner });
         continue;
       }
+      // One parent, two children, one clock. This is deliberately NOT folded
+      // into guardian-overlap: the question is not "did coverage fail" but
+      // "is one adult holding two different kids' commitments at once", which
+      // is worth knowing even when the other parent happens to cover it.
+      //
+      // Same owner only. Across two owners this is just the household dividing
+      // and conquering, which is what a household is for.
+      if (a.owner === b.owner && adults.has(a.owner)
+          && a.personId && b.personId && a.personId !== b.personId
+          && dependents.has(a.personId) && dependents.has(b.personId)) {
+        push('split-attention', 'interrupt', [a, b], { children: [a.aboutName, b.aboutName] });
+        continue;
+      }
       // Two adults, both busy, nobody's child involved. Recorded quietly.
       if (!a.personId && !b.personId && adults.has(a.owner) && adults.has(b.owner) && a.owner !== b.owner) {
         push('household-overlap', 'quiet', [a, b]);

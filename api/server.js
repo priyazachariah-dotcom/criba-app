@@ -4862,6 +4862,15 @@ app.delete('/api/households/members/:email', requireAuth, async (req, res) => {
     }
     await getHouseholdMembers(h.hid).delete(target);
     await redis.del(`householdOf:${target}`);
+    // Their roster keeps its entries, but the links must go — a householdPersonId
+    // pointing into a household they are no longer in is a dangling reference
+    // that later features would silently trust.
+    try {
+      const leaverFam = getUserFamily(target);
+      for (const f of await leaverFam.values()) {
+        if (f.householdPersonId) { f.householdPersonId = null; await leaverFam.set(f.id, f); }
+      }
+    } catch (cErr) { console.error('[household] link cleanup failed for', target, cErr.message); }
     const remaining = h.members.filter(m => m.email !== target);
     if (!remaining.length) {
       // Last one out disbands it, so we never accumulate empty households
@@ -4882,6 +4891,246 @@ app.delete('/api/households/members/:email', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Could not update household membership' });
   }
 });
+
+// ── Household people — linking the same child across two accounts ─────────
+//
+// Each account keeps its own family roster. When two parents join a household,
+// "Arin" in her roster and "Arin" in his are the same child, but nothing in the
+// data says so. A canonical household person is that missing join, and every
+// later feature — conflict detection, the shared narrative — keys off it.
+//
+// Linking is EXPLICIT. A name+grade heuristic produces a suggestion the user
+// confirms; it never writes a link on its own. Mis-merging two children is a
+// low-reversibility, privacy-touching mistake, and the cost of getting it wrong
+// silently is far higher than the cost of one setup screen.
+//
+// You may only link YOUR OWN roster entries. A suggestion can point at a person
+// the other parent created, but one parent can never rewrite the other's
+// roster — so the screen is safe to show both sides of.
+//
+//   householdPeople:{hid} -> hash, {personId} -> canonical person
+//   the link itself lives on the family member as householdPersonId
+
+function getHouseholdPeople(hid) { return new RedisHashMap(`householdPeople:${hid}`); }
+
+function personNameKey(name) {
+  return String(name || '').toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+// Two grades are compatible when they agree, or when at least one side simply
+// hasn't been filled in. They conflict only when both are known and differ —
+// and a conflict is enough to disqualify a suggestion entirely.
+function gradesCompatible(a, b) {
+  const ga = normalizeGrade(a);
+  const gb = normalizeGrade(b);
+  if (ga === null || gb === null) return true;
+  return ga === gb;
+}
+
+function namesMatch(a, b) {
+  const na = personNameKey(a);
+  const nb = personNameKey(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  // First names only, so "Arin" and "Arin Zachariah" are candidates. This is
+  // deliberately loose because it produces a SUGGESTION, not a link.
+  const fa = na.split(' ')[0];
+  const fb = nb.split(' ')[0];
+  return fa.length > 2 && fa === fb;
+}
+
+// Everything the setup screen needs, in one call: the canonical people, every
+// household member's roster (names and grades only — never their events), and
+// pre-filled suggestions for the caller's own unlinked entries.
+async function householdPeopleView(h, myEmail) {
+  const people = await getHouseholdPeople(h.hid).values();
+  const rosters = [];
+  for (const m of h.members) {
+    const fam = await getUserFamily(m.email).values();
+    rosters.push({
+      email: m.email,
+      name: m.name,
+      isMe: m.email === myEmail,
+      members: fam.map(f => ({ id: f.id, name: f.name, grade: f.grade || null,
+                               circle: f.circle || 'family', color: f.color,
+                               householdPersonId: f.householdPersonId || null })),
+    });
+  }
+
+  const mine = rosters.find(r => r.isMe);
+  const takenByMe = new Set((mine?.members || []).map(f => f.householdPersonId).filter(Boolean));
+  const suggestions = [];
+  for (const f of (mine?.members || [])) {
+    if (f.householdPersonId) continue;
+    // An existing canonical person is the best target. Skip any person this
+    // account has already linked to something else — one roster entry per
+    // person per account, or the join stops meaning anything.
+    let best = null;
+    for (const p of people) {
+      if (takenByMe.has(p.id)) continue;
+      if (!namesMatch(p.name, f.name)) continue;
+      if (!gradesCompatible(p.grade, f.grade)) continue;
+      const exact = normalizeGrade(p.grade) !== null && normalizeGrade(p.grade) === normalizeGrade(f.grade);
+      const cand = { personId: p.id, personName: p.name, personGrade: p.grade || null,
+                     basis: exact ? 'name+grade' : 'name', confidence: exact ? 'high' : 'medium' };
+      if (!best || (cand.basis === 'name+grade' && best.basis !== 'name+grade')) best = cand;
+    }
+    if (best) {
+      suggestions.push({ memberId: f.id, memberName: f.name, memberGrade: f.grade || null,
+                         action: 'link', ...best });
+      continue;
+    }
+    // Nothing canonical matches yet. Offer to create one, pre-filled — and say
+    // whether the other parent has a look-alike entry, since that is the case
+    // where confirming is genuinely a judgement call.
+    const echo = rosters.filter(r => !r.isMe)
+      .flatMap(r => r.members.map(x => ({ ...x, owner: r.email })))
+      .find(x => !x.householdPersonId && namesMatch(x.name, f.name) && gradesCompatible(x.grade, f.grade));
+    suggestions.push({
+      memberId: f.id, memberName: f.name, memberGrade: f.grade || null,
+      action: 'create', personId: null,
+      newPerson: { name: f.name, grade: f.grade || null },
+      basis: echo ? 'matches-unlinked-entry' : 'no-match',
+      confidence: echo ? 'medium' : 'low',
+      alsoInRosterOf: echo ? echo.owner : null,
+    });
+  }
+  return { people, rosters, suggestions };
+}
+
+app.get('/api/households/people', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    res.json(await householdPeopleView(h, normEmail(req.user.email)));
+  } catch (err) {
+    console.error('[household-people] view failed:', err.message);
+    res.status(500).json({ error: 'Could not load household people' });
+  }
+});
+
+app.post('/api/households/people', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Name required' });
+    const person = { id: randomUUID(), name,
+                     grade: String(req.body?.grade || '').trim() || null,
+                     createdAt: new Date().toISOString(), createdBy: normEmail(req.user.email) };
+    await getHouseholdPeople(h.hid).set(person.id, person);
+    // Creating and linking in one step is the common path off the setup screen,
+    // but the link is still explicit — the caller had to name a roster entry.
+    if (req.body?.memberId) {
+      const fam = getUserFamily(normEmail(req.user.email));
+      const member = await fam.get(String(req.body.memberId));
+      if (member) {
+        member.householdPersonId = person.id;
+        await fam.set(member.id, member);
+      }
+    }
+    res.json(person);
+  } catch (err) {
+    console.error('[household-people] create failed:', err.message);
+    res.status(500).json({ error: 'Could not create that person' });
+  }
+});
+
+app.patch('/api/households/people/:personId', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h || !h.membership) return res.status(404).json({ error: 'You are not in a household' });
+    if (h.membership.role !== 'adult') return res.status(403).json({ error: 'Only an adult can edit household people' });
+    const people = getHouseholdPeople(h.hid);
+    const person = await people.get(req.params.personId);
+    if (!person) return res.status(404).json({ error: 'No such person' });
+    if (req.body?.name !== undefined) {
+      const n = String(req.body.name).trim();
+      if (!n) return res.status(400).json({ error: 'Name cannot be empty' });
+      person.name = n;
+    }
+    if (req.body?.grade !== undefined) person.grade = String(req.body.grade).trim() || null;
+    await people.set(person.id, person);
+    res.json(person);
+  } catch (err) {
+    console.error('[household-people] update failed:', err.message);
+    res.status(500).json({ error: 'Could not update that person' });
+  }
+});
+
+// Deleting a canonical person must not leave roster entries pointing at it.
+// Sweeping every household roster is the only way to guarantee that, and a
+// household is at most eight accounts, so the cost is trivial.
+app.delete('/api/households/people/:personId', requireAuth, async (req, res) => {
+  try {
+    const h = await loadHousehold(req.user.email);
+    if (!h || !h.membership) return res.status(404).json({ error: 'You are not in a household' });
+    if (h.membership.role !== 'adult') return res.status(403).json({ error: 'Only an adult can remove household people' });
+    const pid = req.params.personId;
+    let unlinked = 0;
+    for (const m of h.members) {
+      const fam = getUserFamily(m.email);
+      for (const f of await fam.values()) {
+        if (f.householdPersonId === pid) {
+          f.householdPersonId = null;
+          await fam.set(f.id, f);
+          unlinked++;
+        }
+      }
+    }
+    await getHouseholdPeople(h.hid).delete(pid);
+    res.json({ ok: true, unlinked });
+  } catch (err) {
+    console.error('[household-people] delete failed:', err.message);
+    res.status(500).json({ error: 'Could not remove that person' });
+  }
+});
+
+// Confirming a suggestion. Only ever touches the caller's own roster.
+app.post('/api/households/people/:personId/link', requireAuth, async (req, res) => {
+  const me = normEmail(req.user.email);
+  try {
+    const h = await loadHousehold(me);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    const person = await getHouseholdPeople(h.hid).get(req.params.personId);
+    if (!person) return res.status(404).json({ error: 'No such person' });
+    const fam = getUserFamily(me);
+    const member = await fam.get(String(req.body?.memberId || ''));
+    if (!member) return res.status(404).json({ error: 'That is not one of your family members' });
+    const mine = await fam.values();
+    const clash = mine.find(f => f.householdPersonId === person.id && f.id !== member.id);
+    if (clash) {
+      return res.status(409).json({ error: `You have already linked ${clash.name} to ${person.name}` });
+    }
+    member.householdPersonId = person.id;
+    await fam.set(member.id, member);
+    res.json({ ok: true, member, person });
+  } catch (err) {
+    console.error('[household-people] link failed:', err.message);
+    res.status(500).json({ error: 'Could not link that person' });
+  }
+});
+
+app.delete('/api/households/people/:personId/link/:memberId', requireAuth, async (req, res) => {
+  const me = normEmail(req.user.email);
+  try {
+    const h = await loadHousehold(me);
+    if (!h) return res.status(404).json({ error: 'You are not in a household' });
+    const fam = getUserFamily(me);
+    const member = await fam.get(req.params.memberId);
+    if (!member) return res.status(404).json({ error: 'That is not one of your family members' });
+    if (member.householdPersonId !== req.params.personId) {
+      return res.status(409).json({ error: 'That family member is not linked to that person' });
+    }
+    member.householdPersonId = null;
+    await fam.set(member.id, member);
+    res.json({ ok: true, member });
+  } catch (err) {
+    console.error('[household-people] unlink failed:', err.message);
+    res.status(500).json({ error: 'Could not unlink that person' });
+  }
+});
+
 
 
 // ── User settings (test mode, etc.) ───────────────────────────────────────

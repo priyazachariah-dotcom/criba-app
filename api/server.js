@@ -5313,7 +5313,7 @@ function detectHouseholdConflicts(h, blocks, people = []) {
       personId: parts[0].personId || null,
       about: parts[0].aboutName || null,
       events: parts.map(b => ({
-        owner: b.owner, ownerName: b.ownerName, title: b.ev.title,
+        owner: b.owner, ownerName: b.ownerName, personId: b.personId || null, title: b.ev.title,
         time: b.ev.is_all_day ? 'all day' : (b.ev.time || null),
         endTime: b.ev.end_time || null, allDay: !!b.ev.is_all_day,
         location: b.ev.location || null, calendarName: b.ev.calendarName || null,
@@ -5386,14 +5386,72 @@ function detectHouseholdConflicts(h, blocks, people = []) {
   return out;
 }
 
+// ── Step 5: privacy projection and routing ────────────────────────────────
+//
+// Detection reads everybody's calendar in full because it has to -- you cannot
+// find a clash in redacted data. What the household MEMBERS see is a different
+// question, and the answer is not "whatever detection saw".
+//
+// The rule: your own events are always yours to see. Somebody else's events are
+// shown in full only if they chose shareMode 'full'. On 'summary' -- the default
+// -- their personal commitments collapse to "Busy", which is all a coverage
+// question actually needs: whether they are free, not what they are doing.
+//
+// The one carve-out is events attributed to a canonical household person. Linking
+// a child into the household is an explicit, confirm-first act (step 3), so those
+// are shared by construction rather than by accident. An adult's private
+// afternoon is not the same kind of fact as "Arin has soccer at 15:30".
+const HOUSEHOLD_ROUTED_KINDS = new Set(['same-person', 'guardian-overlap', 'split-attention']);
+const REDACTED_TITLE = 'Busy';
+
+function projectConflictEvent(e, viewerEmail, shareModeByEmail) {
+  if (!e) return e;
+  if (normEmail(e.owner) === normEmail(viewerEmail)) return e;
+  if (e.personId) return e;                       // shared child, shared by consent
+  if ((shareModeByEmail.get(normEmail(e.owner)) || 'summary') === 'full') return e;
+  return { ...e, title: REDACTED_TITLE, location: null, calendarName: null, redacted: true };
+}
+
+function projectConflict(c, viewerEmail, shareModeByEmail) {
+  return { ...c, events: (c.events || []).map(e => projectConflictEvent(e, viewerEmail, shareModeByEmail)) };
+}
+
+// Routed conflicts are the ones a person is shown. household-overlap is
+// deliberately NOT routed: two adults both busy is the normal texture of a
+// week, not an alert. It is still returned, separately and counted only, so the
+// week-ahead narrative can say "Thursday is the pinch" without the rows
+// nagging about it.
+async function householdConflictsForViewer(email, { from = null, to = null } = {}) {
+  const h = await loadHousehold(email);
+  if (!h || !householdConflictsEnabled(h.meta)) return null;
+  const shareModeByEmail = new Map(h.members.map(m => [normEmail(m.email), normalizeShareMode(m.shareMode)]));
+  const all = await getHouseholdConflicts(h.hid).values();
+  const inWindow = all.filter(c => {
+    if (from && String(c.date) < from) return false;
+    if (to && String(c.date) > to) return false;
+    return true;
+  });
+  const routed = inWindow
+    .filter(c => HOUSEHOLD_ROUTED_KINDS.has(c.kind))
+    .map(c => projectConflict(c, email, shareModeByEmail))
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const quiet = inWindow
+    .filter(c => !HOUSEHOLD_ROUTED_KINDS.has(c.kind))
+    .map(c => projectConflict(c, email, shareModeByEmail));
+  return { householdId: h.hid, householdName: h.meta?.name || null, routed, quiet };
+}
+
 app.get('/api/households/conflicts', requireAuth, async (req, res) => {
   try {
     const h = await loadHousehold(req.user.email);
     if (!h) return res.status(404).json({ error: 'You are not in a household' });
     const stored = await getHouseholdConflicts(h.hid).values();
+    const shareModeByEmail = new Map(h.members.map(m => [normEmail(m.email), normalizeShareMode(m.shareMode)]));
     res.json({
       enabled: householdConflictsEnabled(h.meta),
-      conflicts: stored.sort((a, b) => String(a.date).localeCompare(String(b.date))),
+      conflicts: stored
+        .map(c => projectConflict(c, req.user.email, shareModeByEmail))
+        .sort((a, b) => String(a.date).localeCompare(String(b.date))),
     });
   } catch (err) {
     console.error('[household-conflicts] list failed:', err.message);
@@ -5430,9 +5488,13 @@ app.post('/api/households/conflicts/detect', requireAuth, async (req, res) => {
       counts: {
         'same-person': conflicts.filter(c => c.kind === 'same-person').length,
         'guardian-overlap': conflicts.filter(c => c.kind === 'guardian-overlap').length,
+        'split-attention': conflicts.filter(c => c.kind === 'split-attention').length,
         'household-overlap': conflicts.filter(c => c.kind === 'household-overlap').length,
       },
-      conflicts,
+      // Projected, not raw. Running detection does not entitle you to read your
+      // household's calendars in the clear.
+      conflicts: conflicts.map(c => projectConflict(c, req.user.email,
+        new Map(h.members.map(m => [normEmail(m.email), normalizeShareMode(m.shareMode)])))),
     });
   } catch (err) {
     console.error('[household-conflicts] detect failed:', err.message);
@@ -5661,7 +5723,25 @@ app.get('/api/ahead', requireAuth, async (req, res) => {
     ? normalizeAheadDays(req.query.days)
     : normalizeAheadDays(await settings.get('aheadDays'));
   try {
-    res.json(await buildAheadView(req.user, days));
+    const view = await buildAheadView(req.user, days);
+    // Read-only join onto the view. Household conflicts are computed by the cron,
+    // never here -- a page load must not fan out into every member's calendar.
+    let household = null;
+    try {
+      const dates = (view.events || []).map(e => e.date).filter(Boolean).sort();
+      household = await householdConflictsForViewer(req.user.email, {
+        from: dates[0] || null, to: dates[dates.length - 1] || null,
+      });
+    } catch (err) {
+      // A household problem must never take down someone's calendar view.
+      console.error('[ahead] household conflicts unavailable:', err.message);
+    }
+    res.json({
+      ...view,
+      household: household
+        ? { name: household.householdName, conflicts: household.routed, quietCount: household.quiet.length }
+        : null,
+    });
   } catch (err) {
     console.error('[ahead] failed:', err.message);
     res.status(502).json({ error: 'Could not read your calendar: ' + err.message });
@@ -5702,9 +5782,35 @@ function aheadSummaryPayload(view) {
   }));
 }
 
+// The narrative is the ONLY place household-overlap earns its keep. Two adults
+// both busy on Thursday is not worth an alert, but it is exactly what makes
+// Thursday the pinch, and that is a sentence worth writing.
+function householdSummaryLines(household) {
+  if (!household) return '';
+  const routed = (household.routed || []).map(c => ({
+    date: c.date, what: c.kind, who: c.about || null,
+    events: (c.events || []).map(e => `${e.ownerName}: ${e.title}${e.time ? ' ' + e.time : ''}`),
+  }));
+  const byDate = {};
+  for (const c of (household.quiet || [])) byDate[c.date] = (byDate[c.date] || 0) + 1;
+  const pinch = Object.entries(byDate).sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([d, n]) => `${d}: ${n} overlapping commitments between the adults`);
+  let out = '';
+  if (routed.length) out += `\n\nHousehold clashes that need a decision: ${JSON.stringify(routed)}`;
+  if (pinch.length) out += `\n\nDays where both adults are stretched: ${JSON.stringify(pinch)}. Use this only to judge which day is heavy — do not list these as clashes.`;
+  return out;
+}
+
 async function buildAheadSummary(user) {
   const view = await buildAheadView(user, AHEAD_SUMMARY_DAYS);
   const events = aheadSummaryPayload(view);
+  let household = null;
+  try {
+    const dates = (view.events || []).map(e => e.date).filter(Boolean).sort();
+    household = await householdConflictsForViewer(user.email, { from: dates[0] || null, to: dates[dates.length - 1] || null });
+  } catch (err) {
+    console.error('[ahead-summary] household conflicts unavailable:', err.message);
+  }
   if (!events.length) {
     return { text: 'Nothing on the calendar for the next seven days.', events: 0, generatedAt: new Date().toISOString() };
   }
@@ -5714,7 +5820,9 @@ async function buildAheadSummary(user) {
 Here are their next seven days, straight from their calendar:
 ${JSON.stringify(events)}
 
-${view.conflicts.length ? `These overlap: ${JSON.stringify(view.conflicts.map(c => ({ date: c.date, a: c.a.title, b: c.b.title })))}` : 'Nothing overlaps.'}
+${view.conflicts.length ? `These overlap: ${JSON.stringify(view.conflicts.map(c => ({ date: c.date, a: c.a.title, b: c.b.title })))}` : 'Nothing overlaps.'}${householdSummaryLines(household)}
+
+Some entries may read "Busy" with no detail. That is another household member's private commitment, deliberately withheld. Treat it as "they are not free" and never guess what it is.
 
 Write the briefing as plain text, no markdown, no headings, no bullets characters other than "- ". Structure it as:
 1. One or two sentences on the shape of the week — which days are heavy, which are clear.
@@ -5733,6 +5841,7 @@ Be concrete and name real events and days. Never invent an event, a time, a plac
     text: getResponseText(response).trim(),
     events: events.length,
     conflicts: view.conflicts.length,
+    householdConflicts: household ? household.routed.length : 0,
     generatedAt: new Date().toISOString(),
   };
 }

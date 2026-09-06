@@ -291,6 +291,47 @@ async function spendBudgetState(email) {
   return { spent, cap: DAILY_SPEND_CAP_USD, exceeded: spent >= DAILY_SPEND_CAP_USD };
 }
 
+// Gap buckets for the extraction prompt cache. 5m and 60m are boundaries on
+// purpose: one is the TTL we request today, the other is the TTL we are
+// deciding whether to move to. Everything else is shape.
+const GAP_BUCKETS = [
+  [60, 'under_1m'],
+  [300, '1m_5m'],
+  [900, '5m_15m'],
+  [1800, '15m_30m'],
+  [3600, '30m_60m'],
+  [7200, '1h_2h'],
+  [21600, '2h_6h'],
+  [Infinity, 'over_6h'],
+];
+const GAP_UNDER_5M = ['under_1m', '1m_5m'];
+const GAP_UNDER_60M = [...GAP_UNDER_5M, '5m_15m', '15m_30m', '30m_60m'];
+
+function gapBucket(seconds) {
+  for (const [limit, name] of GAP_BUCKETS) if (seconds < limit) return name;
+  return 'over_6h';
+}
+
+// The hit rate cannot answer whether a longer TTL would pay, because it is
+// pinned by how many emails arrive per burst rather than by how far apart the
+// bursts are. This records the thing that actually decides it.
+//
+// Deliberately fleet-wide, not per user: the prompt cache is scoped to the API
+// key, so what warms a call is the last extraction ANYWHERE, not the last one
+// by the same person. Keyed per user it would measure the wrong quantity.
+async function recordExtractionGap(startedAtMs) {
+  const prev = Number(await redis.getset('extractLastCallMs', String(startedAtMs))) || 0;
+  await redis.expire('extractLastCallMs', 7 * 24 * 60 * 60);
+  if (!prev) return; // first call we have ever seen: no previous call to measure from
+  // Parallel calls in one burst can land out of order; a negative gap is a zero
+  // gap, not a bucket of its own.
+  const gapSec = Math.max(0, (startedAtMs - prev) / 1000);
+  const key = `extractGaps:${new Date().toISOString().slice(0, 10)}`;
+  await redis.hincrby(key, gapBucket(gapSec), 1);
+  await redis.hincrby(key, 'total', 1);
+  await redis.expire(key, 14 * 24 * 60 * 60);
+}
+
 // The only path to Claude. Every call site goes through here so that adding a
 // new feature cannot accidentally create an unmetered one.
 async function callClaude(email, params, label = 'call') {
@@ -299,7 +340,13 @@ async function callClaude(email, params, label = 'call') {
     console.error(`[spend] BLOCKED ${label} for ${email} — $${spent.toFixed(2)} of $${DAILY_SPEND_CAP_USD} used today`);
     throw new Error(`${SPEND_CAP_ERROR}: $${spent.toFixed(2)} of $${DAILY_SPEND_CAP_USD.toFixed(2)} daily limit used`);
   }
+  const startedAt = Date.now();
   const response = await anthropic.messages.create(params);
+  if (label === 'gmail-extract') {
+    // Measurement must never cost a user their extraction, same rule as the meter.
+    try { await recordExtractionGap(startedAt); }
+    catch (gapErr) { console.error('[gaps] failed to record extraction gap:', gapErr.message); }
+  }
   try {
     const micro = costMicroUsd(params.model, response?.usage);
     if (micro > 0) {
@@ -7994,6 +8041,34 @@ app.post('/api/admin/repair-watch', requireAuth, async (req, res) => {
     lastWebhookAt: await redis.get(`lastWebhookAt:${target}`) || null,
     note: 'Watch registered. Delivery is confirmed only once lastWebhookAt is set.',
   });
+});
+
+// GET /api/admin/extraction-gaps — how far apart extraction calls actually land.
+// "underCurrentTtl" is the share that the 5m cache can already serve warm;
+// "underProposedTtl" is the share a 1h cache would serve warm. The difference
+// between those two numbers is the entire case for or against the bump.
+app.get('/api/admin/extraction-gaps', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const days = Math.min(14, Math.max(1, Number(req.query.days) || 7));
+  const data = [];
+  for (let i = 0; i < days; i++) {
+    const date = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    const raw = (await redis.hgetall(`extractGaps:${date}`)) || {};
+    const total = Number(raw.total || 0);
+    if (!total) continue;
+    const buckets = {};
+    for (const [, name] of GAP_BUCKETS) buckets[name] = Number(raw[name] || 0);
+    const share = names => Number(
+      (100 * names.reduce((n, k) => n + (buckets[k] || 0), 0) / total).toFixed(1));
+    data.push({
+      date, total, buckets,
+      underCurrentTtl: share(GAP_UNDER_5M),
+      underProposedTtl: share(GAP_UNDER_60M),
+    });
+  }
+  res.json({ days, data });
 });
 
 app.get('/api/admin/spend', requireAuth, async (req, res) => {

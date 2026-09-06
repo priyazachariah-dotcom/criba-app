@@ -1240,8 +1240,10 @@ function buildEventDescription(ev) {
 }
 
 async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts = {}) {
+  // Scopes the dedup caches to this account. Every caller must supply it.
+  const ownerEmail = opts.email || null;
   if (!opts.skipDuplicateCheck) {
-    const dup = await findExistingOnAnyCalendar(calendarApi, targetCalId, ev);
+    const dup = await findExistingOnAnyCalendar(ownerEmail, calendarApi, targetCalId, ev);
     if (dup) {
       ev.duplicate_of = dup;
       console.log(`[calendar-dedup] SKIP "${ev.title}" on ${ev.date} — already on "${dup.calendarName}" as "${dup.title}"`);
@@ -1267,7 +1269,7 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
   // per write is a cheap price for not putting a second copy on a real
   // calendar, and this is the only moment the answer is authoritative.
   if (!opts.skipDuplicateCheck) {
-    const fresh = await eventsOnDate(calendarApi, targetCalId, ev.date, { fresh: true });
+    const fresh = await eventsOnDate(ownerEmail, calendarApi, targetCalId, ev.date, { fresh: true });
     const late = findCalendarDuplicate(fresh, ev.title, ev.date, ev.time || '');
     if (late) {
       ev.duplicate_of = { ...late, calendarId: targetCalId, calendarName: targetCalId };
@@ -1305,7 +1307,7 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
     } catch (gErr) { console.error('[calendar-dedup] write-guard record failed:', gErr.message); }
   }
   // Make this write visible to the next check in this process immediately.
-  noteWrittenToCache(targetCalId, ev.date, {
+  noteWrittenToCache(ownerEmail, targetCalId, ev.date, {
     id: result.data.id,
     recurringEventId: null,
     title: ev.title,
@@ -2687,7 +2689,7 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
       // match — the matcher requires the stored date and a loose title match —
       // so any edit fell through to insert and put a SECOND copy on the
       // calendar. Renaming an event is not the same as creating one.
-      const dup = await findExistingOnAnyCalendar(calendar, targetCalId, {
+      const dup = await findExistingOnAnyCalendar(req.user.email, calendar, targetCalId, {
         title: event.title || calEventResource.summary,
         date: event.date || date,
         time: event.time || '',
@@ -2830,7 +2832,7 @@ app.post('/api/events/update', requireAuth, async (req, res) => {
     let recreateCalId = null;
     if (!event.calEventId) {
       const targetCalId = await resolveTargetCalendar(req.user.email);
-      const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
+      const found = await findExistingOnAnyCalendar(req.user.email, calendar, targetCalId, {
         title: event.title, date: event.date, time: event.time || '',
       });
       if (!found?.id) {
@@ -2963,7 +2965,7 @@ app.post('/api/events/dismiss', requireAuth, async (req, res) => {
       const auth = await getUserOAuthClient(req.user);
       const calendar = google.calendar({ version: 'v3', auth });
       const targetCalId = await resolveTargetCalendar(req.user.email);
-      const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
+      const found = await findExistingOnAnyCalendar(req.user.email, calendar, targetCalId, {
         title: event.title, date: event.date, time: event.time || '',
       });
       if (found?.id) {
@@ -3195,7 +3197,7 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
     // calendar. Deleting must mean deleting.
     if (!event.calEventId) {
       const targetCalId = await resolveTargetCalendar(req.user.email);
-      const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
+      const found = await findExistingOnAnyCalendar(req.user.email, calendar, targetCalId, {
         title: event.title, date: event.date, time: event.time || '',
       });
       if (!found?.id) {
@@ -3709,7 +3711,7 @@ async function writeCalendarEvents(user, calendarId, eventIds, { auth: presetAut
       // duplicate check that every other write path goes through. Re-importing
       // a feed, or a sync that could not match uids, therefore wrote a second
       // copy of every game. Adopt what is already there instead of adding to it.
-      const already = await findExistingOnAnyCalendar(calendar, targetCalId, {
+      const already = await findExistingOnAnyCalendar(user.email, calendar, targetCalId, {
         title: ev.title, date: ev.date, time: ev.time || '',
       });
       if (already?.id) {
@@ -3724,7 +3726,7 @@ async function writeCalendarEvents(user, calendarId, eventIds, { auth: presetAut
       }
       const resource = buildGoogleResource(ev, { colorId, tz });
       const created = await calendar.events.insert({ calendarId: targetCalId, sendUpdates: 'none', resource });
-      noteWrittenToCache(targetCalId, ev.date, {
+      noteWrittenToCache(user.email, targetCalId, ev.date, {
         id: created.data.id, recurringEventId: null, title: ev.title, date: ev.date,
         time: ev.time || '', end_time: ev.end_time || '', is_all_day: !ev.time,
       });
@@ -3825,7 +3827,7 @@ async function syncIcalCalendar(userEmail, cal) {
         // it genuinely cannot be found, leave the fingerprint alone so the next
         // sync retries instead of declaring victory.
         if (!ev.calEventId) {
-          const found = await findExistingOnAnyCalendar(calendar, targetCalId, {
+          const found = await findExistingOnAnyCalendar(userEmail, calendar, targetCalId, {
             title: priorTitle, date: priorDate, time: priorTime,
           });
           if (found?.id) {
@@ -4235,7 +4237,7 @@ app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {
     if (ev.calendar_id === calendarId && ev.status === 'draft') {
       if (selectedCategories.includes(ev.category)) {
         try {
-          const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId, { timezone: catTz });
+          const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId, { timezone: catTz, email: req.user.email });
           if (!calEventId) {
             // Already on a calendar — nothing written, so don't claim it was.
             ev.status = 'duplicate'; ev.reviewed = false;
@@ -4400,7 +4402,7 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
       // duplicate check every other write path performs — so approving the
       // same group twice put two of everything on the calendar. If it is
       // already there, adopt the existing event rather than adding a rival.
-      const already = await findExistingOnAnyCalendar(calendar, targetCalId, {
+      const already = await findExistingOnAnyCalendar(req.user.email, calendar, targetCalId, {
         title: ev.title, date: ev.date, time: ev.time || '',
       });
       if (already?.id) {
@@ -4414,7 +4416,7 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
         continue;
       }
       const calEvent = await calendar.events.insert({ calendarId: targetCalId, sendUpdates, resource });
-      noteWrittenToCache(targetCalId, ev.date, {
+      noteWrittenToCache(req.user.email, targetCalId, ev.date, {
         id: calEvent.data.id, recurringEventId: null, title: ev.title, date: ev.date,
         time: ev.time || '', end_time: ev.end_time || '', is_all_day: !ev.time,
       });
@@ -4459,7 +4461,7 @@ app.post('/api/calendars/group-review', requireAuth, async (req, res) => {
   for (const [id, ev] of groupEvents) {
     try {
       if (!ev.date) throw new Error('Missing date');
-      const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId, { timezone: groupTz });
+      const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId, { timezone: groupTz, email: req.user.email });
       if (!calEventId) {
         ev.status = 'duplicate'; ev.reviewed = false;
         ev.duplicate_of_calendar = true;
@@ -4746,7 +4748,7 @@ async function buildAheadView(user, days) {
   const timeMax = new Date(now.getTime() + days * 86400000);
   // Capped: a household with forty subscribed feeds should not turn one screen
   // into forty API calls on every visit.
-  const cals = (await visibleCalendars(calendarApi, targetCalId)).slice(0, 12);
+  const cals = (await visibleCalendars(user.email, calendarApi, targetCalId)).slice(0, 12);
   const raw = (await Promise.all(cals.map(c => fetchCalendarWindow(calendarApi, c, now, timeMax)))).flat();
 
   const members = await getUserFamily(user.email).values();
@@ -5827,16 +5829,31 @@ async function fetchExistingCalendarEvents(calendarApi, calendarId, dates) {
 // need the same answer. Falls back to the write target alone if the user's
 // session predates the calendarlist scope.
 const _calListCache = new Map();
-async function visibleCalendars(calendarApi, targetCalId) {
-  const key = targetCalId || 'primary';
+
+// Cache keys MUST be scoped by account. targetCalId is the literal string
+// 'primary' for every user who has not set a test calendar, so a key built from
+// it alone would serve one household member's calendar list — and, worse, one
+// member's event contents — to another from a warm serverless instance.
+// A missing owner email is a bug, but it must never block a write: fall back to
+// a per-call unique key so the entry is simply never reused, and log loudly.
+let _cacheScopeSeq = 0;
+function cacheScope(ownerEmail, what) {
+  if (ownerEmail) return String(ownerEmail).toLowerCase();
+  console.error(`[calendar-dedup] BUG: ${what} called without an owner email — bypassing cache. Fix the call site.`);
+  return `__unscoped:${++_cacheScopeSeq}`;
+}
+
+async function visibleCalendars(ownerEmail, calendarApi, targetCalId) {
+  const key = `${cacheScope(ownerEmail, 'visibleCalendars')}|${targetCalId || 'primary'}`;
   const hit = _calListCache.get(key);
   if (hit && Date.now() - hit.at < 300000) return hit.cals;
-  let cals = [{ id: key, name: key }];
+  const targetId = targetCalId || 'primary';
+  let cals = [{ id: targetId, name: targetId }];
   try {
     const list = await calendarApi.calendarList.list({ maxResults: 250, fields: 'items(id,summary)' });
     const items = (list.data.items || []).map(c => ({ id: c.id, name: c.summary || c.id }));
     if (items.length) {
-      cals = items.some(c => c.id === key) ? items : [{ id: key, name: key }, ...items];
+      cals = items.some(c => c.id === targetId) ? items : [{ id: targetId, name: targetId }, ...items];
     }
   } catch (err) {
     console.error('[calendar-dedup] calendarList.list failed, using target only:', err.message);
@@ -5848,8 +5865,8 @@ async function visibleCalendars(calendarApi, targetCalId) {
 // Per-invocation cache of one calendar's events on one date. Without it, a scan
 // writing ten events across eight calendars would make eighty events.list calls.
 const _calDayCache = new Map();
-async function eventsOnDate(calendarApi, calId, date, opts = {}) {
-  const key = `${calId}|${date}`;
+async function eventsOnDate(ownerEmail, calendarApi, calId, date, opts = {}) {
+  const key = `${cacheScope(ownerEmail, 'eventsOnDate')}|${calId}|${date}`;
   if (!opts.fresh) {
     const hit = _calDayCache.get(key);
     if (hit && Date.now() - hit.at < 60000) return hit.events;
@@ -5862,20 +5879,20 @@ async function eventsOnDate(calendarApi, calId, date, opts = {}) {
 // A write we just made must be visible to the very next duplicate check.
 // Without this, a run writing two extractions of the same event moments apart
 // checked a cache captured before either existed and wrote both.
-function noteWrittenToCache(calId, date, written) {
-  const key = `${calId}|${date}`;
+function noteWrittenToCache(ownerEmail, calId, date, written) {
+  const key = `${cacheScope(ownerEmail, 'noteWrittenToCache')}|${calId}|${date}`;
   const hit = _calDayCache.get(key);
   if (hit) hit.events = [...hit.events, written];
   else _calDayCache.set(key, { events: [written], at: Date.now() });
 }
 
 // Is this event already on ANY calendar the user can see?
-async function findExistingOnAnyCalendar(calendarApi, targetCalId, ev) {
+async function findExistingOnAnyCalendar(ownerEmail, calendarApi, targetCalId, ev) {
   if (!ev?.date || !ev?.title) return null;
   try {
-    const cals = await visibleCalendars(calendarApi, targetCalId);
+    const cals = await visibleCalendars(ownerEmail, calendarApi, targetCalId);
     for (const cal of cals) {
-      const existing = await eventsOnDate(calendarApi, cal.id, ev.date);
+      const existing = await eventsOnDate(ownerEmail, calendarApi, cal.id, ev.date);
       const dup = findCalendarDuplicate(existing, ev.title, ev.date, ev.time || '');
       if (dup) return { ...dup, calendarId: cal.id, calendarName: cal.name };
     }
@@ -7830,7 +7847,7 @@ app.post('/api/calendar/reset', requireAuth, async (req, res) => {
   // and are skipped entirely rather than attempted and failed.
   let cals;
   try {
-    cals = await visibleCalendars(calendar, await resolveTargetCalendar(req.user.email));
+    cals = await visibleCalendars(req.user.email, calendar, await resolveTargetCalendar(req.user.email));
   } catch (err) {
     return res.status(502).json({ error: 'could not list calendars', detail: err.message });
   }

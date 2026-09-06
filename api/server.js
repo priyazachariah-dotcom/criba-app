@@ -5526,7 +5526,8 @@ app.get('/api/settings', requireAuth, async (req, res) => {
   const testCalendarId = (await settings.get('testCalendarId')) || null;
   const partnerEmail = (await settings.get('partnerEmail')) || null;
   const aheadDays = normalizeAheadDays(await settings.get('aheadDays'));
-  res.json({ testCalendarId, partnerEmail, aheadDays, recipients: await getSavedRecipients(req.user.email) });
+  const aheadView = aheadViewFrom(await settings.get('aheadView'), await settings.get('aheadDays'));
+  res.json({ testCalendarId, partnerEmail, aheadDays, aheadView, recipients: await getSavedRecipients(req.user.email) });
 });
 
 // ── What's Ahead ──────────────────────────────────────────────────────────
@@ -5547,6 +5548,54 @@ const AHEAD_DEFAULT_DAYS = 14;
 function normalizeAheadDays(raw) {
   const n = parseInt(raw, 10);
   return AHEAD_WINDOWS.includes(n) ? n : AHEAD_DEFAULT_DAYS;
+}
+
+// Four arbitrary windows crossed with two groupings gave eight screens, none of
+// which answered a question anybody actually asks. Two do: "what is happening
+// tomorrow, per person" and "what does the week look like". Both are served
+// from one week-long read, so switching between them costs nothing.
+const AHEAD_VIEWS = ['tomorrow', 'week'];
+const AHEAD_VIEW_DEFAULT = 'week';
+// Today plus seven, so tomorrow is always present and the week view always has
+// a full week to lay out no matter which day it is read on.
+const AHEAD_VIEW_DAYS = 8;
+
+// Both anchors are computed server-side, in the user's zone, and handed to the
+// client. "Tomorrow" is a calendar-day question and the browser's idea of the
+// day is not necessarily the user's -- a phone left on airport time would
+// quietly show the wrong day.
+function isoDateInZone(d, timezone) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  } catch {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+function aheadAnchors(timezone) {
+  const now = new Date();
+  const today = isoDateInZone(now, timezone);
+  const tomorrow = isoDateInZone(new Date(now.getTime() + 86400000), timezone);
+  // Monday-start. getUTCDay on a noon-anchored date-only string is safe: the
+  // string is already the local calendar date, so no zone shift can move it.
+  const t = new Date(`${today}T12:00:00Z`);
+  const dow = (t.getUTCDay() + 6) % 7;              // Mon=0 ... Sun=6
+  const weekStart = new Date(t.getTime() - dow * 86400000).toISOString().slice(0, 10);
+  return { today, tomorrow, weekStart };
+}
+
+function normalizeAheadView(raw) {
+  const v = String(raw || '').toLowerCase().trim();
+  return AHEAD_VIEWS.includes(v) ? v : AHEAD_VIEW_DEFAULT;
+}
+
+// Nobody re-picks a setting they already picked. The old aheadDays value is a
+// statement of intent -- "24h" meant a person wanted the short view -- so it is
+// read forward once rather than silently reset to the default.
+function aheadViewFrom(savedView, savedDays) {
+  if (savedView) return normalizeAheadView(savedView);
+  const n = parseInt(savedDays, 10);
+  return n === 1 ? 'tomorrow' : AHEAD_VIEW_DEFAULT;
 }
 
 // Criba writes a genuinely useful description onto every event it adds — the
@@ -5752,6 +5801,7 @@ app.get('/api/ahead', requireAuth, async (req, res) => {
     }
     res.json({
       ...view,
+      ...aheadAnchors(view.timezone),
       household: household
         ? { name: household.householdName, conflicts: household.routed, quietCount: household.quiet.length }
         : null,
@@ -5912,6 +5962,7 @@ app.patch('/api/settings', requireAuth, async (req, res) => {
   // Purely a display preference for the What's Ahead screen. Nothing about
   // extraction or calendar writing reads it.
   if (aheadDays !== undefined) await settings.set('aheadDays', normalizeAheadDays(aheadDays));
+  if (req.body?.aheadView !== undefined) await settings.set('aheadView', normalizeAheadView(req.body.aheadView));
   if (testCalendarId === null || testCalendarId === '') {
     await settings.delete('testCalendarId');
   } else if (typeof testCalendarId === 'string') {

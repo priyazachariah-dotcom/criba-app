@@ -1003,6 +1003,8 @@
   .ahead-win:hover, .ahead-mode:hover, .ahead-refresh:hover { border-color: var(--ink); }
   .ahead-refresh { margin-left: auto; }
   .ahead-meta { color: var(--text2); font-size: 12px; margin-bottom: 14px; }
+  .ahead-week { margin-bottom: 6px; }
+  .ahead-week-head { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--text2); border-bottom: 1px solid var(--line); padding-bottom: 5px; margin: 18px 0 4px; }
   .ahead-group { margin-bottom: 30px; }
   .ahead-group-head { display: flex; align-items: center; gap: 9px; font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--ink); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); }
   .ahead-group-count { margin-left: auto; color: var(--text2); font-family: 'Inter', sans-serif; font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; }
@@ -1236,10 +1238,9 @@
       <div class="page-desc">Live from your Google Calendar — whatever it says right now, including anything you changed by hand. Nothing here can be edited; that stays in Edit Calendar Events.</div>
     </div>
     <div class="ahead-bar">
-      <div class="ahead-windows" id="ahead-windows"></div>
-      <div class="ahead-modes">
-        <button class="ahead-mode on" id="ahead-mode-person" onclick="setAheadMode('person')">By person</button>
-        <button class="ahead-mode" id="ahead-mode-day" onclick="setAheadMode('day')">By day</button>
+      <div class="ahead-modes" id="ahead-views">
+        <button class="ahead-mode" id="ahead-view-tomorrow" onclick="setAheadView('tomorrow')">Tomorrow, per person</button>
+        <button class="ahead-mode on" id="ahead-view-week" onclick="setAheadView('week')">This week</button>
       </div>
       <button class="ahead-refresh" onclick="loadAhead(true)" title="Read the calendar again">Refresh</button>
     </div>
@@ -2365,9 +2366,9 @@ async function loadTestModeSettings() {
   try {
     const res = await fetch('/api/settings');
     if (!res.ok) return;
-    const { testCalendarId, recipients, aheadDays: savedAheadDays } = await res.json();
+    const { testCalendarId, recipients, aheadView: savedAheadView } = await res.json();
     applyTestModeUI(testCalendarId || '');
-    if ([7, 14, 30].includes(savedAheadDays)) { aheadDays = savedAheadDays; renderAheadControls(); }
+    if (['tomorrow', 'week'].includes(savedAheadView)) { aheadView = savedAheadView; renderAheadControls(); }
     savedRecipients = Array.isArray(recipients) ? recipients : [];
     renderRecipients();
     // Cards built before this resolved have no tick boxes on them yet.
@@ -3062,11 +3063,41 @@ function pageIsActive(page) {
 // this screen, and no invite or sharing control either. It answers one
 // question — what is coming up, and does any of it collide.
 
-const AHEAD_WINDOW_LABELS = { 1: 'Next 24h', 7: '1 week', 14: '2 weeks', 30: '1 month' };
+// One read, two readings. Both views come out of the same eight-day fetch, so
+// switching is instant and the conflict set is identical either way -- a clash
+// cannot exist in one view and vanish in the other.
+const AHEAD_VIEW_DAYS = 8;
 let aheadData = null;
-let aheadDays = 14;
-let aheadMode = 'person';
+let aheadView = 'week';
 let _aheadLoading = false;
+
+// Per-person grouping answers "who has what". With one person on the roster and
+// nobody else in the household, that question has no content, so the control is
+// not shown rather than shown-and-useless.
+function aheadIsSolo() {
+  if (!aheadData) return false;
+  if (aheadData.household) return false;
+  return (aheadData.people || []).length <= 1;
+}
+
+function isoAddDays(iso, n) {
+  return new Date(new Date(`${iso}T12:00:00Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
+}
+
+// Monday-start, matching the server's anchor.
+function isoWeekStart(iso) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  return new Date(d.getTime() - ((d.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10);
+}
+
+function weekLabel(ws) {
+  const here = aheadData && aheadData.weekStart;
+  if (ws === here) return 'This week';
+  if (here && ws === isoAddDays(here, 7)) return 'Next week';
+  const a = new Date(`${ws}T12:00:00Z`), b = new Date(`${isoAddDays(ws, 6)}T12:00:00Z`);
+  const f = d => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  return `${f(a)} – ${f(b)}`;
+}
 
 function aheadDayLabel(iso) {
   // Parsed as local noon so a date-only string cannot slide to the previous day.
@@ -3095,7 +3126,7 @@ async function loadAhead(force) {
   if (body && (force || !aheadData)) body.innerHTML = '<div class="ahead-empty">Reading your calendar…</div>';
   renderAheadControls();
   try {
-    const res = await fetch(`/api/ahead?days=${aheadDays}`);
+    const res = await fetch(`/api/ahead?days=${AHEAD_VIEW_DAYS}`);
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Could not read your calendar');
     aheadData = await res.json();
     renderAhead();
@@ -3154,35 +3185,38 @@ function toggleAheadDetails(btn) {
 }
 
 function renderAheadControls() {
-  const el = document.getElementById('ahead-windows');
-  if (el) {
-    el.innerHTML = [1, 7, 14, 30].map(d =>
-      `<button class="ahead-win ${d === aheadDays ? 'on' : ''}" onclick="setAheadDays(${d})">${AHEAD_WINDOW_LABELS[d]}</button>`).join('');
+  const solo = aheadIsSolo();
+  const t = document.getElementById('ahead-view-tomorrow');
+  const w = document.getElementById('ahead-view-week');
+  if (t) {
+    t.style.display = solo ? 'none' : '';
+    t.classList.toggle('on', !solo && aheadView === 'tomorrow');
   }
-  const p = document.getElementById('ahead-mode-person');
-  const dm = document.getElementById('ahead-mode-day');
-  if (p) p.classList.toggle('on', aheadMode === 'person');
-  if (dm) dm.classList.toggle('on', aheadMode === 'day');
+  if (w) w.classList.toggle('on', solo || aheadView === 'week');
 }
 
-// The window governs this screen and nothing else. Saved so it survives a
-// reload, but it never reaches the scanner — what gets extracted and added is
-// uncapped and stays that way.
-async function setAheadDays(d) {
-  if (d === aheadDays) return;
-  aheadDays = d;
+// The view governs this screen and nothing else. Saved so it survives a reload,
+// but it never reaches the scanner — what gets extracted and added is uncapped
+// and stays that way. No refetch: both views are already in hand.
+async function setAheadView(v) {
+  if (v === aheadView) return;
+  aheadView = v;
   renderAheadControls();
-  loadAhead(true);
+  renderAhead();
   try {
     await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ aheadDays: d }) });
+      body: JSON.stringify({ aheadView: v }) });
   } catch {}
 }
 
-function setAheadMode(mode) {
-  aheadMode = mode;
-  renderAheadControls();
-  renderAhead();
+// A redacted event reads as "Busy" and must keep reading that way — never
+// dressed up into a guess about what the other person is doing.
+function householdConflictLine(c) {
+  const ev = (c.events || []).map(e => `${e.ownerName}: ${e.title}${e.time && e.time !== 'all day' ? ' at ' + e.time : ''}`);
+  if (c.kind === 'guardian-overlap') return `nobody free for ${c.about || 'one of the kids'} — ${ev.join('; ')}`;
+  if (c.kind === 'split-attention') return `${(c.events[0] || {}).ownerName || 'One of you'} has two of the kids at once — ${ev.join('; ')}`;
+  if (c.kind === 'same-person') return `${c.about || 'Someone'} is in two places — ${ev.join('; ')}`;
+  return ev.join('; ');
 }
 
 function renderAhead() {
@@ -3191,25 +3225,42 @@ function renderAhead() {
   const con = document.getElementById('ahead-conflicts');
   if (!body || !aheadData) return;
 
-  const evs = aheadData.events || [];
-  const conflicts = aheadData.conflicts || [];
+  const allEvs = aheadData.events || [];
+  const solo = aheadIsSolo();
+  if (solo && aheadView !== 'week') aheadView = 'week';
+
+  // The window the CURRENT view is showing. Conflicts are detected once over the
+  // whole eight days and then filtered to this — so a clash is never invented by
+  // switching views, only hidden when it falls outside the days on screen.
+  const from = aheadView === 'tomorrow' ? aheadData.tomorrow : aheadData.today;
+  const to = aheadView === 'tomorrow' ? aheadData.tomorrow : isoAddDays(aheadData.today, AHEAD_VIEW_DAYS - 1);
+  const inView = d => d && d >= from && d <= to;
+
+  const evs = allEvs.filter(e => inView(e.date));
+  const conflicts = (aheadData.conflicts || []).filter(c => inView(c.date));
+  const hh = (aheadData.household && aheadData.household.conflicts || []).filter(c => inView(c.date));
+  const scope = aheadView === 'tomorrow' ? 'tomorrow' : 'the week ahead';
+
   if (meta) {
     const read = aheadData.calendarsRead === 1 ? '1 calendar' : `${aheadData.calendarsRead} calendars`;
     meta.textContent = `${evs.length} event${evs.length === 1 ? '' : 's'} across ${read}, read just now.`;
   }
 
   // Conflicts sit above everything. They are the one thing on this screen that
-  // is worth interrupting a glance for.
+  // is worth interrupting a glance for. Household clashes come first: they need
+  // two people to resolve, which makes them the slower thing to fix.
   if (con) {
-    con.innerHTML = conflicts.length ? `
+    const total = conflicts.length + hh.length;
+    con.innerHTML = total ? `
       <div class="ahead-conflict-band">
-        <div class="acb-title">${conflicts.length} clash${conflicts.length === 1 ? '' : 'es'} in the next ${AHEAD_WINDOW_LABELS[aheadDays]}</div>
+        <div class="acb-title">${total} clash${total === 1 ? '' : 'es'} ${escHtml(scope)}</div>
+        ${hh.map(c => `<div class="acb-row">${escHtml(aheadDayLabel(c.date))} — ${escHtml(householdConflictLine(c))}</div>`).join('')}
         ${conflicts.map(c => `<div class="acb-row">${escHtml(aheadDayLabel(c.date))} — “${escHtml(c.a.title)}” at ${escHtml(aheadTimeLabel(c.a))} overlaps “${escHtml(c.b.title)}” at ${escHtml(aheadTimeLabel(c.b))}</div>`).join('')}
       </div>` : '';
   }
 
   if (!evs.length) {
-    body.innerHTML = `<div class="ahead-empty">Nothing on your calendar in the next ${AHEAD_WINDOW_LABELS[aheadDays]}.</div>`;
+    body.innerHTML = `<div class="ahead-empty">Nothing on your calendar ${escHtml(scope === 'tomorrow' ? 'tomorrow' : 'in the week ahead')}.</div>`;
     return;
   }
 
@@ -3240,24 +3291,34 @@ function renderAhead() {
     </div>`;
   };
 
-  if (aheadMode === 'day') {
-    const days = [];
+  // By week: days, under Monday-start week headings. The eight-day read can
+  // straddle a week boundary, and "This week" / "Next week" is how people
+  // actually think about that -- not "day 6 of 8".
+  if (aheadView === 'week') {
+    const weeks = [];
     for (const ev of evs) {
-      const last = days[days.length - 1];
+      const ws = isoWeekStart(ev.date);
+      let wk = weeks[weeks.length - 1];
+      if (!wk || wk.ws !== ws) { wk = { ws, days: [] }; weeks.push(wk); }
+      const last = wk.days[wk.days.length - 1];
       if (last && last.date === ev.date) last.events.push(ev);
-      else days.push({ date: ev.date, events: [ev] });
+      else wk.days.push({ date: ev.date, events: [ev] });
     }
-    body.innerHTML = days.map(d => `
-      <div class="ahead-group">
-        <div class="ahead-group-head">${escHtml(aheadDayLabel(d.date))}
-          <span class="ahead-group-count">${d.events.length}</span></div>
-        ${d.events.map(ev => row(ev, false)).join('')}
+    body.innerHTML = weeks.map(wk => `
+      <div class="ahead-week">
+        <div class="ahead-week-head">${escHtml(weekLabel(wk.ws))}</div>
+        ${wk.days.map(d => `
+          <div class="ahead-group">
+            <div class="ahead-group-head">${escHtml(aheadDayLabel(d.date))}
+              <span class="ahead-group-count">${d.events.length}</span></div>
+            ${d.events.map(ev => row(ev, false)).join('')}
+          </div>`).join('')}
       </div>`).join('');
     return;
   }
 
-  // By person. Someone with nothing on is still listed — "Arin has a clear
-  // fortnight" is a real answer, and a missing name reads like a bug.
+  // Tomorrow, by person. Someone with nothing on is still listed — "Arin has a
+  // clear day" is a real answer, and a missing name reads like a bug.
   const groups = (aheadData.people || []).map(p => ({
     key: p.id, name: p.name, color: p.color,
     events: evs.filter(e => e.memberId === p.id),
@@ -3272,7 +3333,7 @@ function renderAhead() {
         ${escHtml(g.name)}
         <span class="ahead-group-count">${g.events.length ? g.events.length : 'nothing scheduled'}</span>
       </div>
-      ${g.events.map(ev => row(ev, true)).join('')}
+      ${g.events.map(ev => row(ev, false)).join('')}
     </div>`).join('');
 }
 

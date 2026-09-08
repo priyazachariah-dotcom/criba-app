@@ -8071,13 +8071,23 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
         { top: Math.min(40, Math.max(1, Number(req.body?.top) || 15)) });
       return res.json({ discover: true, senders });
     }
-    const { runReplay } = mod;
-    const report = await runReplay({
+    const senders = Array.isArray(req.body?.senders) ? req.body.senders : [];
+    if (req.body?.status) {
+      return res.json(await mod.shadowRunStatus(String(req.body.runId || '')));
+    }
+    // Scoring is a separate call from running. A batch never scores, so a
+    // partial stratum can never be quoted as if it were the result.
+    if (req.body?.report) {
+      return res.json(await mod.buildReport(String(req.body.runId || ''), senders));
+    }
+    const report = await mod.runReplay({
       email: String(req.body?.email || req.user.email).toLowerCase(),
-      senders: Array.isArray(req.body?.senders) ? req.body.senders : [],
+      senders,
       days: Math.min(90, Math.max(1, Number(req.body?.days) || 45)),
       limit: Math.min(200, Math.max(1, Number(req.body?.limit) || 40)),
       dryRun: !!req.body?.dryRun,
+      runId: req.body?.runId ? String(req.body.runId) : null,
+      batchSize: Math.min(25, Math.max(1, Number(req.body?.batchSize) || 10)),
     });
     res.json(report);
   } catch (err) {

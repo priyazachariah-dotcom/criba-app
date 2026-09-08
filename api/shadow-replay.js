@@ -277,9 +277,39 @@ export async function discoverSenders(email, { top = 15 } = {}) {
     .slice(0, top);
 }
 
+export async function buildReport(runId, senders) {
+  const raw = (await redis.hgetall(runResultsKey(runId))) || {};
+  const pairs = Object.values(raw).map(v => JSON.parse(v));
+  if (!pairs.length) throw new Error(`no results stored for run ${runId}`);
+  return scorePairs(pairs, senders, { runId });
+}
+
+// ── Run state ────────────────────────────────────────────────────────────
+// A 50-message run exceeds the serverless request timeout, so a run is a
+// sequence of batches sharing a runId. The corpus is frozen on the first batch
+// -- re-deriving it per batch would let a newly arrived email shift every
+// subsequent offset and silently skip messages.
+const RUN_TTL_SECONDS = 3 * 24 * 60 * 60;
+
+function runCorpusKey(runId) { return `shadowRun:${runId}:ids`; }
+function runResultsKey(runId) { return `shadowRun:${runId}:pairs`; }
+
+export async function shadowSpendTodayUsd() {
+  return (Number(await redis.get(shadowSpendKey())) || 0) / 1e6;
+}
+
+export async function shadowRunStatus(runId) {
+  const idsRaw = await redis.get(runCorpusKey(runId));
+  const ids = idsRaw ? JSON.parse(idsRaw) : [];
+  const done = await redis.hlen(runResultsKey(runId));
+  return { runId, corpusSize: ids.length, processed: done, remaining: Math.max(0, ids.length - done),
+    spentTodayUsd: Number((await shadowSpendTodayUsd()).toFixed(4)) };
+}
+
 // ── Orchestration ────────────────────────────────────────────────────────
 export async function runReplay({
   email, senders, days = 45, limit = 40, dryRun = false,
+  runId = null, batchSize = 10,
 } = {}) {
   if (!email) throw new Error('email is required');
   if (!Array.isArray(senders) || !senders.length) throw new Error('at least one sender is required');
@@ -291,7 +321,21 @@ export async function runReplay({
 
   const prompt = loadExtractionPrompt(readFileSync(serverSourcePath(), 'utf8'));
   const gmail = await gmailFor(email);
-  const ids = await searchCorpus(gmail, senders, days, limit);
+
+  // Freeze the corpus on the first batch of a run and reuse it thereafter, so
+  // mail arriving mid-run cannot shift the offsets under us.
+  let ids;
+  if (runId && !dryRun) {
+    const cached = await redis.get(runCorpusKey(runId));
+    if (cached) {
+      ids = JSON.parse(cached);
+    } else {
+      ids = await searchCorpus(gmail, senders, days, limit);
+      await redis.set(runCorpusKey(runId), JSON.stringify(ids), 'EX', RUN_TTL_SECONDS);
+    }
+  } else {
+    ids = await searchCorpus(gmail, senders, days, limit);
+  }
 
   // Fable's result is already known — it is whatever is on the calendar today.
   // Re-running it would cost money and prove nothing.
@@ -305,11 +349,19 @@ export async function runReplay({
     storedByMessageId.get(mid).push(ev);
   }
 
-  const senderSet = new Set(senders.map(s => s.toLowerCase()));
   const pairs = [];
   const skipped = [];
 
-  for (const id of ids) {
+  // Resume where the previous batch stopped, by message id rather than by
+  // index: a batch that half-failed leaves the ids it did finish recorded, and
+  // those must not be paid for twice.
+  let todo = ids;
+  if (runId && !dryRun) {
+    const doneIds = new Set(Object.keys((await redis.hgetall(runResultsKey(runId))) || {}));
+    todo = ids.filter(id => !doneIds.has(id)).slice(0, batchSize);
+  }
+
+  for (const id of todo) {
     const msg = await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
     const subject = headerOf(msg.data, 'Subject');
     const from = headerOf(msg.data, 'From');
@@ -347,6 +399,22 @@ export async function runReplay({
       fableFoundNothing: redactedRows.length === 0 && fableEvents.length === 0,
       sonnetEventsHere: out.events.map(e => ({ title: e.title, date: e.date, time: e.start_time || e.time || '' })),
     });
+    if (runId) {
+      await redis.hset(runResultsKey(runId), id, JSON.stringify(pairs[pairs.length - 1]));
+      await redis.expire(runResultsKey(runId), RUN_TTL_SECONDS);
+    }
+  }
+
+  // A batched run reports progress only. Scoring happens once, over the whole
+  // corpus, in buildReport -- scoring per batch would invite quoting a partial
+  // stratum as if it were the result.
+  if (runId && !dryRun) {
+    const status = await shadowRunStatus(runId);
+    return { ...status, batchProcessed: pairs.length, skipped,
+      done: status.remaining === 0,
+      note: status.remaining === 0
+        ? 'Corpus complete. Call with { report: true, runId } for the scored result.'
+        : `Call again with the same runId for the next ${batchSize}.` };
   }
 
   if (dryRun) {
@@ -359,6 +427,13 @@ export async function runReplay({
     };
   }
 
+  return scorePairs(pairs, senders, { query: buildSenderQuery(senders, days), corpusSize: ids.length, skipped });
+}
+
+// Scoring lives in one place so a batched run and a single-shot run cannot
+// diverge. Takes finished pairs, returns the report.
+export function scorePairs(pairs, senders, extra = {}) {
+  const senderSet = new Set(senders.map(s => s.toLowerCase()));
   const inStratum = p => senderSet.has(String(p.from || '').toLowerCase().replace(/^.*<|>.*$/g, ''))
     || senders.some(s => String(p.from || '').toLowerCase().includes(s.toLowerCase()));
 
@@ -399,8 +474,7 @@ export async function runReplay({
 
   return {
     model: SHADOW_MODEL,
-    query: buildSenderQuery(senders, days),
-    corpusSize: ids.length,
+    ...extra,
     scoredMessages: scorable.length,
     // THE RESULT. Everything else is reference.
     newsletterStratum: scoreStratum(newsletter),
@@ -410,10 +484,8 @@ export async function runReplay({
     fableFoundNothing,
     redactedBaseline,
     parseFailures: pairs.filter(p => p.parseError).length,
-    skipped,
     disagreements,
     agreementSample,
     shadowCostUsd: Number((totalMicro / 1e6).toFixed(4)),
     note: 'Fable is the incumbent baseline, not ground truth. Recall/precision here are agreement rates; every disagreement needs adjudication before it counts as a Sonnet error.',
-  };
-}
+  };}

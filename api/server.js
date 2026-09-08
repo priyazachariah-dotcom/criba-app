@@ -223,15 +223,11 @@ const DAILY_SPEND_CAP_USD = Number(process.env.DAILY_SPEND_CAP_USD || 10);
 // so it is stored per model rather than assumed, because assuming it is how
 // this table went wrong the first time.
 //
-// in/out are dollars per MILLION tokens. cacheRead, cacheWrite5m and
-// cacheWrite1h are MULTIPLIERS of `in`, not rates -- 0.1 means "a cache read
-// costs a tenth of an input token".
+// in/out are dollars per MILLION tokens. cacheRead is a MULTIPLIER of `in`,
+// not a rate -- 0.1 means "a cache read costs a tenth of an input token".
 //
-// The write multipliers used to be hardcoded at 1.25/2 in costMicroUsd on the
-// grounds that they were uniform across models. claude-sonnet-5 is the first
-// model quoted to us with off-standard cache rates, so they are per-model now.
-// Omitting them keeps the old 1.25/2, which is why every pre-existing row here
-// is unchanged and meters exactly as before.
+// Cache WRITES are 1.25x for the 5-minute TTL and 2x for the 1-hour TTL. Those
+// are uniform across models, so they live in costMicroUsd rather than here.
 const MODEL_PRICING = {
   'claude-fable-5':    { in: 10, out: 50, cacheRead: 0.1 },
   'claude-fable-5-1':  { in: 10, out: 50, cacheRead: 0.025 },
@@ -240,15 +236,9 @@ const MODEL_PRICING = {
   'claude-opus-4-5':   { in: 5,  out: 25, cacheRead: 0.1 },
   'claude-sonnet-4-6': { in: 3,  out: 15, cacheRead: 0.1 },
   'claude-haiku-4-5':  { in: 1,  out: 5,  cacheRead: 0.1 },
-  // $2/M in, $10/M out, $0.30/M cache read, $3.75/M 5-minute cache write.
-  // Expressed as multipliers of in=2: 0.30/2 = 0.15 and 3.75/2 = 1.875.
-  // NOTE: those two are the only off-standard cache rates in this table, and
-  // $0.30/$3.75 are also exactly 0.1x/1.25x of $3 -- i.e. sonnet-4-6's rates.
-  // Encoded as quoted because overstating is the safe direction here: it makes
-  // Sonnet look more expensive, so a cutover decision errs against switching.
-  // Worth re-checking against the pricing page before the cost figures from
-  // the shadow test are quoted anywhere.
-  'claude-sonnet-5':   { in: 2,  out: 10, cacheRead: 0.15, cacheWrite5m: 1.875 },
+  // $2/M in, $10/M out, $0.20/M cache read, $2.50/M 5-minute cache write --
+  // standard multipliers, so exactly 5x cheaper than fable-5 on every line.
+  'claude-sonnet-5':   { in: 2,  out: 10, cacheRead: 0.1 },
 };
 // The comment above this table always said an unknown model must never be
 // silently cheap. It then sat at 5/25 while the extraction path moved to
@@ -290,9 +280,7 @@ function costMicroUsd(model, usage) {
   const w5 = cc ? Number(cc.ephemeral_5m_input_tokens || 0) : Number(usage?.cache_creation_input_tokens || 0);
   const w1h = cc ? Number(cc.ephemeral_1h_input_tokens || 0) : 0;
 
-  const w5Mult = price.cacheWrite5m ?? 1.25;
-  const w1hMult = price.cacheWrite1h ?? 2;
-  const inCost = (inTok + w5 * w5Mult + w1h * w1hMult + cacheRead * (price.cacheRead ?? 0.1)) * price.in;
+  const inCost = (inTok + w5 * 1.25 + w1h * 2 + cacheRead * (price.cacheRead ?? 0.1)) * price.in;
   const outCost = outTok * price.out;
   return Math.ceil((inCost + outCost));
 }

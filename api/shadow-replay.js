@@ -244,6 +244,39 @@ async function sonnetExtract(prompt, subject, body, dateSent) {
   return { events, parseError, stopReason: res.stop_reason, usage: res.usage, micro };
 }
 
+// ── Sender discovery ─────────────────────────────────────────────────────
+// The corpus needs a sender list. Rather than guess at one, rank the senders
+// Criba has actually seen by how often a single message from them produced
+// MORE THAN ONE event -- that is the definition of the multi-event newsletter
+// stratum, so it selects the hard cases directly instead of by reputation.
+//
+// This reads stored events only. It is a way of proposing a list for a human
+// to approve, not the corpus itself: the corpus is always the Gmail sender
+// search, because a message Fable extracted nothing from leaves no row here.
+export async function discoverSenders(email, { top = 15 } = {}) {
+  const all = await redis.hgetall(`events:${email}`);
+  const byMessage = new Map();
+  for (const raw of Object.values(all || {})) {
+    let ev; try { ev = JSON.parse(raw); } catch { continue; }
+    const mid = ev?.gmail_message_id;
+    const sender = String(ev?.sender_email || '').toLowerCase();
+    if (!mid || !sender) continue;
+    if (!byMessage.has(mid)) byMessage.set(mid, { sender, events: 0 });
+    byMessage.get(mid).events++;
+  }
+  const bySender = new Map();
+  for (const { sender, events } of byMessage.values()) {
+    if (!bySender.has(sender)) bySender.set(sender, { sender, messages: 0, events: 0, multiEventMessages: 0 });
+    const r = bySender.get(sender);
+    r.messages++; r.events += events;
+    if (events > 1) r.multiEventMessages++;
+  }
+  return [...bySender.values()]
+    .map(r => ({ ...r, eventsPerMessage: Number((r.events / r.messages).toFixed(2)) }))
+    .sort((x, y) => y.multiEventMessages - x.multiEventMessages || y.eventsPerMessage - x.eventsPerMessage)
+    .slice(0, top);
+}
+
 // ── Orchestration ────────────────────────────────────────────────────────
 export async function runReplay({
   email, senders, days = 45, limit = 40, dryRun = false,

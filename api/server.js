@@ -8064,7 +8064,14 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Not authorised.' });
   }
   try {
-    const { runReplay } = await import('./shadow-replay.js');
+    const mod = await import('./shadow-replay.js');
+    if (req.body?.discover) {
+      const senders = await mod.discoverSenders(
+        String(req.body?.email || req.user.email).toLowerCase(),
+        { top: Math.min(40, Math.max(1, Number(req.body?.top) || 15)) });
+      return res.json({ discover: true, senders });
+    }
+    const { runReplay } = mod;
     const report = await runReplay({
       email: String(req.body?.email || req.user.email).toLowerCase(),
       senders: Array.isArray(req.body?.senders) ? req.body.senders : [],

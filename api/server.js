@@ -8053,6 +8053,32 @@ app.post('/api/admin/repair-watch', requireAuth, async (req, res) => {
 // "underCurrentTtl" is the share that the 5m cache can already serve warm;
 // "underProposedTtl" is the share a 1h cache would serve warm. The difference
 // between those two numbers is the entire case for or against the bump.
+// POST /api/admin/shadow-replay — Track 1. Runs the offline Sonnet harness.
+//
+// The handler is deliberately a pass-through: it hands the harness parameters
+// and returns its report. The report is a diff (counts, keys, disagreement
+// records), never an event payload, and the harness itself holds no calendar
+// client -- see the structural note at the top of api/shadow-replay.js.
+app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  try {
+    const { runReplay } = await import('./shadow-replay.js');
+    const report = await runReplay({
+      email: String(req.body?.email || req.user.email).toLowerCase(),
+      senders: Array.isArray(req.body?.senders) ? req.body.senders : [],
+      days: Math.min(90, Math.max(1, Number(req.body?.days) || 45)),
+      limit: Math.min(200, Math.max(1, Number(req.body?.limit) || 40)),
+      dryRun: !!req.body?.dryRun,
+    });
+    res.json(report);
+  } catch (err) {
+    console.error('[shadow-replay]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/extraction-gaps', requireAuth, async (req, res) => {
   if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
     return res.status(403).json({ error: 'Not authorised.' });

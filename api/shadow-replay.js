@@ -266,8 +266,37 @@ function parseEvents(text) {
   return Array.isArray(raw) ? raw : [];
 }
 
-async function sonnetExtract(prompt, subject, body, dateSent) {
-  const tail = `Today is ${new Date().toISOString().slice(0, 10)}. This email was sent ${dateSent}.\n\nEmail:\nSubject: ${subject}\n\n${body}`;
+// Replicated VERBATIM from the live path (server.js, extractGmail... tail
+// construction). Not an approximation: the first scored run omitted the sent
+// date in ISO form, the "resolve relative dates against the sent date" rule and
+// the family roster, then scored Sonnet against Fable's output under the full
+// prompt. On a corpus reaching 60 days back that difference alone misdates
+// events, and the resulting gap would have read as a Sonnet failure.
+//
+// If the live construction changes, this must change with it. The parity test
+// asserts the exact sentences rather than trusting the shape.
+const EXTRACTION_CHAR_LIMIT = 60000;
+
+export function buildTail(subject, body, dateSent, familyNames = [], today = null) {
+  const textContent = [subject ? `Subject: ${subject}\n\n` : '', body].join('').slice(0, EXTRACTION_CHAR_LIMIT);
+  const sentIso = dateSent ? new Date(dateSent) : null;
+  const sentLine = sentIso && !isNaN(sentIso)
+    ? `This email was sent on ${sentIso.toISOString().split('T')[0]} (${sentIso.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })}).`
+    : '';
+  const dateContext = [
+    `Today's date is ${today || new Date().toISOString().split('T')[0]}.`,
+    sentLine,
+    'Resolve every relative date ("Monday", "this Friday", "next week", "the 12th") against the email\'s sent date. Always output a full YYYY-MM-DD with an explicit year — never omit the year or guess one.',
+  ].filter(Boolean).join(' ');
+  const rosterContext = familyNames.length
+    ? `This person's family members are: ${familyNames.join(', ')}. For each event, put into "attendees" the names of the family members it concerns — the child whose team, class or activity it is. Infer from the team name, teacher, grade or context even when the name is not written out. Use the exact spelling listed above. Leave the array empty if the event concerns the whole family or you genuinely cannot tell.`
+    : '';
+  const context = [dateContext, rosterContext].filter(Boolean).join('\n\n');
+  return `${context}\n\nEmail:\n${textContent}`;
+}
+
+async function sonnetExtract(prompt, subject, body, dateSent, familyNames) {
+  const tail = buildTail(subject, body, dateSent, familyNames);
   const res = await anthropic.messages.create({
     model: SHADOW_MODEL,
     max_tokens: SHADOW_MAX_TOKENS,
@@ -383,6 +412,12 @@ export async function runReplay({
   }
 
   const prompt = loadExtractionPrompt(readFileSync(serverSourcePath(), 'utf8'));
+  // The roster drives the "attendees" field. Fable gets it on every call; a
+  // replay without it is not the same prompt.
+  const familyRaw = (await redis.hgetall(`family:${email}`)) || {};
+  const familyNames = Object.values(familyRaw)
+    .map(v => { try { return JSON.parse(v)?.name; } catch { return null; } })
+    .filter(Boolean);
   const gmail = await gmailFor(email);
 
   // Freeze the corpus on the first batch of a run and reuse it thereafter, so
@@ -446,7 +481,7 @@ export async function runReplay({
     if (!body.trim()) { skipped.push({ id, reason: 'empty body' }); continue; }
 
     let out;
-    try { out = await sonnetExtract(prompt, subject, body, dateSent); }
+    try { out = await sonnetExtract(prompt, subject, body, dateSent, familyNames); }
     catch (e) { skipped.push({ id, reason: `sonnet call failed: ${e.message}` }); continue; }
 
     pairs.push({

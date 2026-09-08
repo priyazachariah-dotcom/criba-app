@@ -2027,7 +2027,7 @@ app.get('/privacy', (req, res) => {
   <p>This Privacy Policy explains how Criba ("Criba", "we", "us", or "the Service") collects, uses, stores, shares, and protects information when you use the Service. By using Criba you agree to the practices described here. If you do not agree, do not use the Service.</p>
 
   <h2>1. Who we are</h2>
-  <p>Criba is a personal-productivity tool that detects calendar-worthy items (events, deadlines, reminders) in your connected sources — Gmail, PDFs and calendar feeds — and helps you add them to Google Calendar with your approval. For privacy questions, contact <a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>.</p>
+  <p>Criba is a personal-productivity tool that detects calendar-worthy items (events, deadlines, reminders) in your connected sources — Gmail, PDFs and calendar feeds — and helps you add them to Google Calendar with your approval. For privacy questions, contact <a href="mailto:hello@criba.app">hello@criba.app</a>.</p>
 
   <h2>2. Information we access and why</h2>
   <ul>
@@ -2057,7 +2057,7 @@ app.get('/privacy', (req, res) => {
   <p><b>Event details are deleted once the event is over.</b> Thirty days after an event has passed, we delete its title, location, notes and sender from our database. For a repeating event, the thirty days run from the end of the series; where a repeating event has no stated end, we treat it as ending on 30 June &mdash; the end of the school year &mdash; and delete it thirty days after that.</p>
   <p>After that point we keep only two things, neither of which is content from your email: the identifier of the Google Calendar entry we created, so that Criba does not lose track of something it added to your calendar, and the identifier of the source message, so that the same email is not processed twice. We also keep a record of events you dismissed, so that we do not show you the same thing again.</p>
   <p>Diagnostic records of pipeline decisions are deleted after seven days.</p>
-  <p>You may revoke Criba's access at any time in your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account permissions</a>, which stops all further access. To request deletion of the data we hold about you, email <a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>; we will delete it within a reasonable period except where retention is required by law.</p>
+  <p>You may revoke Criba's access at any time in your <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account permissions</a>, which stops all further access. To request deletion of the data we hold about you, email <a href="mailto:hello@criba.app">hello@criba.app</a>; we will delete it within a reasonable period except where retention is required by law.</p>
 
   <h2>8. Your rights</h2>
   <p>Depending on where you live (including under GDPR and the CCPA/CPRA), you may have the right to access, correct, delete, port, or restrict processing of your personal data, and to object to certain processing. We do not sell or "share" personal information as those terms are defined under US state privacy laws. To exercise any right, contact us at the address above.</p>
@@ -2072,7 +2072,7 @@ app.get('/privacy', (req, res) => {
   <p>We may update this policy from time to time; material changes will be reflected by the "Last updated" date above. Continued use after changes constitutes acceptance.</p>
 
   <h2>12. Contact</h2>
-  <p>Questions or requests: <a href="mailto:priya.zachariah@gmail.com">priya.zachariah@gmail.com</a>.</p>`));
+  <p>Questions or requests: <a href="mailto:hello@criba.app">hello@criba.app</a>.</p>`));
 });
 
 app.get('/terms', (req, res) => {

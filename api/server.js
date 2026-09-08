@@ -8078,7 +8078,8 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
     // Scoring is a separate call from running. A batch never scores, so a
     // partial stratum can never be quoted as if it were the result.
     if (req.body?.report) {
-      return res.json(await mod.buildReport(String(req.body.runId || ''), senders));
+      return res.json(await mod.buildReport(String(req.body.runId || ''), senders,
+        String(req.body?.email || req.user.email).toLowerCase()));
     }
     const report = await mod.runReplay({
       email: String(req.body?.email || req.user.email).toLowerCase(),

@@ -160,30 +160,63 @@ export function eventKey(ev) {
 // Agreement, not truth. Fable's set is the incumbent baseline, not ground
 // truth, so these are reported as agreement rates and every disagreement is
 // handed to a human rather than scored as an error.
+// Two models describing the same event rarely phrase it identically. The first
+// run scored "BSC U9B Pre-NPL Scrimmage" against "U9B Pre-NPL Scrimmage vs
+// Alameda" as BOTH a miss and a false positive, and reported 21.9% recall for
+// what was in fact agreement. Exact title equality is not a usable matcher.
+//
+// So: the date must match exactly -- that is the fact a calendar turns on and
+// a model that moves a date is wrong -- and titles are matched by token
+// overlap above a threshold. Fuzzy matches are counted SEPARATELY and listed,
+// never folded silently into the headline, because "probably the same event"
+// is a judgement a human should confirm.
+const TITLE_MATCH_THRESHOLD = 0.5;
+
+export function titleSimilarity(a, b) {
+  const A = new Set(normTitle(a).split(' ').filter(Boolean));
+  const B = new Set(normTitle(b).split(' ').filter(Boolean));
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const t of A) if (B.has(t)) inter++;
+  return inter / (A.size + B.size - inter);
+}
+
 export function compareSets(sonnetEvents, fableEvents) {
-  const sKeys = new Map(sonnetEvents.map(e => [eventKey(e), e]));
-  const fKeys = new Map(fableEvents.map(e => [eventKey(e), e]));
-  const matched = [];
+  const unusedSonnet = sonnetEvents.map((e, i) => ({ e, i })).filter(x => x.e);
+  const taken = new Set();
+  const matchedExact = [];
+  const matchedFuzzy = [];
   const missingFromSonnet = [];
-  const extraInSonnet = [];
-  for (const [k, fe] of fKeys) {
-    if (sKeys.has(k)) {
-      const se = sKeys.get(k);
-      // A matching key is not a matching event: same day and title can still
-      // disagree on the clock time, which is a real defect hiding behind a
-      // count match.
+
+  for (const fe of fableEvents) {
+    let best = null;
+    for (const cand of unusedSonnet) {
+      if (taken.has(cand.i)) continue;
+      if (String(cand.e.date || '') !== String(fe.date || '')) continue;  // date is non-negotiable
+      const sim = titleSimilarity(cand.e.title, fe.title);
+      if (!best || sim > best.sim) best = { ...cand, sim };
+    }
+    if (best && best.sim >= TITLE_MATCH_THRESHOLD) {
+      taken.add(best.i);
+      const se = best.e;
       const timeAgrees = String(se.start_time || se.time || '') === String(fe.time || '');
-      matched.push({ key: k, timeAgrees, sonnetTime: se.start_time || se.time || '', fableTime: fe.time || '' });
+      const rec = {
+        date: fe.date, fableTitle: fe.title, sonnetTitle: se.title,
+        similarity: Number(best.sim.toFixed(2)), timeAgrees,
+        sonnetTime: se.start_time || se.time || '', fableTime: fe.time || '',
+      };
+      if (best.sim === 1) matchedExact.push(rec); else matchedFuzzy.push(rec);
     } else {
-      missingFromSonnet.push({ key: k, title: fe.title, date: fe.date, time: fe.time || '' });
+      missingFromSonnet.push({ key: eventKey(fe), title: fe.title, date: fe.date, time: fe.time || '' });
     }
   }
-  for (const [k, se] of sKeys) {
-    if (!fKeys.has(k)) extraInSonnet.push({ key: k, title: se.title, date: se.date, time: se.start_time || se.time || '' });
-  }
+  const extraInSonnet = unusedSonnet.filter(x => !taken.has(x.i))
+    .map(x => ({ key: eventKey(x.e), title: x.e.title, date: x.e.date, time: x.e.start_time || x.e.time || '' }));
+
+  const matched = [...matchedExact, ...matchedFuzzy];
   return {
-    matched, missingFromSonnet, extraInSonnet,
-    fableCount: fKeys.size, sonnetCount: sKeys.size,
+    matched, matchedExact, matchedFuzzy, missingFromSonnet, extraInSonnet,
+    fableCount: fableEvents.length, sonnetCount: sonnetEvents.length,
     timeMismatches: matched.filter(m => !m.timeAgrees).length,
     exactAgreement: missingFromSonnet.length === 0 && extraInSonnet.length === 0,
   };
@@ -198,8 +231,11 @@ export function rate(numerator, denominator) {
 // score would let a recall regression hide behind a precision gain.
 export function scoreStratum(pairs) {
   let matched = 0, fable = 0, sonnet = 0, timeMismatch = 0, truncated = 0, exact = 0;
+  let exactOnly = 0, fuzzy = 0;
   for (const p of pairs) {
     matched += p.cmp.matched.length;
+    exactOnly += (p.cmp.matchedExact || []).length;
+    fuzzy += (p.cmp.matchedFuzzy || []).length;
     fable += p.cmp.fableCount;
     sonnet += p.cmp.sonnetCount;
     timeMismatch += p.cmp.timeMismatches;
@@ -209,8 +245,14 @@ export function scoreStratum(pairs) {
   return {
     messages: pairs.length,
     fableEvents: fable, sonnetEvents: sonnet, matchedEvents: matched,
+    // Upper bound counts fuzzy title matches as agreement; the lower bound
+    // counts only identical titles. The truth is between them, and the fuzzy
+    // matches are listed so a human can close the gap rather than guess.
     recallVsFable: rate(matched, fable),
     precisionVsFable: rate(matched, sonnet),
+    recallExactTitlesOnly: rate(exactOnly, fable),
+    precisionExactTitlesOnly: rate(exactOnly, sonnet),
+    fuzzyTitleMatches: fuzzy,
     timeMismatches: timeMismatch,
     truncationStops: truncated,
     exactAgreementMessages: exact,
@@ -277,11 +319,32 @@ export async function discoverSenders(email, { top = 15 } = {}) {
     .slice(0, top);
 }
 
-export async function buildReport(runId, senders) {
+export async function buildReport(runId, senders, email) {
   const raw = (await redis.hgetall(runResultsKey(runId))) || {};
   const pairs = Object.values(raw).map(v => JSON.parse(v));
   if (!pairs.length) throw new Error(`no results stored for run ${runId}`);
-  return scorePairs(pairs, senders, { runId });
+
+  // Sonnet's raw events are stored per message, so the comparison can be
+  // rebuilt without paying for the run again. That is the whole reason the
+  // pairs are persisted rather than scored in flight: the first matcher was
+  // wrong, and fixing it had to cost nothing.
+  if (email) {
+    const all = await redis.hgetall(`events:${email}`);
+    const byMessage = new Map();
+    for (const rowRaw of Object.values(all || {})) {
+      let ev; try { ev = JSON.parse(rowRaw); } catch { continue; }
+      if (!ev?.gmail_message_id || ev.redactedAt) continue;
+      if (!byMessage.has(ev.gmail_message_id)) byMessage.set(ev.gmail_message_id, []);
+      byMessage.get(ev.gmail_message_id).push(ev);
+    }
+    for (const p of pairs) {
+      if (!Array.isArray(p.sonnetEventsHere)) continue;
+      const fable = byMessage.get(p.id) || [];
+      if (!fable.length) continue;              // leave fableFoundNothing rows alone
+      p.cmp = compareSets(p.sonnetEventsHere, fable);
+    }
+  }
+  return scorePairs(pairs, senders, { runId, rescored: !!email });
 }
 
 // ── Run state ────────────────────────────────────────────────────────────

@@ -295,11 +295,11 @@ export function buildTail(subject, body, dateSent, familyNames = [], today = nul
   return `${context}\n\nEmail:\n${textContent}`;
 }
 
-async function sonnetExtract(prompt, subject, body, dateSent, familyNames) {
+async function sonnetExtract(prompt, subject, body, dateSent, familyNames, maxTokens) {
   const tail = buildTail(subject, body, dateSent, familyNames);
   const res = await anthropic.messages.create({
     model: SHADOW_MODEL,
-    max_tokens: SHADOW_MAX_TOKENS,
+    max_tokens: maxTokens || SHADOW_MAX_TOKENS,
     messages: [{ role: 'user', content: [
       { type: 'text', text: prompt, cache_control: { type: 'ephemeral' } },
       { type: 'text', text: tail },
@@ -402,6 +402,13 @@ export async function shadowRunStatus(runId) {
 export async function runReplay({
   email, senders, days = 45, limit = 40, dryRun = false,
   runId = null, batchSize = 10,
+  // Raising the ceiling is a HARNESS-ONLY knob. The live path's 8192 is
+  // untouched; this exists to find out whether truncation is a budget problem
+  // or a model problem before anyone proposes changing production.
+  maxTokens = null,
+  // Restrict the corpus to specific messages, so a hypothesis about two
+  // failures costs two calls rather than fifty.
+  onlyIds = null,
 } = {}) {
   if (!email) throw new Error('email is required');
   if (!Array.isArray(senders) || !senders.length) throw new Error('at least one sender is required');
@@ -450,6 +457,13 @@ export async function runReplay({
   const pairs = [];
   const skipped = [];
 
+  if (Array.isArray(onlyIds) && onlyIds.length) {
+    const keep = new Set(onlyIds);
+    ids = ids.filter(id => keep.has(id));
+    // A typo in an id would silently produce an empty, passing run.
+    if (!ids.length) throw new Error('onlyIds matched no message in the corpus');
+  }
+
   // Resume where the previous batch stopped, by message id rather than by
   // index: a batch that half-failed leaves the ids it did finish recorded, and
   // those must not be paid for twice.
@@ -481,7 +495,7 @@ export async function runReplay({
     if (!body.trim()) { skipped.push({ id, reason: 'empty body' }); continue; }
 
     let out;
-    try { out = await sonnetExtract(prompt, subject, body, dateSent, familyNames); }
+    try { out = await sonnetExtract(prompt, subject, body, dateSent, familyNames, maxTokens); }
     catch (e) { skipped.push({ id, reason: `sonnet call failed: ${e.message}` }); continue; }
 
     pairs.push({
@@ -490,6 +504,7 @@ export async function runReplay({
       parseError: out.parseError,
       cmp: compareSets(out.events, fableEvents),
       costMicro: out.micro,
+      maxTokensUsed: maxTokens || SHADOW_MAX_TOKENS,
       // Two conditions that must never be scored as if they were agreement or
       // error. A redacted baseline is unknowable; a baseline of zero is not
       // evidence Sonnet is wrong, only that Fable found nothing to compare to.

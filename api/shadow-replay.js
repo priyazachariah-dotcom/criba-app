@@ -315,10 +315,17 @@ export async function runReplay({
     const from = headerOf(msg.data, 'From');
     const dateSent = headerOf(msg.data, 'Date');
     const body = extractPlainText(msg.data.payload);
-    const fableEvents = storedByMessageId.get(id) || [];
+    const storedRows = storedByMessageId.get(id) || [];
+    // Retention strips content once an event is over but KEEPS the row, its
+    // date and its gmail_message_id. Such a row has no title and no time, so
+    // scoring against it would manufacture a disagreement out of a privacy
+    // feature. Excluded from scoring and counted instead.
+    const redactedRows = storedRows.filter(e => e.redactedAt);
+    const fableEvents = storedRows.filter(e => !e.redactedAt);
 
     if (dryRun) {
-      pairs.push({ id, subject, from, bodyChars: body.length, fableCount: fableEvents.length, dryRun: true });
+      pairs.push({ id, subject, from, bodyChars: body.length,
+        fableCount: fableEvents.length, redactedCount: redactedRows.length, dryRun: true });
       continue;
     }
     if (!body.trim()) { skipped.push({ id, reason: 'empty body' }); continue; }
@@ -333,6 +340,12 @@ export async function runReplay({
       parseError: out.parseError,
       cmp: compareSets(out.events, fableEvents),
       costMicro: out.micro,
+      // Two conditions that must never be scored as if they were agreement or
+      // error. A redacted baseline is unknowable; a baseline of zero is not
+      // evidence Sonnet is wrong, only that Fable found nothing to compare to.
+      baselineRedacted: redactedRows.length > 0 && fableEvents.length === 0,
+      fableFoundNothing: redactedRows.length === 0 && fableEvents.length === 0,
+      sonnetEventsHere: out.events.map(e => ({ title: e.title, date: e.date, time: e.start_time || e.time || '' })),
     });
   }
 
@@ -348,14 +361,28 @@ export async function runReplay({
 
   const inStratum = p => senderSet.has(String(p.from || '').toLowerCase().replace(/^.*<|>.*$/g, ''))
     || senders.some(s => String(p.from || '').toLowerCase().includes(s.toLowerCase()));
-  const newsletter = pairs.filter(inStratum);
-  const other = pairs.filter(p => !inStratum(p));
+
+  // Only messages with a usable Fable baseline can be scored. The other two
+  // groups are reported in full for adjudication rather than folded into a
+  // number they would distort in opposite directions.
+  const scorable = pairs.filter(p => p.cmp && !p.baselineRedacted && !p.fableFoundNothing);
+  const newsletter = scorable.filter(inStratum);
+  const other = scorable.filter(p => !inStratum(p));
+
+  // Fable extracting nothing is the single most interesting case for recall:
+  // either Sonnet caught something Fable missed, or Sonnet invented it. Neither
+  // can be settled by arithmetic, so every one goes to a human.
+  const fableFoundNothing = pairs.filter(p => p.fableFoundNothing).map(p => ({
+    id: p.id, subject: p.subject, from: p.from, stopReason: p.stopReason,
+    sonnetFound: p.sonnetEventsHere,
+  }));
+  const redactedBaseline = pairs.filter(p => p.baselineRedacted).length;
 
   // Only disagreements go to a human. Agreement is evidence, not proof — so a
   // sample of the agreements is surfaced too, to catch a matching count that
   // hides a swapped event.
-  const disagreements = pairs
-    .filter(p => p.cmp && !p.cmp.exactAgreement)
+  const disagreements = scorable
+    .filter(p => !p.cmp.exactAgreement)
     .map(p => ({
       id: p.id, subject: p.subject, from: p.from, stopReason: p.stopReason,
       missingFromSonnet: p.cmp.missingFromSonnet,
@@ -363,8 +390,8 @@ export async function runReplay({
       timeMismatches: p.cmp.matched.filter(m => !m.timeAgrees),
     }));
 
-  const agreementSample = pairs
-    .filter(p => p.cmp && p.cmp.exactAgreement && p.cmp.fableCount > 0)
+  const agreementSample = scorable
+    .filter(p => p.cmp.exactAgreement && p.cmp.fableCount > 0)
     .slice(0, 8)
     .map(p => ({ id: p.id, subject: p.subject, events: p.cmp.matched.map(m => m.key) }));
 
@@ -374,9 +401,14 @@ export async function runReplay({
     model: SHADOW_MODEL,
     query: buildSenderQuery(senders, days),
     corpusSize: ids.length,
+    scoredMessages: scorable.length,
     // THE RESULT. Everything else is reference.
     newsletterStratum: scoreStratum(newsletter),
     otherStratum: scoreStratum(other),
+    // Not scored, deliberately. Listed so they can be looked at directly.
+    fableFoundNothingCount: fableFoundNothing.length,
+    fableFoundNothing,
+    redactedBaseline,
     parseFailures: pairs.filter(p => p.parseError).length,
     skipped,
     disagreements,

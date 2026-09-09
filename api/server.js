@@ -7787,6 +7787,94 @@ async function sendNotificationEmail(toEmail, count, titles) {
   }
 }
 
+// Suppression list for non-transactional email (blog-update broadcasts to the
+// waitlist, etc.) — separate from the product's own users, who never see
+// these. One Redis set, lowercased emails, checked before every send so an
+// unsubscribe is permanent without needing per-recipient state anywhere else.
+const SUPPRESSION_SET = 'emailSuppressions';
+
+async function isSuppressed(email) {
+  return (await redis.sismember(SUPPRESSION_SET, String(email).toLowerCase())) === 1;
+}
+
+// Send a non-transactional (marketing/update) email via Resend, honouring the
+// suppression list and appending a signed one-click unsubscribe link. Distinct
+// from sendNotificationEmail, which is transactional and never suppressed.
+async function sendBroadcastEmail(toEmail, { subject, html }) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) return { ok: false, reason: 'no-api-key' };
+  const email = String(toEmail).trim().toLowerCase();
+  if (!email) return { ok: false, reason: 'invalid-email' };
+  if (await isSuppressed(email)) return { ok: false, reason: 'suppressed' };
+
+  const unsubToken = signData({ email });
+  const unsubUrl = `https://app.criba.app/api/unsubscribe?token=${encodeURIComponent(unsubToken)}`;
+  const bodyWithFooter = `${html}
+<p style="color:#999;font-size:12px;margin-top:2rem">You're receiving this because you signed up for Criba updates.
+<a href="${unsubUrl}" style="color:#999">Unsubscribe</a></p>`;
+
+  try {
+    const resp = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from: 'Criba <hello@criba.app>',
+        to: [email],
+        subject,
+        html: bodyWithFooter,
+      }),
+    });
+    if (!resp.ok) return { ok: false, reason: `resend-${resp.status}` };
+    return { ok: true };
+  } catch (e) {
+    console.error('Broadcast email failed:', email, e.message);
+    return { ok: false, reason: 'exception' };
+  }
+}
+
+// GET /api/unsubscribe — public, token-based (no login: waitlist signups
+// never authenticate). Adds the email to the suppression set and shows a
+// plain confirmation page. Token is HMAC-signed so an email can't be
+// unsubscribed by anyone who doesn't already have that exact link.
+app.get('/api/unsubscribe', async (req, res) => {
+  const data = verifyData(req.query.token);
+  const email = data && data.email ? String(data.email).trim().toLowerCase() : null;
+  res.set('Content-Type', 'text/html');
+  if (!email) {
+    return res.status(400).send('<p>Invalid or expired unsubscribe link.</p>');
+  }
+  await redis.sadd(SUPPRESSION_SET, email);
+  res.send(`<p>${email} has been unsubscribed from Criba updates. You won't get any more of these.</p>`);
+});
+
+// POST /api/admin/broadcast — admin-only. Sends a one-off email to a list of
+// addresses supplied in the request (never stored in this codebase — the
+// waitlist lives in Formspree, outside this app, so the recipient list is
+// runtime input, not committed data). Dry run unless { send: true }, so a
+// campaign can be checked (suppressed/invalid counts) before it goes out.
+app.post('/api/admin/broadcast', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const { emails, subject, html, send } = req.body || {};
+  if (!Array.isArray(emails) || !emails.length || !subject || !html) {
+    return res.status(400).json({ error: 'emails[], subject, and html are required.' });
+  }
+  const results = { total: emails.length, sent: 0, suppressed: 0, failed: 0, dryRun: send !== true };
+  for (const raw of emails) {
+    const email = String(raw).trim().toLowerCase();
+    if (!email) continue;
+    if (await isSuppressed(email)) { results.suppressed++; continue; }
+    if (!results.dryRun) {
+      const outcome = await sendBroadcastEmail(email, { subject, html });
+      if (outcome.ok) results.sent++; else results.failed++;
+    } else {
+      results.sent++; // would-send count under dry run
+    }
+  }
+  res.json(results);
+});
+
 // POST /api/gmail/watch — call from frontend after login to (re)register watch
 app.post('/api/gmail/watch', requireAuth, async (req, res) => {
   const refreshToken = await redis.get(`refreshToken:${req.user.email}`);

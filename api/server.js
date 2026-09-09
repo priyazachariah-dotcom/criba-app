@@ -8094,6 +8094,7 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
       batchSize: Math.min(25, Math.max(1, Number(req.body?.batchSize) || 10)),
       maxTokens: req.body?.maxTokens ? Math.min(65536, Math.max(1024, Number(req.body.maxTokens))) : null,
       model: req.body?.model ? String(req.body.model) : undefined,
+      variant: req.body?.variant ? String(req.body.variant) : undefined,
       onlyIds: Array.isArray(req.body?.onlyIds) ? req.body.onlyIds.map(String) : null,
     });
     res.json(report);

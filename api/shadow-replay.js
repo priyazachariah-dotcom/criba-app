@@ -85,6 +85,57 @@ export function loadExtractionPrompt(serverSource) {
   return prompt;
 }
 
+// ── Prompt variants ──────────────────────────────────────────────────────
+// Named, in-repo transforms of the PRODUCTION prompt -- never free text from
+// the request. A caller can pick a variant but cannot inject one, so every
+// result stays reproducible and auditable, and the base is always what the
+// live path actually uses.
+//
+// rule8-strict tests one hypothesis: that the recall gap is instruction
+// following rather than capability. Sonnet 5 and Opus 5 landed within a point
+// of each other (58.1% / 59.1%), which is not the shape of a capability
+// ceiling, and what both drop is a consistent category -- early release days,
+// testing days, form deadlines, single-use tickets. Rule 8 currently states a
+// principle and gives three examples; a summarising model can satisfy it while
+// still exercising judgement about what is "worth" including. This variant
+// removes the judgement: it names the dropped categories and reframes the rule
+// as an enumeration requirement rather than an exhortation.
+const RULE8_ORIGINAL = '8. Never miss an event because it seems minor. "Return library books" is on the calendar. "Submit grad photo" is on the calendar. "Verify card is current" is on the calendar. Busy people miss these exactly because they seem small.';
+
+const RULE8_STRICT = `8. ENUMERATE EVERY DATED ITEM. This is not a judgement call and there is no
+threshold of importance. If a line in the source names a date or a deadline,
+it becomes an event, full stop. Do not decide something is too small, too
+routine, too administrative or too obvious to include.
+
+The following are all REQUIRED, and are the ones most often wrongly dropped:
+- Schedule variations: early release days, minimum days, late starts, no-school
+  days, half days, "regular early release day", schedule change days
+- School operations: testing days, picture day, picture make-up day,
+  class lists released, report cards issued, registration opening or closing
+- Form and money deadlines: schedule change forms due, permission slips,
+  waivers, signed acknowledgements, fee and invoice due dates, RSVP cutoffs
+- Optional and opt-in items: optional exams (SAT, ACT), optional camps and
+  clinics, sign-up windows, ticket sales, single-use bus tickets, spirit wear
+  or merchandise order deadlines
+- Administrative notices with a date attached, even when no action is required
+
+A newsletter listing fifteen dated items must yield fifteen events. Returning
+the five most interesting ones is a failure, not a summary. Before you finish,
+re-read the source and confirm every date you can see appears in your output.`;
+
+export function applyPromptVariant(prompt, variant) {
+  if (!variant || variant === 'production') return prompt;
+  if (variant === 'rule8-strict') {
+    if (!prompt.includes(RULE8_ORIGINAL)) {
+      // Fail rather than silently replay the unmodified prompt and report the
+      // result as if the variant had been applied.
+      throw new Error('rule8-strict: Rule 8 not found verbatim in the production prompt — it has changed and the variant needs updating');
+    }
+    return prompt.replace(RULE8_ORIGINAL, RULE8_STRICT);
+  }
+  throw new Error(`unknown prompt variant "${variant}"`);
+}
+
 function serverSourcePath() {
   return join(dirname(fileURLToPath(import.meta.url)), 'server.js');
 }
@@ -414,6 +465,7 @@ export async function runReplay({
   // or a model problem before anyone proposes changing production.
   maxTokens = null,
   model = SHADOW_MODEL,
+  variant = 'production',
   // Restrict the corpus to specific messages, so a hypothesis about two
   // failures costs two calls rather than fifty.
   onlyIds = null,
@@ -428,7 +480,8 @@ export async function runReplay({
     throw new Error(`shadow replay budget exhausted: $${(spentMicro / 1e6).toFixed(2)} of $${SHADOW_DAILY_CAP_USD}`);
   }
 
-  const prompt = loadExtractionPrompt(readFileSync(serverSourcePath(), 'utf8'));
+  const prompt = applyPromptVariant(
+    loadExtractionPrompt(readFileSync(serverSourcePath(), 'utf8')), variant);
   // The roster drives the "attendees" field. Fable gets it on every call; a
   // replay without it is not the same prompt.
   const familyRaw = (await redis.hgetall(`family:${email}`)) || {};
@@ -516,6 +569,7 @@ export async function runReplay({
       costMicro: out.micro,
       maxTokensUsed: maxTokens || SHADOW_MAX_TOKENS,
       modelUsed: model,
+      variantUsed: variant,
       // Two conditions that must never be scored as if they were agreement or
       // error. A redacted baseline is unknowable; a baseline of zero is not
       // evidence Sonnet is wrong, only that Fable found nothing to compare to.
@@ -598,6 +652,7 @@ export function scorePairs(pairs, senders, extra = {}) {
 
   return {
     model: pairs.find(p => p.modelUsed)?.modelUsed || SHADOW_MODEL,
+    variant: pairs.find(p => p.variantUsed)?.variantUsed || 'production',
     ...extra,
     scoredMessages: scorable.length,
     // THE RESULT. Everything else is reference.

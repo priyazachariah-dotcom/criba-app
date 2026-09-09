@@ -8075,6 +8075,14 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
       return res.json({ discover: true, senders });
     }
     const senders = Array.isArray(req.body?.senders) ? req.body.senders : [];
+    if (req.body?.composition) {
+      const users = Array.isArray(req.body?.users) && req.body.users.length
+        ? req.body.users.map(x => String(x).toLowerCase())
+        : await redis.smembers('gmailWatchedUsers');
+      return res.json(await mod.corpusComposition({
+        users, sinceDays: Math.min(120, Math.max(1, Number(req.body?.sinceDays) || 60)),
+      }));
+    }
     if (req.body?.status) {
       return res.json(await mod.shadowRunStatus(String(req.body.runId || '')));
     }

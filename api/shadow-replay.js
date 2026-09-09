@@ -434,6 +434,78 @@ export async function buildReport(runId, senders, email) {
   return scorePairs(pairs, senders, { runId, rescored: !!email });
 }
 
+// ── Corpus composition ───────────────────────────────────────────────────
+// How much of the real mail stream is single-event vs multi-event. This is the
+// number that decides whether a routing layer is worth building at all, and it
+// costs nothing: it is counted from events already stored, with no model calls
+// and no Gmail fetches.
+//
+// Returns COUNTS ONLY -- no titles, no subjects, no senders. Answering "what is
+// the mix" does not require reading anybody's mail, so it does not.
+//
+// Two honest limits, reported alongside the numbers rather than buried:
+//  - The event counts are Fable's, not ground truth. This measures the mix as
+//    Criba currently sees it, which is the right denominator for a routing
+//    decision but is not independent of the incumbent model.
+//  - It cannot see the 0-event stratum at all. An email Fable extracted nothing
+//    from leaves no row, so "what fraction of mail is calendar-irrelevant" is
+//    unanswerable from here and needs a sender-search corpus, as in Track 1.
+export async function corpusComposition({ users = [], sinceDays = 60 } = {}) {
+  const cutoff = new Date(Date.now() - sinceDays * 86400000).toISOString().slice(0, 10);
+  const perUser = [];
+  const fleet = { messages: 0, single: 0, two: 0, threePlus: 0, events: 0, redactedMessages: 0 };
+
+  for (const email of users) {
+    const all = await redis.hgetall(`events:${email}`);
+    const byMessage = new Map();
+    let redactedMessages = new Set();
+    for (const raw of Object.values(all || {})) {
+      let ev; try { ev = JSON.parse(raw); } catch { continue; }
+      const mid = ev?.gmail_message_id;
+      if (!mid) continue;
+      if (ev.redactedAt) { redactedMessages.add(mid); continue; }
+      if (ev.added_at && String(ev.added_at).slice(0, 10) < cutoff) continue;
+      byMessage.set(mid, (byMessage.get(mid) || 0) + 1);
+    }
+    const counts = [...byMessage.values()];
+    const row = {
+      email,
+      messages: counts.length,
+      events: counts.reduce((n, c) => n + c, 0),
+      single: counts.filter(c => c === 1).length,
+      two: counts.filter(c => c === 2).length,
+      threePlus: counts.filter(c => c >= 3).length,
+      maxEventsInOneMessage: counts.length ? Math.max(...counts) : 0,
+      redactedMessages: redactedMessages.size,
+    };
+    row.singlePct = row.messages ? Number((100 * row.single / row.messages).toFixed(1)) : null;
+    row.multiPct = row.messages ? Number((100 * (row.two + row.threePlus) / row.messages).toFixed(1)) : null;
+    perUser.push(row);
+    fleet.messages += row.messages; fleet.events += row.events;
+    fleet.single += row.single; fleet.two += row.two; fleet.threePlus += row.threePlus;
+    fleet.redactedMessages += row.redactedMessages;
+  }
+
+  const multi = fleet.two + fleet.threePlus;
+  // Volume share matters more than message share: routing saves money in
+  // proportion to the mail it diverts, and a message is one extraction call
+  // regardless of how many events it yields.
+  return {
+    sinceDays, users: perUser,
+    fleet: {
+      ...fleet,
+      singlePctOfMessages: fleet.messages ? Number((100 * fleet.single / fleet.messages).toFixed(1)) : null,
+      multiPctOfMessages: fleet.messages ? Number((100 * multi / fleet.messages).toFixed(1)) : null,
+      eventsPerMessage: fleet.messages ? Number((fleet.events / fleet.messages).toFixed(2)) : null,
+    },
+    limits: [
+      'Event counts are Fable\'s output, not ground truth.',
+      'Messages Fable extracted nothing from are invisible here (no stored row), so the 0-event stratum is not measured.',
+      'Redacted messages are excluded: retention strips the content that would let them be counted.',
+    ],
+  };
+}
+
 // ── Run state ────────────────────────────────────────────────────────────
 // A 50-message run exceeds the serverless request timeout, so a run is a
 // sequence of batches sharing a runId. The corpus is frozen on the first batch

@@ -239,6 +239,9 @@ const MODEL_PRICING = {
   // $2/M in, $10/M out, $0.20/M cache read, $2.50/M 5-minute cache write --
   // standard multipliers, so exactly 5x cheaper than fable-5 on every line.
   'claude-sonnet-5':   { in: 2,  out: 10, cacheRead: 0.1 },
+  // $5/M in, $25/M out, $0.50/M cache read, $6.25/M 5-minute cache write --
+  // standard multipliers again, so exactly 2x cheaper than fable-5 throughout.
+  'claude-opus-5':     { in: 5,  out: 25, cacheRead: 0.1 },
 };
 // The comment above this table always said an unknown model must never be
 // silently cheap. It then sat at 5/25 while the extraction path moved to
@@ -8090,6 +8093,7 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
       runId: req.body?.runId ? String(req.body.runId) : null,
       batchSize: Math.min(25, Math.max(1, Number(req.body?.batchSize) || 10)),
       maxTokens: req.body?.maxTokens ? Math.min(65536, Math.max(1024, Number(req.body.maxTokens))) : null,
+      model: req.body?.model ? String(req.body.model) : undefined,
       onlyIds: Array.isArray(req.body?.onlyIds) ? req.body.onlyIds.map(String) : null,
     });
     res.json(report);

@@ -33,6 +33,12 @@ const redis = new Redis(process.env.REDIS_URL);
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const SHADOW_MODEL = 'claude-sonnet-5';
+// Candidates the harness may replay. Kept as an allow-list so a typo becomes an
+// error rather than a silent fallback to Fable pricing on a real run.
+const SHADOW_PRICING = {
+  'claude-sonnet-5': { in: 2, out: 10, cacheRead: 0.1 },
+  'claude-opus-5':   { in: 5, out: 25, cacheRead: 0.1 },
+};
 const SHADOW_MAX_TOKENS = 8192;   // matched to the live path, so truncation is comparable
 
 // The harness bills to its own key, never to a user's. callClaude checks a
@@ -41,19 +47,20 @@ const SHADOW_MAX_TOKENS = 8192;   // matched to the live path, so truncation is 
 // missed email caused by the measurement. Separate key, separate cap.
 const SHADOW_SPEND_KEY_PREFIX = 'shadowSpendMicroUsd';
 const SHADOW_DAILY_CAP_USD = Number(process.env.SHADOW_DAILY_CAP_USD || 15);
-const SONNET_PRICING = { in: 2, out: 10, cacheRead: 0.1 };
+
 
 function shadowSpendKey() {
   return `${SHADOW_SPEND_KEY_PREFIX}:${new Date().toISOString().slice(0, 10)}`;
 }
 
-function sonnetCostMicroUsd(usage) {
+function shadowCostMicroUsd(model, usage) {
+  const p = SHADOW_PRICING[model];
+  if (!p) throw new Error(`unpriced shadow model "${model}" — add it to SHADOW_PRICING`);
   const inTok = Number(usage?.input_tokens || 0);
   const outTok = Number(usage?.output_tokens || 0);
   const cacheRead = Number(usage?.cache_read_input_tokens || 0);
   const w5 = Number(usage?.cache_creation_input_tokens || 0);
-  const inCost = (inTok + w5 * 1.25 + cacheRead * SONNET_PRICING.cacheRead) * SONNET_PRICING.in;
-  return Math.ceil(inCost + outTok * SONNET_PRICING.out);
+  return Math.ceil((inTok + w5 * 1.25 + cacheRead * p.cacheRead) * p.in + outTok * p.out);
 }
 
 // ── The production prompt, loaded as text ────────────────────────────────
@@ -295,17 +302,17 @@ export function buildTail(subject, body, dateSent, familyNames = [], today = nul
   return `${context}\n\nEmail:\n${textContent}`;
 }
 
-async function sonnetExtract(prompt, subject, body, dateSent, familyNames, maxTokens) {
+async function sonnetExtract(prompt, subject, body, dateSent, familyNames, maxTokens, model) {
   const tail = buildTail(subject, body, dateSent, familyNames);
   const res = await anthropic.messages.create({
-    model: SHADOW_MODEL,
+    model: model || SHADOW_MODEL,
     max_tokens: maxTokens || SHADOW_MAX_TOKENS,
     messages: [{ role: 'user', content: [
       { type: 'text', text: prompt, cache_control: { type: 'ephemeral' } },
       { type: 'text', text: tail },
     ] }],
   });
-  const micro = sonnetCostMicroUsd(res.usage);
+  const micro = shadowCostMicroUsd(model || SHADOW_MODEL, res.usage);
   const key = shadowSpendKey();
   await redis.incrby(key, micro);
   await redis.expire(key, 7 * 24 * 60 * 60);
@@ -406,12 +413,15 @@ export async function runReplay({
   // untouched; this exists to find out whether truncation is a budget problem
   // or a model problem before anyone proposes changing production.
   maxTokens = null,
+  model = SHADOW_MODEL,
   // Restrict the corpus to specific messages, so a hypothesis about two
   // failures costs two calls rather than fifty.
   onlyIds = null,
 } = {}) {
   if (!email) throw new Error('email is required');
   if (!Array.isArray(senders) || !senders.length) throw new Error('at least one sender is required');
+
+  if (!SHADOW_PRICING[model]) throw new Error(`unknown shadow model "${model}"`);
 
   const spentMicro = Number(await redis.get(shadowSpendKey())) || 0;
   if (spentMicro / 1e6 >= SHADOW_DAILY_CAP_USD) {
@@ -495,7 +505,7 @@ export async function runReplay({
     if (!body.trim()) { skipped.push({ id, reason: 'empty body' }); continue; }
 
     let out;
-    try { out = await sonnetExtract(prompt, subject, body, dateSent, familyNames, maxTokens); }
+    try { out = await sonnetExtract(prompt, subject, body, dateSent, familyNames, maxTokens, model); }
     catch (e) { skipped.push({ id, reason: `sonnet call failed: ${e.message}` }); continue; }
 
     pairs.push({
@@ -505,6 +515,7 @@ export async function runReplay({
       cmp: compareSets(out.events, fableEvents),
       costMicro: out.micro,
       maxTokensUsed: maxTokens || SHADOW_MAX_TOKENS,
+      modelUsed: model,
       // Two conditions that must never be scored as if they were agreement or
       // error. A redacted baseline is unknowable; a baseline of zero is not
       // evidence Sonnet is wrong, only that Fable found nothing to compare to.
@@ -586,7 +597,7 @@ export function scorePairs(pairs, senders, extra = {}) {
   const totalMicro = pairs.reduce((n, p) => n + (p.costMicro || 0), 0);
 
   return {
-    model: SHADOW_MODEL,
+    model: pairs.find(p => p.modelUsed)?.modelUsed || SHADOW_MODEL,
     ...extra,
     scoredMessages: scorable.length,
     // THE RESULT. Everything else is reference.

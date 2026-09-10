@@ -51,7 +51,7 @@ const SHADOW_MAX_TOKENS = 8192;   // matched to the live path, so truncation is 
 // user's budget it could trip that cap and abort their live extraction — a
 // missed email caused by the measurement. Separate key, separate cap.
 const SHADOW_SPEND_KEY_PREFIX = 'shadowSpendMicroUsd';
-const SHADOW_DAILY_CAP_USD = Number(process.env.SHADOW_DAILY_CAP_USD || 15);
+const SHADOW_DAILY_CAP_USD = Number(process.env.SHADOW_DAILY_CAP_USD || 20);
 
 
 function shadowSpendKey() {
@@ -244,7 +244,7 @@ export function titleSimilarity(a, b) {
   return inter / (A.size + B.size - inter);
 }
 
-export function compareSets(sonnetEvents, fableEvents) {
+export function compareSets(sonnetEvents, fableEvents, threshold = TITLE_MATCH_THRESHOLD) {
   const unusedSonnet = sonnetEvents.map((e, i) => ({ e, i })).filter(x => x.e);
   const taken = new Set();
   const matchedExact = [];
@@ -259,7 +259,7 @@ export function compareSets(sonnetEvents, fableEvents) {
       const sim = titleSimilarity(cand.e.title, fe.title);
       if (!best || sim > best.sim) best = { ...cand, sim };
     }
-    if (best && best.sim >= TITLE_MATCH_THRESHOLD) {
+    if (best && best.sim >= threshold) {
       taken.add(best.i);
       const se = best.e;
       const timeAgrees = String(se.start_time || se.time || '') === String(fe.time || '');
@@ -411,7 +411,7 @@ export async function discoverSenders(email, { top = 15 } = {}) {
     .slice(0, top);
 }
 
-export async function buildReport(runId, senders, email) {
+export async function buildReport(runId, senders, email, titleThreshold = TITLE_MATCH_THRESHOLD) {
   const raw = (await redis.hgetall(runResultsKey(runId))) || {};
   const pairs = Object.values(raw).map(v => JSON.parse(v));
   if (!pairs.length) throw new Error(`no results stored for run ${runId}`);
@@ -433,10 +433,10 @@ export async function buildReport(runId, senders, email) {
       if (!Array.isArray(p.sonnetEventsHere)) continue;
       const fable = byMessage.get(p.id) || [];
       if (!fable.length) continue;              // leave fableFoundNothing rows alone
-      p.cmp = compareSets(p.sonnetEventsHere, fable);
+      p.cmp = compareSets(p.sonnetEventsHere, fable, titleThreshold);
     }
   }
-  return scorePairs(pairs, senders, { runId, rescored: !!email });
+  return scorePairs(pairs, senders, { runId, rescored: !!email, titleThreshold });
 }
 
 // ── Stratified sampling ──────────────────────────────────────────────────

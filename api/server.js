@@ -8178,7 +8178,10 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
     // partial stratum can never be quoted as if it were the result.
     if (req.body?.report) {
       return res.json(await mod.buildReport(String(req.body.runId || ''), senders,
-        String(req.body?.email || req.user.email).toLowerCase()));
+        String(req.body?.email || req.user.email).toLowerCase(),
+        req.body?.titleThreshold != null
+          ? Math.min(1, Math.max(0.05, Number(req.body.titleThreshold)))
+          : undefined));
     }
     const report = await mod.runReplay({
       email: String(req.body?.email || req.user.email).toLowerCase(),

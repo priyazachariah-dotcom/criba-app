@@ -36,8 +36,13 @@ const SHADOW_MODEL = 'claude-sonnet-5';
 // Candidates the harness may replay. Kept as an allow-list so a typo becomes an
 // error rather than a silent fallback to Fable pricing on a real run.
 const SHADOW_PRICING = {
-  'claude-sonnet-5': { in: 2, out: 10, cacheRead: 0.1 },
-  'claude-opus-5':   { in: 5, out: 25, cacheRead: 0.1 },
+  'claude-sonnet-5':  { in: 2,  out: 10, cacheRead: 0.1 },
+  'claude-opus-5':    { in: 5,  out: 25, cacheRead: 0.1 },
+  // The incumbent. Present so it can be replayed through the identical harness
+  // -- the only way to check that its STORED output is a fair baseline rather
+  // than an artefact of whatever date context it saw months ago.
+  'claude-fable-5':   { in: 10, out: 50, cacheRead: 0.1 },
+  'claude-haiku-4-5': { in: 1,  out: 5,  cacheRead: 0.1 },
 };
 const SHADOW_MAX_TOKENS = 8192;   // matched to the live path, so truncation is comparable
 
@@ -434,6 +439,85 @@ export async function buildReport(runId, senders, email) {
   return scorePairs(pairs, senders, { runId, rescored: !!email });
 }
 
+// ── Stratified sampling ──────────────────────────────────────────────────
+// Track 1's corpus was deliberately hard -- senders chosen for dense mail. This
+// one has to be representative instead, so messages are drawn at random from
+// what the mailbox actually contains, stratified by how many events Fable found
+// in each.
+//
+// Deterministic by seed, and frozen under a sampleId once drawn, because all
+// model arms MUST see the identical set of messages. Re-drawing per arm would
+// compare models on different mail and call the difference accuracy.
+
+// Small seeded PRNG (mulberry32). A fixed seed makes the draw reproducible and
+// auditable; Math.random would make the sample unrepeatable.
+function seededRandom(seed) {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffled(arr, rnd) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+export async function sampleByEventCount(email, { sinceDays = 60, nSingle = 50, nMulti = 50, seed = 1 } = {}) {
+  const cutoff = new Date(Date.now() - sinceDays * 86400000).toISOString().slice(0, 10);
+  const all = await redis.hgetall(`events:${email}`);
+  const counts = new Map();
+  const redacted = new Set();
+  for (const raw of Object.values(all || {})) {
+    let ev; try { ev = JSON.parse(raw); } catch { continue; }
+    const mid = ev?.gmail_message_id;
+    if (!mid) continue;
+    if (ev.redactedAt) { redacted.add(mid); continue; }
+    if (ev.added_at && String(ev.added_at).slice(0, 10) < cutoff) continue;
+    counts.set(mid, (counts.get(mid) || 0) + 1);
+  }
+  // A message with any redacted row has an incomplete baseline and would score
+  // as a phantom recall failure. Excluded from the frame, not sampled and
+  // silently mis-scored later.
+  for (const mid of redacted) counts.delete(mid);
+
+  const single = [...counts.entries()].filter(([, c]) => c === 1).map(([m]) => m);
+  const multi = [...counts.entries()].filter(([, c]) => c >= 2).map(([m]) => m);
+  const rnd = seededRandom(seed);
+  const pickedSingle = shuffled(single, rnd).slice(0, nSingle);
+  const pickedMulti = shuffled(multi, rnd).slice(0, nMulti);
+
+  const strata = {};
+  for (const m of pickedSingle) strata[m] = 'single';
+  for (const m of pickedMulti) strata[m] = 'multi';
+  return {
+    ids: [...pickedSingle, ...pickedMulti],
+    strata,
+    eventCounts: Object.fromEntries([...pickedSingle, ...pickedMulti].map(m => [m, counts.get(m)])),
+    frame: { single: single.length, multi: multi.length, excludedRedacted: redacted.size },
+    drawn: { single: pickedSingle.length, multi: pickedMulti.length },
+    seed, sinceDays,
+  };
+}
+
+function sampleKey(sampleId) { return `shadowSample:${sampleId}`; }
+
+// Frozen on first use and reused by every arm thereafter.
+export async function getOrCreateSample(sampleId, email, spec) {
+  const cached = await redis.get(sampleKey(sampleId));
+  if (cached) return JSON.parse(cached);
+  const sample = await sampleByEventCount(email, spec);
+  await redis.set(sampleKey(sampleId), JSON.stringify(sample), 'EX', RUN_TTL_SECONDS);
+  return sample;
+}
+
 // ── Corpus composition ───────────────────────────────────────────────────
 // How much of the real mail stream is single-event vs multi-event. This is the
 // number that decides whether a routing layer is worth building at all, and it
@@ -538,12 +622,18 @@ export async function runReplay({
   maxTokens = null,
   model = SHADOW_MODEL,
   variant = 'production',
+  // Track 2: corpus comes from a frozen stratified sample instead of a sender
+  // search. All model arms pass the same sampleId so they see identical mail.
+  sampleId = null,
+  sampleSpec = null,
   // Restrict the corpus to specific messages, so a hypothesis about two
   // failures costs two calls rather than fifty.
   onlyIds = null,
 } = {}) {
   if (!email) throw new Error('email is required');
-  if (!Array.isArray(senders) || !senders.length) throw new Error('at least one sender is required');
+  if (!sampleId && (!Array.isArray(senders) || !senders.length)) {
+    throw new Error('at least one sender is required (or a sampleId)');
+  }
 
   if (!SHADOW_PRICING[model]) throw new Error(`unknown shadow model "${model}"`);
 
@@ -565,7 +655,11 @@ export async function runReplay({
   // Freeze the corpus on the first batch of a run and reuse it thereafter, so
   // mail arriving mid-run cannot shift the offsets under us.
   let ids;
-  if (runId && !dryRun) {
+  let sample = null;
+  if (sampleId) {
+    sample = await getOrCreateSample(sampleId, email, sampleSpec || {});
+    ids = sample.ids;
+  } else if (runId && !dryRun) {
     const cached = await redis.get(runCorpusKey(runId));
     if (cached) {
       ids = JSON.parse(cached);
@@ -642,6 +736,8 @@ export async function runReplay({
       maxTokensUsed: maxTokens || SHADOW_MAX_TOKENS,
       modelUsed: model,
       variantUsed: variant,
+      stratum: sample ? (sample.strata[id] || null) : null,
+      fableEventCount: fableEvents.length,
       // Two conditions that must never be scored as if they were agreement or
       // error. A redacted baseline is unknowable; a baseline of zero is not
       // evidence Sonnet is wrong, only that Fable found nothing to compare to.
@@ -677,15 +773,21 @@ export async function runReplay({
     };
   }
 
-  return scorePairs(pairs, senders, { query: buildSenderQuery(senders, days), corpusSize: ids.length, skipped });
+  return scorePairs(pairs, senders, { corpusSize: ids.length, skipped,
+    query: sampleId ? `sample:${sampleId}` : buildSenderQuery(senders, days) });
 }
 
 // Scoring lives in one place so a batched run and a single-shot run cannot
 // diverge. Takes finished pairs, returns the report.
 export function scorePairs(pairs, senders, extra = {}) {
   const senderSet = new Set(senders.map(s => s.toLowerCase()));
-  const inStratum = p => senderSet.has(String(p.from || '').toLowerCase().replace(/^.*<|>.*$/g, ''))
-    || senders.some(s => String(p.from || '').toLowerCase().includes(s.toLowerCase()));
+  // Track 2 records a stratum on each pair (single vs multi event). When it is
+  // present it wins: the split being tested is difficulty, not sender.
+  const sampled = pairs.some(p => p.stratum);
+  const inStratum = p => sampled
+    ? p.stratum === 'multi'
+    : (senderSet.has(String(p.from || '').toLowerCase().replace(/^.*<|>.*$/g, ''))
+       || senders.some(s => String(p.from || '').toLowerCase().includes(s.toLowerCase())));
 
   // Only messages with a usable Fable baseline can be scored. The other two
   // groups are reported in full for adjudication rather than folded into a
@@ -728,8 +830,14 @@ export function scorePairs(pairs, senders, extra = {}) {
     ...extra,
     scoredMessages: scorable.length,
     // THE RESULT. Everything else is reference.
+    // Named for what they hold in each mode: sender-based (Track 1) puts the
+    // newsletter senders in the first slot; sample-based (Track 2) puts the
+    // multi-event messages there. Both are "the hard stratum".
+    stratifiedBy: sampled ? 'eventCount' : 'sender',
     newsletterStratum: scoreStratum(newsletter),
     otherStratum: scoreStratum(other),
+    hardStratum: scoreStratum(newsletter),
+    easyStratum: scoreStratum(other),
     // Not scored, deliberately. Listed so they can be looked at directly.
     fableFoundNothingCount: fableFoundNothing.length,
     fableFoundNothing,

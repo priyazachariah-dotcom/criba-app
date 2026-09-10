@@ -659,6 +659,11 @@ export async function runReplay({
   if (sampleId) {
     sample = await getOrCreateSample(sampleId, email, sampleSpec || {});
     ids = sample.ids;
+    // shadowRunStatus derives "remaining" from the run's corpus key. Without
+    // this write it reads an empty corpus, computes remaining = 0, and reports
+    // done on a partly-processed run -- which would hand back a result scored
+    // on a fraction of the sample with nothing to signal it.
+    if (runId && !dryRun) await redis.set(runCorpusKey(runId), JSON.stringify(ids), 'EX', RUN_TTL_SECONDS);
   } else if (runId && !dryRun) {
     const cached = await redis.get(runCorpusKey(runId));
     if (cached) {

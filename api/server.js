@@ -341,6 +341,45 @@ async function recordExtractionGap(startedAtMs) {
   await redis.expire(key, 14 * 24 * 60 * 60);
 }
 
+// ── Per-user pause and model selection ──────────────────────────────────
+//
+// Both live in Redis rather than in code, so a pause can be lifted and a model
+// reverted without a deploy. That matters more than tidiness here: the whole
+// point of a pause is that someone can undo it quickly.
+
+// Paused users keep their accounts, calendars, household links, stored events
+// and spend history exactly as they are. The ONLY thing that changes is that
+// no new extraction runs for them. Their Gmail watch is deliberately left
+// registered so that resuming is a single set-removal rather than an OAuth
+// re-registration that can fail (see the silently-broken case).
+async function isGmailPaused(email) {
+  return (await redis.sismember('gmailPausedUsers', String(email || '').toLowerCase())) === 1;
+}
+
+// Model choice is PER USER, never a fleet default. The fallback below is the
+// fleet behaviour and must stay fable-5/8192 unless a rollout is deliberately
+// decided; an override exists only for accounts explicitly opted in.
+const GMAIL_EXTRACT_DEFAULT = { model: 'claude-fable-5', maxTokens: 8192 };
+
+async function gmailExtractModelFor(email) {
+  if (!email) return GMAIL_EXTRACT_DEFAULT;
+  try {
+    const raw = await redis.hget('gmailExtractModel', String(email).toLowerCase());
+    if (!raw) return GMAIL_EXTRACT_DEFAULT;
+    const o = JSON.parse(raw);
+    // An unpriced model would meter at the FALLBACK_PRICING rate and could trip
+    // the daily cap on a phantom cost, so refuse it rather than run it.
+    if (!o?.model || !MODEL_PRICING[o.model]) {
+      console.error(`[gmail-extract] override for ${email} names unpriced model "${o?.model}" — ignoring, using default`);
+      return GMAIL_EXTRACT_DEFAULT;
+    }
+    return { model: o.model, maxTokens: Number(o.maxTokens) || GMAIL_EXTRACT_DEFAULT.maxTokens };
+  } catch (err) {
+    console.error(`[gmail-extract] bad override for ${email}: ${err.message} — using default`);
+    return GMAIL_EXTRACT_DEFAULT;
+  }
+}
+
 // The only path to Claude. Every call site goes through here so that adding a
 // new feature cannot accidentally create an unmetered one.
 async function callClaude(email, params, label = 'call') {
@@ -6631,13 +6670,16 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
       : { type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.base64data } })),
   ];
 
+  // Per-user, never fleet-wide. Defaults to fable-5/8192 for every account
+  // without an explicit override.
+  const extractCfg = await gmailExtractModelFor(ownerEmail);
   const response = await callClaude(ownerEmail, {
-    model: 'claude-fable-5',
+    model: extractCfg.model,
     // 2048 was not enough. The budget is shared with the model's thinking
     // tokens, so a multi-event email (a week of practices, a weekly digest)
     // could spend the whole allowance before finishing the JSON array. The
     // reply came back cut off mid-array and the parse below threw.
-    max_tokens: 8192,
+    max_tokens: extractCfg.maxTokens,
     messages: [{ role: 'user', content: messageContent }]
   }, 'gmail-extract');
   const text = getResponseText(response).trim();
@@ -7291,6 +7333,16 @@ const HISTORY_MAX_PAGES = 10;
 // Returns { done } — false means work remains in this history range and the
 // cursor was deliberately left where it was, so the next run resumes here.
 async function processNewGmailEmails(email, refreshToken, newHistoryId) {
+  // Paused accounts stop here, before any Gmail read and before any Claude
+  // call. Both the webhook and the cron backlog drain pass through this
+  // function, so this one check covers every route into extraction.
+  //
+  // It returns done:true on purpose. A paused mailbox has no work pending, and
+  // reporting otherwise would leave the cron retrying it forever.
+  if (await isGmailPaused(email)) {
+    console.log(`[gmail-process] SKIP email=${email} — account paused`);
+    return { done: true, paused: true };
+  }
   const deadline = Date.now() + WEBHOOK_BUDGET_MS;
   console.log(`[gmail-process] START email=${email} newHistoryId=${newHistoryId}`);
 
@@ -8227,6 +8279,57 @@ app.get('/api/admin/extraction-gaps', requireAuth, async (req, res) => {
     });
   }
   res.json({ days, data });
+});
+
+// POST /api/admin/account-controls — pause/resume a mailbox, and set or clear
+// a per-user gmail-extract model. Both are Redis-backed so they take effect
+// immediately and can be reverted without a deploy.
+//
+// Deliberately does NOT touch accounts, tokens, watches, calendars, household
+// links, stored events or spend history. Pause is pause.
+app.post('/api/admin/account-controls', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const target = String(req.body?.email || '').trim().toLowerCase();
+  if (!target || !target.includes('@')) return res.status(400).json({ error: 'An email is required.' });
+
+  const out = { email: target };
+  if (req.body?.paused === true) { await redis.sadd('gmailPausedUsers', target); out.paused = true; }
+  if (req.body?.paused === false) { await redis.srem('gmailPausedUsers', target); out.paused = false; }
+
+  if (req.body?.model === null) { await redis.hdel('gmailExtractModel', target); out.model = null; }
+  else if (req.body?.model) {
+    const model = String(req.body.model);
+    if (!MODEL_PRICING[model]) {
+      return res.status(400).json({ error: `Unpriced model "${model}" — add it to MODEL_PRICING first, or it will meter at the fallback rate.` });
+    }
+    const maxTokens = Math.min(65536, Math.max(1024, Number(req.body?.maxTokens) || GMAIL_EXTRACT_DEFAULT.maxTokens));
+    await redis.hset('gmailExtractModel', target, JSON.stringify({ model, maxTokens }));
+    out.model = model; out.maxTokens = maxTokens;
+  }
+
+  out.state = {
+    paused: (await redis.sismember('gmailPausedUsers', target)) === 1,
+    extract: await gmailExtractModelFor(target),
+  };
+  res.json(out);
+});
+
+// GET /api/admin/account-controls — who is paused and who is on a non-default
+// model, in one place, so the live configuration is never inferred.
+app.get('/api/admin/account-controls', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const emails = new Set(await redis.smembers('gmailWatchedUsers'));
+  for (const e of await redis.smembers('gmailPausedUsers')) emails.add(e);
+  const paused = new Set(await redis.smembers('gmailPausedUsers'));
+  const rows = [];
+  for (const email of [...emails].sort()) {
+    rows.push({ email, paused: paused.has(email), extract: await gmailExtractModelFor(email) });
+  }
+  res.json({ fleetDefault: GMAIL_EXTRACT_DEFAULT, pausedCount: paused.size, users: rows });
 });
 
 app.get('/api/admin/spend', requireAuth, async (req, res) => {
@@ -9904,6 +10007,12 @@ app.delete('/api/gmail/fingerprints', requireAuth, async (req, res) => {
 //   not listed individually (Part 1 display rule).
 app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const email = req.user.email;
+  // Backfill is user-initiated and does not go through processNewGmailEmails,
+  // so it needs the pause check of its own -- otherwise a paused account could
+  // still spend by pressing Scan.
+  if (await isGmailPaused(email)) {
+    return res.status(409).json({ error: 'This account is paused — no new email is being read. Nothing on your calendar has changed.' });
+  }
   const userTz = await getUserTimezone(email);
   const days = Math.min(parseInt(req.body?.days || '2'), 14);
   const dryRun = req.query.dryRun === 'true' || req.body?.dryRun === true;

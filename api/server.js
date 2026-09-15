@@ -15,6 +15,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const upload = multer({ dest: '/tmp/uploads/', limits: { fileSize: 20 * 1024 * 1024 } });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// Model used for the high-volume extraction paths (Gmail + PDF). Sonnet 5 does
+// structured event extraction at essentially the same quality as the frontier
+// model for a fraction of the cost — the email path runs on every inbound
+// message, so this is the dominant cost lever. Overridable via env without a
+// code change (e.g. EXTRACTION_MODEL=claude-haiku-4-5 for max savings, or
+// claude-fable-5 to go back to the frontier model).
+const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || 'claude-sonnet-5';
 const SECRET = process.env.SESSION_SECRET || 'criba-secret-key-2026';
 
 const redis = new Redis(process.env.REDIS_URL);
@@ -356,10 +364,16 @@ async function isGmailPaused(email) {
   return (await redis.sismember('gmailPausedUsers', String(email || '').toLowerCase())) === 1;
 }
 
-// Model choice is PER USER, never a fleet default. The fallback below is the
-// fleet behaviour and must stay fable-5/8192 unless a rollout is deliberately
-// decided; an override exists only for accounts explicitly opted in.
-const GMAIL_EXTRACT_DEFAULT = { model: 'claude-fable-5', maxTokens: 8192 };
+// Model choice is PER USER; the fallback below is the fleet behaviour, and an
+// override exists only for accounts explicitly opted in.
+//
+// Deliberately rolled from fable-5 to EXTRACTION_MODEL (default claude-sonnet-5,
+// ~5x cheaper per the pricing table) as the standing cost decision — extraction
+// runs on every inbound email, so it is the dominant spend. Sonnet 5 does this
+// structured extraction at effectively the same quality. Tune fleet-wide with
+// the EXTRACTION_MODEL env var (e.g. claude-haiku-4-5 to save more, claude-fable-5
+// to revert) without a code change.
+const GMAIL_EXTRACT_DEFAULT = { model: EXTRACTION_MODEL, maxTokens: 8192 };
 
 async function gmailExtractModelFor(email) {
   if (!email) return GMAIL_EXTRACT_DEFAULT;
@@ -4067,7 +4081,7 @@ Rules:
 async function extractClosures(contentBlock, todayStr, ownerEmail = null) {
   try {
     const resp = await callClaude(ownerEmail, {
-      model: 'claude-fable-5',
+      model: EXTRACTION_MODEL,
       max_tokens: 2048,
       messages: [{ role: 'user', content: [contentBlock, { type: 'text', text: `Today is ${todayStr}.\n\n${CLOSURES_PROMPT}` }] }],
     }, 'closures');
@@ -4152,7 +4166,7 @@ If they gave a time, a duration, or said the event repeats, use that. If they na
     content.push({ type: 'text', text: `${sourceText}\n\n${FULL_EXTRACTION_PROMPT}` });
 
     const response = await callClaude(req.user.email, {
-      model: 'claude-fable-5',
+      model: EXTRACTION_MODEL,
       max_tokens: 4096,
       messages: [{ role: 'user', content }],
     }, 'upload-extract');

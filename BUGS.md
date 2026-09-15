@@ -17,6 +17,28 @@ Last reviewed: 2026-09-03
 
 ## Blocks trust — a user would notice and lose confidence
 
+### 17. The watch-renewal cron starves renewals and mailboxes go dark
+**Verified 2026-09-15. Fixed same day.**
+
+The `/api/cron/gmail` handler renewed Gmail watches and drained per-user
+backlogs *in the same loop*, under Vercel's 60s function cap. Backlog draining
+(`processNewGmailEmails`) can take ~38s per user, so a couple of slow drains
+exhausted the budget and the function was killed — and every user *after* them
+in the loop got no watch renewal. Their watches then lapsed (Gmail watches last
+7 days) and those mailboxes silently stopped processing real mail with no
+on-screen signal. Compounded by renewing only inside the final 24h, so a single
+missed/killed run meant expiry with zero slack. This is what took 4 of 7
+accounts dark around Sep 11–12 (see Priya's model-cost investigation §14).
+
+Fix: two passes. Pass 1 renews **every** watch first (fast, one API call each),
+so renewals can never be starved by draining. Pass 2 drains backlog +
+notifications, best-effort, stopping at a `drainDeadline` (~45s) so the function
+returns cleanly instead of being hard-killed. Renewal buffer widened from 24h to
+3 days, so a whole missed run is survivable. NOTE: the deeper root — the Vercel
+cron not firing reliably (Hobby-tier best-effort scheduling) — is not fully
+addressed by code; the 3-day buffer mitigates it, but a redundant trigger or a
+Pro-tier cron is worth considering.
+
 ### 14. A dismissal does not survive the next email
 **Verified against live data 2026-09-03. Open — nothing built.**
 

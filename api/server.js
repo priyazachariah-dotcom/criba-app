@@ -8796,18 +8796,31 @@ app.get('/api/cron/gmail', async (req, res) => {
 
   const watchedEmails = await redis.smembers('gmailWatchedUsers');
   const now = Date.now();
-  const oneDayMs = 24 * 60 * 60 * 1000;
+  // Renew when the watch has fewer than 3 days left, not 24h. Watches last 7
+  // days, so a 3-day buffer survives a whole cron run (or two) being missed
+  // instead of expiring the moment one nightly run doesn't complete.
+  const renewBufferMs = 3 * 24 * 60 * 60 * 1000;
+  // Headroom under the 60s function cap. Backlog draining (pass 2) can run long,
+  // so stop it before the function is killed — renewals (pass 1) and the
+  // response must always finish.
+  const drainDeadline = Date.now() + 45000;
   let renewedCount = 0;
   let notifiedCount = 0;
   let drainedCount = 0;
 
+  // Pass 1 — renew EVERY watch first. This is the fix for mailboxes silently
+  // going dark: renewal (one fast API call) used to share a loop with backlog
+  // draining (up to ~38s per user), so a couple of slow drains exhausted the
+  // 60s budget and every user after them lost their watch with no signal.
+  // Doing all renewals up front means even if the function is later cut off
+  // mid-drain, no watch is skipped.
   for (const email of watchedEmails) {
     try {
-      // Renew watch if expiring within 24 hours
+      // Renew watch if it is within the buffer of expiring.
       const watchDataStr = await redis.get(`gmailWatch:${email}`);
       if (watchDataStr) {
         const watchData = JSON.parse(watchDataStr);
-        if (!watchData.expiration || parseInt(watchData.expiration) - now < oneDayMs) {
+        if (!watchData.expiration || parseInt(watchData.expiration) - now < renewBufferMs) {
           const refreshToken = await redis.get(`refreshToken:${email}`);
           if (refreshToken) {
             try {
@@ -8854,7 +8867,21 @@ app.get('/api/cron/gmail', async (req, res) => {
           console.error(`[Gmail disconnect] ${email} has no watch record and no refresh token`);
         }
       }
+    } catch (err) {
+      console.error(`[cron] watch renewal error for ${email}:`, err.message);
+    }
+  }
 
+  // Pass 2 — backlog drain + notifications, best-effort under the remaining
+  // budget. If time runs out here it is safe: every watch was already renewed in
+  // pass 1, so no mailbox goes dark; deferred drains resume on the next push or
+  // the next cron run.
+  for (const email of watchedEmails) {
+    if (Date.now() > drainDeadline) {
+      console.warn('[cron] drain budget reached — deferring remaining backlog drains to next run');
+      break;
+    }
+    try {
       // Drain anything a previous run had to defer. Without this a mailbox
       // that stopped mid-batch waits for the next incoming email to nudge it,
       // which on a quiet weekend can be days.

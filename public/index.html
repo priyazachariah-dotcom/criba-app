@@ -176,6 +176,11 @@
   .btn-filled:hover { opacity: 0.8; }
   .btn-filled:disabled { opacity: 0.4; cursor: not-allowed; }
   .btn-sm { padding: 9px 14px; font-size: 11px; }
+  /* Colour modifier for destructive actions — compose with .btn-outlined (+ .btn-sm)
+     so Delete/Remove keep the outline button's size and shape but read as danger,
+     never like Edit. Replaces the ad-hoc inline red styles that were copied around. */
+  .btn-danger { border-color: var(--red); color: var(--red); }
+  .btn-danger:hover { background: #fbeceb; color: var(--red); }
   /* Legacy approve/dismiss aliases */
   .btn-approve { padding: 0.5rem 1.25rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
   .btn-approve:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -475,9 +480,12 @@
   .quick-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
   /* Whether a row is really on the calendar is the single most important fact
      about it, so it gets colour rather than another grey pill. */
-  .state-pill { font-size: 9.5px; }
-  .state-added { border-color: #137333; color: #137333; }
-  .state-draft { border-color: #b45309; color: #b45309; }
+  /* Status is the one thing to read at a glance on a card, so it carries its own
+     colour rather than borrowing the neutral pill fill: green = already safe on
+     the calendar, amber = still needs a look. */
+  .state-pill { font-size: 9.5px; border: 1px solid transparent; }
+  .state-added { color: #137333; border-color: #bcdcc9; background: #eaf5ee; }
+  .state-draft { color: #925610; border-color: #ecd3ac; background: #fbf1df; }
   .recipient-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid rgba(0,0,0,0.08); }
   .recipient-row:last-child { border-bottom: none; }
   .btn-delete { padding: 0.5rem 1.25rem; background: #c5221f; color: white; border: none; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
@@ -2383,7 +2391,7 @@ function renderRecipients() {
     ? savedRecipients.map(r => `
       <div class="recipient-row">
         <span><strong>${escHtml(r.name)}</strong> · ${escHtml(r.email)}</span>
-        <button class="btn-outlined btn-sm" onclick="removeRecipient('${escHtml(r.email)}')">Remove</button>
+        <button class="btn-outlined btn-sm btn-danger" onclick="removeRecipient('${escHtml(r.email)}')">Remove</button>
       </div>`).join('')
     : `<div style="font-size:12px;color:var(--text2);font-style:italic">Nobody saved yet.</div>`;
 }
@@ -3408,14 +3416,14 @@ const BACKFILL_BAR_HTML = `
     <span class="fixit-desc">If the same event was added to your calendar more than once, this finds the extra copies and removes them, keeping one of each. Events you created yourself and events from calendars you subscribe to are never touched.</span>
   </div>
   <div class="fixit-row">
-    <button class="btn-outlined btn-sm" id="backfill-btn-reset" onclick="startFresh()" style="color:var(--red);border-color:var(--red)">Start fresh</button>
+    <button class="btn-outlined btn-sm btn-danger" id="backfill-btn-reset" onclick="startFresh()">Start fresh</button>
     <span class="fixit-desc">Removes every event Criba has added to your calendar and empties the review queue, putting your calendar back the way it was before you signed up. You'll see exactly what it found and be asked to confirm first.</span>
   </div>
 </div>
 <div id="scan-debug-bar" style="display:none;gap:6px;flex-wrap:wrap;margin-top:6px;padding:0 2px">
   <button class="btn-outlined btn-sm" id="backfill-btn-dry" onclick="runBackfill(2, true)" title="Preview which emails would be sent to AI — no API calls" style="font-size:11px">Dry run</button>
   <button class="btn-outlined btn-sm" id="backfill-btn-clear" onclick="clearFingerprints(false)" title="Remove seen-email cache so all messages in the window are re-evaluated" style="font-size:11px">Reset dedup</button>
-  <button class="btn-outlined btn-sm" id="backfill-btn-clear-force" onclick="clearFingerprints(true)" title="Force-delete ALL fingerprints (bypasses value filter)" style="font-size:11px;color:var(--red);border-color:var(--red)">Force reset</button>
+  <button class="btn-outlined btn-sm btn-danger" id="backfill-btn-clear-force" onclick="clearFingerprints(true)" title="Force-delete ALL fingerprints (bypasses value filter)" style="font-size:11px">Force reset</button>
   <button class="btn-outlined btn-sm" id="backfill-btn-cooldown" onclick="clearBackfillCooldown()" title="Clear the 24h scan rate limit" style="font-size:11px">Reset lock</button>
   <button class="btn-outlined btn-sm" onclick="showScanTrace()" title="Show per-email pipeline decisions from the last scan" style="font-size:11px">Scan trace</button>
   <button class="btn-outlined btn-sm" id="backfill-btn-7" onclick="runBackfill(7)" style="font-size:11px">Last 7 days</button>
@@ -3623,9 +3631,9 @@ function renderPostWriteReviewCard(ev) {
              the event from Google Calendar — a name that reads like "hide this"
              doing something destructive. The common case is the opposite: the
              event is already on the calendar and is fine. OK is now that path. -->
-        ${isDup || isDraft ? '' : `<button class="btn-outlined btn-sm" onclick="deleteFromReview('${id}')" title="Remove this event from your Google Calendar">Delete</button>`}
+        ${isDup || isDraft ? '' : `<button class="btn-outlined btn-sm btn-danger" onclick="deleteFromReview('${id}')" title="Remove this event from your Google Calendar">Delete</button>`}
         ${isDup ? '' : `<button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')" title="${isDraft ? 'Fill in the details before adding' : 'Change the details, then save to your calendar'}">Edit</button>`}
-        ${isDraft ? `<button class="btn-outlined btn-sm" onclick="dismissReviewEvent('${id}')" title="Discard this draft — nothing is on your calendar to remove">Discard</button>` : ''}
+        ${isDraft ? `<button class="btn-outlined btn-sm btn-danger" onclick="dismissReviewEvent('${id}')" title="Discard this draft — nothing is on your calendar to remove">Discard</button>` : ''}
         ${isDraft
           ? `<button class="btn-filled btn-sm" id="rv-rowaddbtn-${id}" onclick="approveReviewEvent('${id}')" title="Add this to your Google Calendar">Add</button>
              <span id="rv-rowstatus-${id}" style="font-size:0.8rem"></span>`
@@ -3710,8 +3718,8 @@ function renderReminderCard(ev) {
       </div>
       <div class="reminder-actions">
         ${isDraft
-          ? `<button class="btn-outlined btn-sm" onclick="dismissReviewEvent('${id}')" title="Discard this draft — nothing is on your calendar to remove">Discard</button>`
-          : `<button class="btn-outlined btn-sm" style="color:var(--red);border-color:var(--red)" onclick="deleteReminder('${id}')">Delete</button>`}
+          ? `<button class="btn-outlined btn-sm btn-danger" onclick="dismissReviewEvent('${id}')" title="Discard this draft — nothing is on your calendar to remove">Discard</button>`
+          : `<button class="btn-outlined btn-sm btn-danger" onclick="deleteReminder('${id}')">Delete</button>`}
         <button class="btn-outlined btn-sm" onclick="openPostWriteEdit('${id}')">Edit</button>
         ${isDraft
           ? `<button class="btn-filled btn-sm" id="rv-rowaddbtn-${id}" onclick="approveReviewEvent('${id}')" title="Add this to your Google Calendar">Add</button>

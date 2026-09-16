@@ -220,6 +220,27 @@
   .legend-dismiss { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--text3); font-size: 16px; line-height: 1; padding: 0 2px; }
   .legend-dismiss:hover { color: var(--ink); }
 
+  /* ── Receipt strip (what Criba added automatically) ──────────────────────
+     Auto-add is the feature people love and the one that feels like a black
+     box. This strip makes it legible: it names what Criba just put on the
+     calendar. Removing any one is on its own card (Delete + undo toast). */
+  .receipt {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+    background: var(--surface-2); border: 1.5px solid var(--ink);
+    padding: 12px 16px; margin: 0 0 12px;
+  }
+  .receipt .r-lead { font-size: 13px; color: var(--ink); }
+  .receipt .r-lead b { font-family: 'Archivo Black', sans-serif; font-weight: 400; }
+  .r-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .r-chip {
+    display: inline-flex; align-items: center; font-size: 11.5px;
+    border: 1px solid var(--hair); background: var(--surface); color: var(--text2);
+    padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+    max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+  }
+  .r-chip.r-more { color: var(--text3); border-style: dashed; }
+  .r-note { margin-left: auto; font-size: 11.5px; color: var(--text3); font-style: italic; }
+
   /* ── Stats row (Review page) ─────────────────────────────────────────── */
   .stats-row { display: flex; gap: 48px; margin-bottom: 2rem; }
   .stat-block { display: flex; flex-direction: column; }
@@ -4028,6 +4049,26 @@ function dismissLegend() {
   if (el) el.hidden = true;
 }
 
+// The receipt strip: names the events Criba added to the calendar on its own
+// (status 'added', not yet acknowledged), so auto-add isn't a black box. Pure
+// summary — removing any one is on its card. Clears itself once they're reviewed.
+function receiptStripHtml() {
+  const added = pendingEvents.filter(e => e.status === 'added' && !e.reviewed);
+  if (!added.length) return '';
+  const n = added.length;
+  const shown = added.slice(0, 4);
+  const more = n - shown.length;
+  const chips = shown
+    .map(e => `<span class="r-chip">${escHtml(e.title || 'Untitled event')}</span>`)
+    .join('')
+    + (more > 0 ? `<span class="r-chip r-more">+${more} more</span>` : '');
+  return `<div class="receipt" id="review-receipt">
+    <span class="r-lead">Criba added <b>${n}</b> event${n > 1 ? 's' : ''} to your Google Calendar</span>
+    <span class="r-chips">${chips}</span>
+    <span class="r-note">Remove any below to undo</span>
+  </div>`;
+}
+
 function renderReview({ force = false } = {}) {
   syncLegend();
   const container = document.getElementById('review-list');
@@ -4070,6 +4111,9 @@ function renderReview({ force = false } = {}) {
   }
 
   let html = BACKFILL_BAR_HTML;
+
+  // What Criba added on its own, named up front — before the view toggle.
+  html += receiptStripHtml();
 
   // Agenda / Month toggle. Agenda is the default review workspace; Month is a
   // one-tap overview. Both show proposed events distinct from what is already on

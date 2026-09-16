@@ -746,13 +746,13 @@
   .ob-spinner { font-size: 2rem; color: var(--ink); margin-bottom: 0.75rem; animation: ob-spin 1.6s linear infinite; display: inline-block; }
   @keyframes ob-spin { to { transform: rotate(360deg); } }
   .member-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 0 6px 22px; }
-  .act-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; padding: 2px 5px 2px 7px; border: 1px solid var(--ink); border-radius: 10px; }
+  .act-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; padding: 2px 5px 2px 7px; border: 1px solid var(--ink); border-radius: 999px; }
   /* Dashed edge marks a fact Criba inferred rather than one you confirmed. */
   .act-chip-guess { border-style: dashed; opacity: 0.75; }
   .act-chip-detail { color: var(--text2); margin-left: 3px; }
   .act-chip-x { border: none; background: none; cursor: pointer; color: var(--text2); font-size: 0.7rem; padding: 0 1px; }
   .act-chip-x:hover { color: #c5221f; }
-  .act-add { border: 1px dashed var(--ink); background: none; cursor: pointer; font-family: inherit; font-size: 0.72rem; padding: 2px 7px; border-radius: 10px; color: var(--text2); }
+  .act-add { border: 1px dashed var(--ink); background: none; cursor: pointer; font-family: inherit; font-size: 0.72rem; padding: 2px 7px; border-radius: 999px; color: var(--text2); }
   .act-form { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; width: 100%; margin-top: 4px; }
   .act-in { text-align: left; padding-left: 5px; }
   .act-in-wide { width: 6.5rem; }
@@ -2375,15 +2375,17 @@ function maybeShowHouseholdInvite() {
 
   const wrap = document.createElement('div');
   wrap.id = 'household-invite-modal';
-  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  // Uses the shared .criba-modal system so this dialog matches every other
+  // popup (it used to be a one-off inline-styled rounded modal).
+  wrap.className = 'criba-modal-overlay';
   wrap.innerHTML = `
-    <div style="background:#fff;border-radius:12px;padding:24px;max-width:420px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,.2);">
-      <h3 style="margin:0 0 8px;font-size:18px;">Join a household?</h3>
-      <p style="margin:0 0 4px;color:#444;line-height:1.45;">Someone invited you to share a household on Criba. Members can see each other's schedules so Criba can flag clashes and coverage gaps.</p>
-      <p id="household-invite-error" style="margin:8px 0 0;color:#b00020;display:none;"></p>
-      <div style="margin-top:18px;display:flex;gap:10px;justify-content:flex-end;">
-        <button type="button" id="household-invite-decline" style="padding:8px 14px;border:1px solid #ccc;background:#fff;border-radius:8px;cursor:pointer;">Not now</button>
-        <button type="button" id="household-invite-join" style="padding:8px 14px;border:0;background:#111;color:#fff;border-radius:8px;cursor:pointer;">Join</button>
+    <div class="criba-modal">
+      <div class="criba-modal-title">Join a household?</div>
+      <div class="criba-modal-msg">Someone invited you to share a household on Criba. Members can see each other's schedules so Criba can flag clashes and coverage gaps.</div>
+      <p id="household-invite-error" class="error-msg" style="margin:8px 0 0;display:none;"></p>
+      <div class="criba-modal-btns">
+        <button type="button" id="household-invite-decline" class="criba-modal-cancel">Not now</button>
+        <button type="button" id="household-invite-join" class="criba-modal-ok">Join</button>
       </div>
     </div>`;
   document.body.appendChild(wrap);

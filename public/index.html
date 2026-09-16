@@ -203,6 +203,23 @@
      wearing different words. */
   .pill-warn { background: var(--red); color: #fff; }
 
+  /* ── Legend (Review page key) ───────────────────────────────────────────
+     A card's white surface carries no meaning by itself; the pills, rails and
+     dot do. This strip spells that out so nobody has to guess. */
+  .review-legend {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 9px 18px;
+    padding: 12px 16px; margin: -12px 0 24px; background: var(--surface-2);
+    border: 1.5px solid var(--ink); font-size: 12px; color: var(--text2);
+  }
+  .legend-lead { font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; font-size: 10.5px; color: var(--text3); }
+  .legend-item { display: inline-flex; align-items: center; gap: 7px; }
+  .legend-rail { display: inline-block; width: 4px; height: 14px; }
+  .legend-rail.cancel { background: #c5221f; }
+  .legend-rail.resched { background: #b45309; }
+  .legend-dot { width: 11px; height: 11px; border-radius: 50%; background: linear-gradient(135deg, var(--blue), var(--green)); box-shadow: 0 0 0 1px rgba(0,0,0,0.14); }
+  .legend-dismiss { margin-left: auto; background: none; border: none; cursor: pointer; color: var(--text3); font-size: 16px; line-height: 1; padding: 0 2px; }
+  .legend-dismiss:hover { color: var(--ink); }
+
   /* ── Stats row (Review page) ─────────────────────────────────────────── */
   .stats-row { display: flex; gap: 48px; margin-bottom: 2rem; }
   .stat-block { display: flex; flex-direction: column; }
@@ -284,9 +301,8 @@
   .btn-edit:hover { background: var(--ink); color: var(--bg); }
 
   /* ── Empty state ─────────────────────────────────────────────────────── */
-  .empty-state { border-top: 1px solid var(--ink); padding: 80px 0; text-align: center; }
-  .empty-state h3 { font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink); margin-bottom: 0.5rem; }
-  .empty-state p { font-size: 14px; font-style: italic; color: #777; }
+  /* Empty state lives at 805 (single, intentional definition) — the block that
+     used to be here collided with it, mixing two type treatments. */
   .empty-icon { display: none; }
 
   /* ── Dry-run table ───────────────────────────────────────────────────── */
@@ -802,10 +818,13 @@
     .ahead-when { width: 94px; font-size: 12px; }
   }
 
-  .empty-state { text-align: center; padding: 4rem 2rem; color: var(--text2); }
-  .empty-icon { font-size: 2.5rem; margin-bottom: 1rem; opacity: 0.4; }
-  .empty-state h3 { font-size: 1.1rem; font-weight: 500; color: var(--text); margin-bottom: 0.5rem; }
-  .empty-state p { font-size: 0.875rem; line-height: 1.6; }
+  /* Empty state reads as an intentional card, not a void: same bordered box as
+     the event cards, on the muted surface so it's clearly "nothing here" rather
+     than "something failed to load". */
+  .empty-state { border: 1.5px solid var(--ink); background: var(--surface-2); padding: 56px 24px; text-align: center; }
+  .empty-icon { font-size: 2.25rem; margin-bottom: 0.75rem; opacity: 0.5; }
+  .empty-state h3 { font-family: 'Archivo Black', sans-serif; font-size: 15px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink); margin-bottom: 0.5rem; }
+  .empty-state p { font-size: 14px; line-height: 1.6; color: var(--text2); max-width: 44ch; margin: 0 auto; }
   .backfill-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: white; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 1rem; }
   .backfill-bar .material-icons { color: var(--gcal-icon); font-size: 18px !important; }
   .backfill-bar-text { flex: 1; font-size: 0.85rem; color: var(--text2); }
@@ -1238,6 +1257,15 @@
     <div class="page-title-block">
       <div class="page-headline" id="review-page-title">REVIEW THE<br>QUEUE</div>
       <div class="page-desc" id="review-page-sub">Criba adds these to your Google Calendar automatically — and never adds a duplicate. Review, edit, or remove anything it got wrong.</div>
+    </div>
+    <div class="review-legend" id="review-legend" hidden>
+      <span class="legend-lead">Key</span>
+      <span class="legend-item"><span class="pill state-pill state-added">On calendar</span> already added</span>
+      <span class="legend-item"><span class="pill state-pill state-draft">Not added yet</span> needs a look</span>
+      <span class="legend-item"><span class="legend-rail cancel"></span> cancelled</span>
+      <span class="legend-item"><span class="legend-rail resched"></span> rescheduled</span>
+      <span class="legend-item"><span class="legend-dot"></span> whose event (colour)</span>
+      <button class="legend-dismiss" onclick="dismissLegend()" title="Hide this key" aria-label="Hide key">&times;</button>
     </div>
     <div id="review-list"></div>
   </div>
@@ -3983,7 +4011,25 @@ function reviewCalendarHtml(events) {
 
 function renderReviewNow() { renderReview({ force: true }); }
 
+// The colour key on the Review page. White cards carry no meaning by themselves,
+// so the legend spells out what the pills/rails/dot mean. Shown by default; the
+// dismiss remembers per browser. Wrapped in try/catch so blocked storage can't
+// hide the key.
+function syncLegend() {
+  const el = document.getElementById('review-legend');
+  if (!el) return;
+  let dismissed = false;
+  try { dismissed = localStorage.getItem('cribaLegendDismissed') === '1'; } catch {}
+  el.hidden = dismissed;
+}
+function dismissLegend() {
+  try { localStorage.setItem('cribaLegendDismissed', '1'); } catch {}
+  const el = document.getElementById('review-legend');
+  if (el) el.hidden = true;
+}
+
 function renderReview({ force = false } = {}) {
+  syncLegend();
   const container = document.getElementById('review-list');
   if (!container) return;
   // The first-run scan owns this container until it finishes.

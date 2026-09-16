@@ -28,6 +28,9 @@
     --surface: #FFFFFF;      /* card face on the pink ground */
     --surface-2: #FCFAF7;    /* muted/secondary card face */
     --hair: rgba(17,17,17,0.13); /* light internal divider */
+    --line: #111111;         /* structural border (alias of ink; some CSS copied
+                                from the mock referenced --line before it existed,
+                                which made those borders silently not render) */
     --red: #c1392b;
     --blue: #1a73e8;
     --blue-dark: #1557b0;
@@ -846,16 +849,17 @@
   .empty-icon { font-size: 2.25rem; margin-bottom: 0.75rem; opacity: 0.5; }
   .empty-state h3 { font-family: 'Archivo Black', sans-serif; font-size: 15px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink); margin-bottom: 0.5rem; }
   .empty-state p { font-size: 14px; line-height: 1.6; color: var(--text2); max-width: 44ch; margin: 0 auto; }
-  .backfill-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: white; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 1rem; }
+  .backfill-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--surface); border: 1.5px solid var(--ink); margin-bottom: 1rem; }
   .backfill-bar .material-icons { color: var(--gcal-icon); font-size: 18px !important; }
   .backfill-bar-text { flex: 1; font-size: 0.85rem; color: var(--text2); }
-  .btn-backfill { padding: 0.4rem 0.9rem; background: var(--accent); color: white; border: none; border-radius: 7px; font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity 0.15s; }
+  .btn-backfill { padding: 0.4rem 0.9rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity 0.15s; }
+  .btn-backfill:hover { opacity: 0.82; }
   .btn-backfill:disabled { opacity: 0.5; cursor: default; }
-  .btn-backfill-secondary { padding: 0.4rem 0.9rem; background: none; color: var(--text2); border: 1px solid var(--border); border-radius: 7px; font-size: 0.82rem; cursor: pointer; white-space: nowrap; transition: background 0.15s; }
-  .btn-backfill-secondary:hover { background: var(--bg2); }
+  .btn-backfill-secondary { padding: 0.4rem 0.9rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.82rem; cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s; }
+  .btn-backfill-secondary:hover { background: var(--ink); color: var(--bg); }
   .btn-backfill-secondary:disabled { opacity: 0.5; cursor: default; }
   #backfill-result { font-size: 0.8rem; color: var(--text2); margin-top: 0.5rem; text-align: center; }
-  .dry-run-table-wrap { margin-top: 0.75rem; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  .dry-run-table-wrap { margin-top: 0.75rem; overflow-x: auto; border: 1.5px solid var(--ink); }
   .dry-run-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
   .dry-run-table th { background: var(--bg2); color: var(--text2); font-weight: 600; padding: 0.45rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border); }
   .dry-run-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -869,7 +873,7 @@
   .dry-run-summary strong { color: var(--text1); }
 
   /* ── Review queue (Gmail / iMessage / WhatsApp — future stages) ───── */
-  .event-card { background: white; border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
+  .event-card { background: var(--surface); border: 1.5px solid var(--ink); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
   .event-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1rem; }
   .event-title-input { font-size: 1rem; font-weight: 500; border: none; background: transparent; width: 100%; padding: 0; color: var(--text); font-family: inherit; }
   .event-title-input:focus { outline: none; border-bottom: 1px solid var(--border); }
@@ -878,7 +882,7 @@
   .event-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; }
   .event-field { display: flex; flex-direction: column; gap: 4px; }
   .event-field label { font-size: 0.75rem; color: var(--text2); }
-  .event-field input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.875rem; background: var(--bg); color: var(--text); font-family: inherit; }
+  .event-field input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--ink); font-size: 0.875rem; background: var(--bg); color: var(--text); font-family: inherit; }
   .event-field input:focus { outline: none; border-color: var(--accent); background: white; }
   .event-field.full { grid-column: 1 / -1; }
   .add-people-section { margin-bottom: 1rem; }
@@ -886,14 +890,10 @@
   .event-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
   .btn-undo { font-size: 0.8rem; color: var(--ink); background: none; border: 1px solid var(--ink); padding: 2px 8px; cursor: pointer; margin-left: 4px; }
 
-  .btn-cat-add { padding: 0.35rem 0.875rem; background: var(--accent); color: white; border: none; border-radius: 6px; font-size: 0.8rem; font-weight: 500; cursor: pointer; white-space: nowrap; }
-  .btn-cat-add:hover { opacity: 0.88; }
-  .btn-cat-add:disabled { opacity: 0.45; cursor: not-allowed; }
-  .btn-cat-dismiss { padding: 0.35rem 0.75rem; background: transparent; color: var(--text2); border: 1px solid var(--border); border-radius: 6px; font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
-  .btn-cat-dismiss:hover { background: var(--bg2); }
-  .btn-cat-dismiss:disabled { opacity: 0.45; cursor: not-allowed; }
+  /* .btn-cat-add / .btn-cat-dismiss are defined once, in the brutalist system
+     above (~435). The soft duplicates that used to sit here overrode them. */
 
-  .cat-card-body { border-top: 1px solid var(--border); }
+  .cat-card-body { border-top: 1px solid var(--ink); }
 
   /* Event rows inside a category */
   .cat-event-item { border-bottom: 1px solid var(--border); }
@@ -1079,7 +1079,7 @@
   .ahead-more { background: none; border: none; padding: 0; margin-top: 3px; font: inherit; font-size: 11.5px; color: var(--ink); text-decoration: underline; cursor: pointer; }
   .ahead-source { display: block; color: var(--text2); font-size: 11.5px; margin-top: 4px; }
   .ahead-source a { color: inherit; }
-  .ahead-summary { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 10px 0 14px; background: var(--card, transparent); }
+  .ahead-summary { border: 1.5px solid var(--ink); padding: 12px 14px; margin: 10px 0 14px; background: var(--surface-2); }
   .asum-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .asum-title { font-size: 12.5px; font-weight: 600; letter-spacing: .02em; }
   .asum-btn { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; font: inherit; font-size: 11.5px; cursor: pointer; }

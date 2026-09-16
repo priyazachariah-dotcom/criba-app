@@ -25,6 +25,9 @@
     --border: #111111;
     --accent: #111111;
     --pill: #D9A9A6;
+    --surface: #FFFFFF;      /* card face on the pink ground */
+    --surface-2: #FCFAF7;    /* muted/secondary card face */
+    --hair: rgba(17,17,17,0.13); /* light internal divider */
     --red: #c1392b;
     --blue: #1a73e8;
     --blue-dark: #1557b0;
@@ -228,12 +231,16 @@
   #backfill-result { font-size: 0.8rem; color: var(--text2); margin-top: 0.75rem; padding-bottom: 0.25rem; }
 
   /* ── Review event rows ───────────────────────────────────────────────── */
-  .review-card { border-top: 1px solid var(--ink); }
-  .review-card.cancel-card { border-left: 3px solid #c5221f; padding-left: 0.75rem; }
-  .review-card.reschedule-card { border-left: 3px solid #b45309; padding-left: 0.75rem; }
+  /* Cards are bordered boxes on the pink ground (not a hairline-divided list),
+     so each event reads as one contained object with its own actions. */
+  .review-card { border: 1.5px solid var(--ink); background: var(--surface); margin-bottom: 12px; }
+  /* Cancel/reschedule keep the coloured rail, but as an inset shadow so the card
+     edge stays aligned with every other card instead of shifting inward. */
+  .review-card.cancel-card { box-shadow: inset 4px 0 0 #c5221f; padding-left: 0; }
+  .review-card.reschedule-card { box-shadow: inset 4px 0 0 #b45309; padding-left: 0; }
   .review-card-row {
     display: flex; justify-content: space-between; align-items: flex-start;
-    padding: 26px 0; gap: 2rem; cursor: default; user-select: none;
+    padding: 16px 18px; gap: 2rem; cursor: default; user-select: none;
   }
   .review-card-row.open { background: transparent; }
   .review-card-row:hover { background: transparent; }
@@ -245,7 +252,7 @@
   }
   .review-card-meta { font-size: 14px; color: var(--text2); margin-bottom: 0.25rem; white-space: normal; overflow: visible; text-overflow: clip; }
   .review-card-tags { display: flex; gap: 0.5rem; flex-shrink: 0; align-items: flex-start; padding-top: 3px; }
-  .review-card-editor { border-top: 1px solid rgba(17,17,17,0.15); }
+  .review-card-editor { border-top: 1px solid var(--hair); padding: 16px 18px; }
   .review-chevron { display: none; } /* replaced by action buttons */
   .review-conflict { font-size: 0.75rem; color: #c5221f; margin-top: 2px; }
   /* An open question, not an error — amber rather than the conflict red. */

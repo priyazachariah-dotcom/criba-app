@@ -1431,6 +1431,17 @@
       </summary>
       <div id="exclusion-list"></div>
     </details>
+    <!-- What Criba paused on its own, by watching which events you delete off
+         Google Calendar. Hidden until there's something to show. This is the
+         "I changed my mind" control: one click turns a sender back on. -->
+    <details class="settings-section" id="paused-section" hidden>
+      <summary style="flex-wrap:wrap">
+        <span class="settings-section-title">Criba stopped adding</span>
+        <span class="excl-count" id="paused-count"></span>
+        <div class="page-desc" style="margin:0.6rem 0 0;flex-basis:100%;max-width:none;order:3"><span style="display:block;max-width:680px">Criba paused these because you kept deleting them off your calendar — so it stopped adding more, on its own. Changed your mind? <strong>Start adding again</strong> turns the sender back on for future events. (Nothing here was deleted; paused events still reach Review with the reason.)</span></div>
+      </summary>
+      <div id="paused-list"></div>
+    </details>
     <!-- Moved here from the Tools panel. Setting up who events go to belongs
          next to setting up whose events they are — both are things a new user
          does once, and neither is a debugging tool. -->
@@ -1973,6 +1984,62 @@ async function removeExclusion(id) {
     exclusionRules = previous;
     renderExclusions();
     cribaAlert('Could not remove that rule — please try again.');
+  }
+}
+
+// ── "Criba stopped adding" — the paused-senders control ────────────────────
+// Reads what Criba paused on its own (from your calendar deletions) and lets you
+// turn any sender back on. The section stays hidden until there's something in it.
+let pausedSenders = [];
+
+async function loadPausedSenders() {
+  try {
+    const res = await fetch('/api/learn/stats');
+    const data = res.ok ? await res.json() : {};
+    pausedSenders = Array.isArray(data.paused) ? data.paused : [];
+  } catch { pausedSenders = []; }
+  renderPausedSenders();
+}
+
+// Plain-English name for a source_type category tag.
+function pausedCategoryLabel(cat) {
+  const map = { delivery: 'deliveries', newsletter: 'newsletters', financial: 'bills & receipts',
+    promotion: 'promotions', general: 'these' };
+  return map[String(cat || '').toLowerCase()] || `${cat} events`;
+}
+
+function renderPausedSenders() {
+  const section = document.getElementById('paused-section');
+  const el = document.getElementById('paused-list');
+  const countEl = document.getElementById('paused-count');
+  if (!section || !el) return;
+  if (!pausedSenders.length) { section.hidden = true; return; }
+  section.hidden = false;
+  if (countEl) countEl.textContent = `${pausedSenders.length} paused`;
+  el.innerHTML = pausedSenders.map(p => `
+    <div class="excl-row">
+      <span class="excl-label">Paused: <strong>${escHtml(pausedCategoryLabel(p.category))}</strong> from ${escHtml(p.domain)}
+        <span class="excl-off"> — you deleted ${p.deleted} like ${p.deleted === 1 ? 'this' : 'these'}</span>
+      </span>
+      <button class="excl-x" title="Start adding these again" onclick="startAddingAgain('${escHtml(p.domain)}','${escHtml(p.category)}')">Start adding again</button>
+    </div>`).join('');
+}
+
+// Turns a paused sender back on. Optimistic like removeExclusion; reverted on failure.
+async function startAddingAgain(domain, category) {
+  const previous = pausedSenders.slice();
+  pausedSenders = pausedSenders.filter(p => !(p.domain === domain && p.category === category));
+  renderPausedSenders();
+  try {
+    const res = await fetch('/api/learn/unmute', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain, category }),
+    });
+    if (!res.ok) throw new Error('Failed');
+  } catch {
+    pausedSenders = previous;
+    renderPausedSenders();
+    cribaAlert('Could not turn that sender back on — please try again.');
   }
 }
 
@@ -3439,7 +3506,7 @@ function showPage(page, btn) {
   if (page === 'recent') { renderRecent(); loadRecentEvents(); }
   // renderSettingsPage returns early when there are no members, so the
   // recipient list is painted separately rather than chained onto it.
-  if (page === 'settings') { renderSettingsPage(); renderRecipients(); loadExclusions(); }
+  if (page === 'settings') { renderSettingsPage(); renderRecipients(); loadExclusions(); loadPausedSenders(); }
   // Always re-read on entry. A cached fortnight is exactly the stale snapshot
   // this screen exists to avoid.
   if (page === 'ahead') loadAhead(true);

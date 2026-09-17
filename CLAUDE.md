@@ -3,6 +3,14 @@
 ## Project overview
 Criba is an AI-powered approval layer that sits between a user's communication sources and Google Calendar. It extracts calendar-worthy events from PDFs, iCal feeds, Gmail, iMessage, and WhatsApp, surfaces them in a review queue, and writes approved events to Google Calendar. Nothing reaches Google Calendar without user approval.
 
+## Docs (context — read these before changing related areas)
+- `docs/LEARNING.md` — how Criba learns from calendar activity (deletions →
+  auto-pause per sender+category). The design, data shapes, endpoints, and the
+  tunable pause threshold.
+- `docs/DECISIONS.md` — running plain-English record of *why* notable changes
+  were made. Add an entry when you make a decision a future reader would ask about.
+- `BUGS.md` — live bug list (see rules below). `VERIFICATION.md` — OAuth launch pack.
+
 ## Stack
 - Hosting: Vercel (serverless)
 - Backend: Node.js / Express

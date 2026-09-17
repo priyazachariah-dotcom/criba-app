@@ -2346,6 +2346,15 @@ function showApp() {
   startLiveRefresh();
   loadTestModeSettings();
   maybeShowHouseholdInvite();
+  learnFromCalendar();
+}
+
+// Fire-and-forget: asks the server to re-check a batch of Criba-added events
+// against Google Calendar and record which the user has deleted vs kept. This
+// is how Criba learns from calendar activity instead of in-app training. It
+// changes nothing on screen (Step 1 only measures), so failures are ignored.
+function learnFromCalendar() {
+  fetch('/api/learn/check', { method: 'POST' }).catch(() => {});
 }
 
 // ── Household invites ──────────────────────────────────────────────────────

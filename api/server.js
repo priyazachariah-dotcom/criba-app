@@ -1162,6 +1162,60 @@ function learningCategoryOf(ev) {
   return String(ev?.source_type || 'general').toLowerCase();
 }
 
+// ── Learned mutes (Step 2) ─────────────────────────────────────────────────
+// When a (sender-domain, category) has been deleted enough with nothing kept,
+// Criba stops auto-adding new ones — but it HOLDS them into Review (never drops
+// them), so the user always sees what was paused and can add any one or turn the
+// sender back on. Stored as settings.learnedMutes = { mutes: { "domain|cat":
+//   { since, deleted, kept } } }.
+//
+// Default rule, deliberately conservative and easy to explain: pause after 3+
+// deletes with 0 keeps; un-pause the moment the user keeps one. Trusted senders
+// are never paused (trusted beats muted). Tune these once real numbers land.
+function learnedMuteKey(domain, cat) { return `${domain}|${cat}`; }
+function shouldLearnMute(stat) { return (stat?.deleted || 0) >= 3 && (stat?.kept || 0) === 0; }
+
+async function getLearnedMutes(email) {
+  try {
+    const s = await getUserSettings(email).get('learnedMutes');
+    return (s && typeof s.mutes === 'object' && s.mutes) ? s.mutes : {};
+  } catch { return {}; }
+}
+async function saveLearnedMutes(email, mutes) {
+  await getUserSettings(email).set('learnedMutes', { mutes });
+}
+function isLearnedMuted(mutes, domain, cat) {
+  return !!(domain && mutes && mutes[learnedMuteKey(domain, cat)]);
+}
+function learnedMuteHold(m) {
+  const n = m?.deleted || 0;
+  return {
+    held_reason: `you deleted the last ${n} like this`,
+    conflict_note: `Not added — you deleted ${n} like this, so Criba paused them. Add this one if you want it, or turn the sender back on in Circles.`,
+  };
+}
+// Rebuilds the learned-mute set from the tally each time new outcomes land.
+// Deterministic: a sender is paused only while it still meets the rule and isn't
+// trusted, so keeping one automatically un-pauses it next reconcile.
+async function reconcileLearnedMutes(email, stats) {
+  let trusted;
+  try { trusted = await getTrustedDomains(email); } catch { trusted = new Set(); }
+  const prev = await getLearnedMutes(email);
+  const next = {};
+  for (const [domain, cats] of Object.entries(stats || {})) {
+    if (domainMatches(trusted, `x@${domain}`)) continue; // trusted is never paused
+    for (const [cat, c] of Object.entries(cats)) {
+      if (!shouldLearnMute(c)) continue;
+      const key = learnedMuteKey(domain, cat);
+      next[key] = prev[key]
+        ? { ...prev[key], deleted: c.deleted, kept: c.kept }
+        : { since: new Date().toISOString(), deleted: c.deleted, kept: c.kept };
+    }
+  }
+  try { await saveLearnedMutes(email, next); } catch {}
+  return next;
+}
+
 // Rough end-of-event moment, used only to decide when a still-present event has
 // "survived to its date" and can be counted as kept.
 function eventEndMs(ev) {
@@ -1223,7 +1277,11 @@ async function learnFromCalendar(email, calendar, { limit = 12 } = {}) {
     checked++; dirty = true;
     if (outcome === 'deleted') deleted++; else kept++;
   }
-  if (dirty) { try { await saveSenderStats(email, stats); } catch {} }
+  if (dirty) {
+    try { await saveSenderStats(email, stats); } catch {}
+    // Step 2: turn the fresh tally into pause/un-pause decisions.
+    try { await reconcileLearnedMutes(email, stats); } catch {}
+  }
   return { checked, deleted, kept };
 }
 
@@ -2815,7 +2873,36 @@ app.get('/api/learn/stats', requireAuth, async (req, res) => {
     }
   }
   rows.sort((a, b) => b.deleted - a.deleted || b.total - a.total);
-  res.json({ rows });
+  const mutes = await getLearnedMutes(req.user.email);
+  const paused = Object.entries(mutes).map(([key, m]) => {
+    const [domain, category] = key.split('|');
+    return { domain, category, deleted: m.deleted || 0, since: m.since || null };
+  });
+  res.json({ rows, paused });
+});
+
+// "Start adding again" — the user turns a paused sender+category back on. We drop
+// the learned mute AND reset that tally so a couple of old deletes don't
+// immediately re-pause it; future events from this sender flow again.
+app.post('/api/learn/unmute', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const domain = String(req.body?.domain || '').toLowerCase().trim();
+  const category = String(req.body?.category || '').toLowerCase().trim();
+  if (!domain || !category) return res.status(400).json({ error: 'domain and category required' });
+  const key = learnedMuteKey(domain, category);
+  try {
+    const mutes = await getLearnedMutes(email);
+    if (mutes[key]) { delete mutes[key]; await saveLearnedMutes(email, mutes); }
+    const stats = await getSenderStats(email);
+    if (stats[domain] && stats[domain][category]) {
+      delete stats[domain][category];
+      if (!Object.keys(stats[domain]).length) delete stats[domain];
+      await saveSenderStats(email, stats);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/events/approve', requireAuth, async (req, res) => {
@@ -7518,6 +7605,8 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
   // in 25180b5 was never running on the path that mattered. Loading the same
   // two inputs here is what lets the same check run in both places.
   const gpExclusions = await getUserExclusions(email).values();
+  // Senders/categories the user's calendar deletions have paused (Step 2).
+  const gpLearnedMutes = await getLearnedMutes(email);
 
   // The cursor is NOT advanced here. It used to be, "so we don't reprocess on
   // retry" — but the per-message lock below already does that job, and moving
@@ -7833,12 +7922,21 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         // A prior refusal is treated like a relevance hold: never auto-write,
         // never drop — the event surfaces in Review carrying the reason, and
         // one click either adds it or refuses it again.
-        const hold = refusal ? refusalHold(refusal) : null;
+        let hold = refusal ? refusalHold(refusal) : null;
+        // Learned mute (Step 2): the user has deleted enough of this sender +
+        // category off their calendar, so pause new ones into Review too.
+        if (!hold) {
+          const lmDomain = domainOf(senderEmail);
+          const lmCat = learningCategoryOf({ source_type: ev.source_type });
+          if (isLearnedMuted(gpLearnedMutes, lmDomain, lmCat)) {
+            hold = learnedMuteHold(gpLearnedMutes[learnedMuteKey(lmDomain, lmCat)]);
+          }
+        }
         let calEventId = null;
         if (hold) {
-          console.log(`[gmail-process] HELD-REFUSAL "${ev.title}" on ${ev.date} — refused ${refusal.decided_at || 'earlier'} via ${refusal.via || 'unknown'}`);
-          await traceEmail(email, { stage: 'HELD-REFUSAL', via: 'webhook', messageId, subject,
-            title: ev.title, date: ev.date, refusedVia: refusal.via || null, decidedAt: refusal.decided_at || null });
+          console.log(`[gmail-process] HELD "${ev.title}" on ${ev.date} — ${hold.held_reason}`);
+          await traceEmail(email, { stage: refusal ? 'HELD-REFUSAL' : 'HELD-LEARNED-MUTE', via: 'webhook', messageId, subject,
+            title: ev.title, date: ev.date, refusedVia: refusal?.via || null, decidedAt: refusal?.decided_at || null });
         } else if (relevance.relevant) {
           try {
             calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone: userTz, email });
@@ -10297,6 +10395,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     e.status === 'pending_cancellation' || e.status === 'pending_reschedule');
   const familyMembers = dryRun ? [] : await getUserFamily(email).values();
   const exclusionRules = dryRun ? [] : await getUserExclusions(email).values();
+  const bfLearnedMutes = dryRun ? {} : await getLearnedMutes(email);
   // Built from knownEvents, which is every event already stored for this user —
   // including the ones they have coloured by hand. Computed once per scan.
   const learnedAttribution = dryRun ? new Map() : learnSenderAttribution(knownEvents);
@@ -10726,10 +10825,17 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             // Carried purely so buildEventDescription can write the details and
             // the back-link to the source email into the calendar entry.
             notes: combinedNotes, sender_name: senderName, sender_email: senderEmail, subject, gmail_message_id: messageId };
-          const hold = refusal ? refusalHold(refusal) : null;
+          let hold = refusal ? refusalHold(refusal) : null;
+          if (!hold) {
+            const lmDomain = domainOf(senderEmail);
+            const lmCat = learningCategoryOf({ source_type: ev.source_type });
+            if (isLearnedMuted(bfLearnedMutes, lmDomain, lmCat)) {
+              hold = learnedMuteHold(bfLearnedMutes[learnedMuteKey(lmDomain, lmCat)]);
+            }
+          }
           if (hold) {
-            await traceEmail(email, { runId, stage: 'HELD-REFUSAL', messageId, subject, from,
-              title: ev.title, date: ev.date, refusedVia: refusal.via || null, decidedAt: refusal.decided_at || null });
+            await traceEmail(email, { runId, stage: refusal ? 'HELD-REFUSAL' : 'HELD-LEARNED-MUTE', messageId, subject, from,
+              title: ev.title, date: ev.date, refusedVia: refusal?.via || null, decidedAt: refusal?.decided_at || null });
           } else if (relevance.relevant) {
             try {
               calEventId = await autoWriteToCalendar(bfCalApi, bfCalId, bfWriteObj, bfColorId, { timezone: userTz, email });

@@ -1131,6 +1131,102 @@ async function getMutedDomains(email) {
   } catch { return new Set(); }
 }
 
+// ── Learning from calendar activity ────────────────────────────────────────
+// Beta users didn't want to train Criba in-app; they wanted to just delete
+// unwanted events off Google Calendar and have Criba take the hint. The signal
+// is clean: when a user deletes an event *through Criba*, we null its calEventId,
+// so any event whose calEventId is still set but which Google now reports as
+// `cancelled` (or 404/410) was deleted by the user directly in their calendar —
+// a strong "I didn't want this" for that sender + category.
+//
+// STEP 1 (this change) only *measures*: it tallies kept/deleted per
+// (sender-domain, category) so later steps can set auto-mute thresholds from
+// real numbers. Nothing is muted here and no behaviour changes.
+//
+// Stored as settings.senderStats = { stats: { [domain]: { [category]:
+//   { kept, deleted, lastDeletedAt } } } }.
+async function getSenderStats(email) {
+  try {
+    const s = await getUserSettings(email).get('senderStats');
+    return (s && typeof s.stats === 'object' && s.stats) ? s.stats : {};
+  } catch { return {}; }
+}
+async function saveSenderStats(email, stats) {
+  await getUserSettings(email).set('senderStats', { stats });
+}
+
+// The category we learn on. source_type is Claude's own tag for the extracted
+// item (e.g. delivery, financial, newsletter); falling back keeps Amazon
+// deliveries separate from, say, an Amazon order that turned into a real event.
+function learningCategoryOf(ev) {
+  return String(ev?.source_type || 'general').toLowerCase();
+}
+
+// Rough end-of-event moment, used only to decide when a still-present event has
+// "survived to its date" and can be counted as kept.
+function eventEndMs(ev) {
+  const d = ev?.end_date || ev?.date;
+  if (!d) return null;
+  const t = ev?.end_time || ev?.time || '23:59';
+  const ms = Date.parse(`${d}T${t.length === 5 ? t : '23:59'}:00`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function bumpSenderStat(stats, ev, outcome) {
+  const domain = domainOf(ev.sender_email);
+  if (!domain || !domain.includes('.')) return; // skip malformed senders
+
+  const cat = learningCategoryOf(ev);
+  stats[domain] = stats[domain] || {};
+  const c = (stats[domain][cat] = stats[domain][cat] || { kept: 0, deleted: 0 });
+  if (outcome === 'deleted') { c.deleted = (c.deleted || 0) + 1; c.lastDeletedAt = new Date().toISOString(); }
+  else { c.kept = (c.kept || 0) + 1; }
+}
+
+// Re-checks a bounded batch of the events Criba auto-added from Gmail, records
+// which the user has since deleted vs kept, and marks each one so it is only
+// counted once. Deliberately bounded per call (calendar reads cost API quota)
+// and safe to call opportunistically — it accumulates across sessions.
+async function learnFromCalendar(email, calendar, { limit = 12 } = {}) {
+  const store = getUserEvents(email);
+  let all;
+  try { all = await store.values(); } catch { return { checked: 0, deleted: 0, kept: 0 }; }
+  const now = Date.now();
+  const MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000; // stop re-checking after 60 days
+  const candidates = all.filter(e =>
+    e && e.calEventId && e.source === 'gmail' && !e.learn_checked &&
+    e.created_at && (now - Date.parse(e.created_at)) < MAX_AGE_MS
+  ).slice(0, limit);
+
+  let checked = 0, deleted = 0, kept = 0, dirty = false;
+  const stats = await getSenderStats(email);
+  for (const ev of candidates) {
+    let outcome = null;
+    try {
+      const g = await calendar.events.get({ calendarId: ev.gcalId || 'primary', eventId: ev.calEventId });
+      if (g.data && g.data.status === 'cancelled') outcome = 'deleted';
+      else {
+        const endMs = eventEndMs(ev);
+        if (endMs && endMs < now) outcome = 'kept'; // survived to its date
+        // else: still upcoming and present — leave unchecked, re-check later
+      }
+    } catch (err) {
+      const code = err?.code || err?.response?.status;
+      if (code === 404 || code === 410) outcome = 'deleted';
+      else continue; // transient (auth/network) — try again next time
+    }
+    if (!outcome) continue;
+    bumpSenderStat(stats, ev, outcome);
+    ev.learn_checked = true;
+    ev.learn_outcome = outcome;
+    try { await store.set(ev.id, ev); } catch {}
+    checked++; dirty = true;
+    if (outcome === 'deleted') deleted++; else kept++;
+  }
+  if (dirty) { try { await saveSenderStats(email, stats); } catch {} }
+  return { checked, deleted, kept };
+}
+
 // Subdomain-aware on purpose. A school on Google Workspace mails from
 // hillsdale.org but its newsletter tool mails from mail.hillsdale.org, and a
 // parent naming the first should not have to discover the second.
@@ -2686,6 +2782,40 @@ app.get('/api/events/recent', requireAuth, async (req, res) => {
     })
     .slice(0, 100);
   res.json(all);
+});
+
+// STEP 1 (measure only): the browser calls this opportunistically on app open.
+// It re-checks a bounded batch of Criba-added events against Google Calendar and
+// tallies which the user has deleted vs kept, per sender + category. It does not
+// mute anything or change what Criba adds — it only gathers the data that later
+// steps use to set auto-mute thresholds. Fails soft: any error just yields zero.
+app.post('/api/learn/check', requireAuth, async (req, res) => {
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const result = await learnFromCalendar(req.user.email, calendar, { limit: 12 });
+    res.json(result);
+  } catch (err) {
+    res.json({ checked: 0, deleted: 0, kept: 0, error: err.message });
+  }
+});
+
+// Read-only view of the learned tally — delete/keep counts per sender + category,
+// with a computed delete-rate. Used to see the real numbers before Step 2 turns
+// on any automatic muting.
+app.get('/api/learn/stats', requireAuth, async (req, res) => {
+  const stats = await getSenderStats(req.user.email);
+  const rows = [];
+  for (const [domain, cats] of Object.entries(stats)) {
+    for (const [category, c] of Object.entries(cats)) {
+      const kept = c.kept || 0, deleted = c.deleted || 0, total = kept + deleted;
+      rows.push({ domain, category, kept, deleted, total,
+        deleteRate: total ? Math.round((deleted / total) * 100) : 0,
+        lastDeletedAt: c.lastDeletedAt || null });
+    }
+  }
+  rows.sort((a, b) => b.deleted - a.deleted || b.total - a.total);
+  res.json({ rows });
 });
 
 app.post('/api/events/approve', requireAuth, async (req, res) => {

@@ -83,15 +83,23 @@ silently drops them. Keeping one automatically un-pauses that sender.
   drops the mute and resets that tally so a couple of old deletes don't
   immediately re-pause it.
 
-### Step 3 — Newsletters + delivery type + the "paused" list (planned)
-- Detect bulk/newsletter senders from email headers (`List-Unsubscribe`,
-  `Precedence: bulk`) and give them a low default trust so they must *earn*
-  auto-add rather than getting it on sight. (Bonus: skipping extraction on junk
-  newsletters also lowers the AI bill.)
-- Make sure delivery-type emails are tagged so "no deliveries" can be true for
-  one person without affecting real Amazon events.
-- Surface a **"Criba stopped adding … · [Start adding again]"** list in
-  Circles/settings, plus the same control on held cards in Review.
+### Step 3 — The "paused" control (shipped) + header pre-filter (follow-up)
+**Shipped:** a **"Criba stopped adding … · [Start adding again]"** list in
+Circles/settings (`#paused-section`), fed by `GET /api/learn/stats` (`paused[]`)
+and `POST /api/learn/unmute`. Hidden until something is paused. This is the
+"I changed my mind" control — one click turns a sender back on for future
+events. Category names are shown in plain English (`pausedCategoryLabel`).
+
+Repeat-offender newsletters and deliveries are already handled per-sender by
+Steps 1–2 (delete a few → paused), so this closes the loop that beta users
+actually asked for.
+
+**Follow-up (not yet built):** detect bulk senders from email headers
+(`List-Unsubscribe`, `Precedence: bulk`) to give brand-new newsletters a low
+*default* trust so they must earn auto-add on first sight — an optimization on
+top of the per-sender learning, and a way to also cut extraction cost. Left as a
+separate change because it can suppress a first-time valid event, so it wants its
+own tuning.
 
 ## 5. What Criba stores (per user, in `settings:`)
 

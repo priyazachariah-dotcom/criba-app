@@ -6511,6 +6511,91 @@ function checkPreFilter(text, subject, messageId, email) {
 }
 
 // Parse "Name <email>" or "email" from a From header
+// ── Newsletter detection and per-sender preference ───────────────────────
+//
+// Detection is header-first on purpose. List-Unsubscribe is required of every
+// legitimate bulk sender (RFC 2369/8058), so it identifies real newsletters and
+// mailing lists for free -- no model call, no latency, no cost. A model-based
+// category tag is the fallback for bulk-shaped mail that omits it, not the
+// first resort.
+//
+// Deliberately NOT treated as newsletter signals: marketing-looking subjects,
+// HTML-heavy bodies, or "no-reply" addresses. A school mails through Mailchimp
+// and a coach sends from a no-reply club platform; guessing from shape is how
+// real school mail gets silently filtered, which is the one failure this
+// product cannot have.
+const NEWSLETTER_HEADERS = ['list-unsubscribe', 'list-id', 'list-post', 'mailing-list'];
+
+export function newsletterSignals(headers = []) {
+  const byName = new Map(
+    (headers || []).map(h => [String(h?.name || '').toLowerCase(), String(h?.value || '')]));
+  const present = NEWSLETTER_HEADERS.filter(h => (byName.get(h) || '').trim().length > 0);
+  const precedence = (byName.get('precedence') || '').trim().toLowerCase();
+  const bulkPrecedence = precedence === 'bulk' || precedence === 'list';
+  return {
+    headers: present,
+    bulkPrecedence,
+    // Header evidence is conclusive on its own. Absence is NOT evidence of the
+    // opposite -- it only means the cheap check could not decide, and the
+    // question passes to the model.
+    isNewsletter: present.length > 0 || bulkPrecedence,
+    needsModelCheck: present.length === 0 && !bulkPrecedence,
+  };
+}
+
+// Preference is keyed on the From address, not the domain. A school mails from
+// several addresses that mean different things -- a newsletter from
+// newsletters@ and a direct message from a teacher@ share a domain and must not
+// share a preference. Not the envelope sender either: that varies per send on
+// most bulk platforms, so it would never match twice.
+export function newsletterSenderKey(fromHeader) {
+  const { senderEmail } = parseFrom(String(fromHeader || ''));
+  return String(senderEmail || '').trim().toLowerCase();
+}
+
+function newsletterPrefsKey(email) {
+  return `newsletterPrefs:${String(email || '').toLowerCase()}`;
+}
+
+// Three states, and the distinction between two of them matters:
+//   allow  - the user said yes; future issues are written automatically
+//   deny   - the user said no; future issues are skipped silently
+//   asked  - the ask was sent and never answered
+//
+// "asked" behaves exactly like "deny" for writing -- nothing is added -- but is
+// stored separately so that an unanswered prompt can never be mistaken for a
+// decision the user made. Both suppress further prompts: the design is ask
+// once, and a person who ignored the question has answered it.
+export const NEWSLETTER_STATES = new Set(['allow', 'deny', 'asked']);
+
+export function newsletterPrefAllowsWrite(pref) {
+  return pref?.state === 'allow';
+}
+
+export function newsletterPrefShouldAsk(pref) {
+  return !pref;               // only a sender with no entry at all is ever asked
+}
+
+async function getNewsletterPref(email, fromHeader) {
+  const key = newsletterSenderKey(fromHeader);
+  if (!key) return null;
+  const raw = await redis.hget(newsletterPrefsKey(email), key);
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw);
+    return NEWSLETTER_STATES.has(p?.state) ? p : null;
+  } catch { return null; }
+}
+
+async function setNewsletterPref(email, fromHeader, state, extra = {}) {
+  if (!NEWSLETTER_STATES.has(state)) throw new Error(`bad newsletter state "${state}"`);
+  const key = newsletterSenderKey(fromHeader);
+  if (!key) return null;
+  const pref = { state, sender: key, updatedAt: new Date().toISOString(), ...extra };
+  await redis.hset(newsletterPrefsKey(email), key, JSON.stringify(pref));
+  return pref;
+}
+
 function parseFrom(fromHeader) {
   const match = fromHeader.match(/^(.*?)\s*<([^>]+)>$/);
   if (match) return { senderName: match[1].replace(/^"|"$/g, '').trim(), senderEmail: match[2].trim() };

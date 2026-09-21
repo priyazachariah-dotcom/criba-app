@@ -7,6 +7,50 @@ feature in depth see `docs/LEARNING.md`.
 
 ---
 
+## 2026-09-21 — Today (daily digest), Surface 2; Review's future deferred
+
+**Why:** A daily digest of what is actually happening today, as one thing to
+look at rather than a queue to work through.
+
+**Decision:** Build the in-app view standalone. The push notification (Surface
+1) is deferred until this exists and is used.
+
+**One content model, two surfaces.** `GET /api/today` owns the definition and
+the view only renders it, so the notification can later summarise the identical
+payload. Two implementations of "what is today" would eventually disagree, and
+the notification would promise something the screen did not show.
+
+- **Today is the user's today**, resolved through `getUserTimezone`. Criba runs
+  in UTC; without this a parent in California sees tomorrow's events from
+  mid-afternoon.
+- **`financial_reminder` goes in Reminders.** The original spec assigned
+  `deadline` and `action_item` to Reminders and `event` to Today, leaving the
+  fourth `source_type` with nowhere to go — it would have silently vanished.
+  It is in live use (6 items in Pria's queue at time of writing).
+- **All-day items sort first**, then chronologically. An all-day item has no
+  time to sort by, and burying it last is how a minimum day gets missed.
+- Empty sections are omitted; a heading over nothing reads as a failed load.
+
+### Review's retirement: deliberately NOT decided yet
+
+Retiring Review was scoped and **deferred for a week of real use**. The reason is
+a ratio: at the time of writing Pria's queue held **67 items, of which 6 were
+dated today**. Today surfaces 6; the other 61 include **29 carrying a
+`held_reason`** (refusal holds, learned-mute holds, relevance holds) and a
+`pending_reschedule`. Those are not "today's plan" — they are pending questions,
+and they have no home in a digest by definition. Review also owns the editor,
+member/circle pickers and the agenda/month views.
+
+So "retirement" cannot mean deletion, and the three readings — Today as default
+landing with Review renamed; Today absorbing Review wholesale; or Today shipping
+standalone first — are materially different builds. Designing a home for held
+items and reschedules now means designing blind against a mockup that only
+covers today.
+
+**Accepted cost, stated plainly:** until that decision, two screens show
+overlapping data with different interaction models. That is a known temporary
+state, not an oversight. Revisit after a week of Today in use.
+
 ## 2026-09-21 — Bulk remove-by-source (extends the Sep 16 decision)
 
 **Why:** The Sep 16 design says learn from what people already do, with no

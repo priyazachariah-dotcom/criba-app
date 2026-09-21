@@ -53,10 +53,16 @@ deleting it. Mark every entry as verified or assumed; several entries there were
 confident guesses that turned out to be Criba behaving correctly.
 
 ## Git workflow
+- **Open a pull request. Do not push directly to `main`.** This repo has been on
+  PRs since #9, and two git collisions on 2026-09-21 both trace back to changes
+  landing without that checkpoint — work built on a stale checkout, against
+  decisions that had already shipped.
+- Branch, commit, push the branch, open the PR. Let the PR be the review point.
 - Commit after completing each logical fix or feature
-- Push to the main branch automatically — do not wait for approval
 - Use clear commit messages describing what changed (e.g. "fix: replace in-memory Map with Vercel KV storage")
 - Never force push
+- Before starting work, fetch and rebase onto `origin/main`. Building on a stale
+  checkout is what produced the collisions above.
 
 ## Code principles
 - Do not change working features while fixing bugs

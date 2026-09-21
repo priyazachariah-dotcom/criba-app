@@ -3248,6 +3248,11 @@ let todayData = null;
 let todayError = null;
 
 async function loadToday() {
+  // The repeat-offender link reads sourceGroups, which only loadRecentEvents
+  // populated. Opening Today directly -- the normal path, and the one a push
+  // notification will use -- left it empty, so the link silently never
+  // appeared. Load it here too; it is cached per call and cheap.
+  if (!sourceGroups.length) { try { await loadSourceGroups(); } catch {} }
   try {
     const res = await fetch('/api/today');
     if (res.ok) { todayData = await res.json(); todayError = null; }

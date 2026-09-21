@@ -3621,6 +3621,83 @@ async function deleteEventEntries(email, calendar, entries) {
   return { deleted, total: entries.length, results };
 }
 
+// ── Today ────────────────────────────────────────────────────────────────
+//
+// One content model, two surfaces. This is the whole digest -- the in-app view
+// renders it, and the push notification (when it exists) will summarise the
+// same payload rather than recomputing it. Two implementations of "what is
+// today" would eventually disagree, and the notification would promise
+// something the screen did not show.
+//
+// "Today" is the USER'S today. Criba runs in UTC and a parent in California
+// would otherwise see tomorrow's events from mid-afternoon.
+const TODAY_REMINDER_TYPES = new Set(['deadline', 'action_item', 'financial_reminder']);
+const TODAY_EVENT_TYPES = new Set(['event']);
+// Decision cards -- a cancellation to confirm, a reschedule, an invite -- are
+// not part of today's plan. They are questions, and they keep their home in
+// Review until its future is decided.
+const TODAY_EXCLUDED_STATUSES = new Set([
+  'cancelled', 'duplicate', 'deleted',
+  'pending_cancellation', 'pending_reschedule', 'pending_invite',
+]);
+
+function todayGreeting(hour) {
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+app.get('/api/today', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const tz = await getUserTimezone(email);
+  const now = new Date();
+  const date = isoDateInZone(now, tz);
+
+  let hour = 9;
+  try {
+    hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', hour12: false }).format(now));
+  } catch {}
+
+  let all = [];
+  try { all = await getUserEvents(email).values(); } catch {}
+
+  const mine = all.filter(e =>
+    e && String(e.date || '') === date && !TODAY_EXCLUDED_STATUSES.has(e.status));
+
+  const shape = e => ({
+    id: e.id, title: e.title, time: e.time || null, end_time: e.end_time || null,
+    location: e.location || null, is_all_day: !!e.is_all_day,
+    source_type: e.source_type || null,
+    sender_email: e.sender_email || null, sender_name: e.sender_name || null,
+    // Drives the "seen this sender before?" link into the bulk-mute tool.
+    category: learningCategoryOf({ source_type: e.source_type }),
+    onCalendar: !!e.calEventId,
+    held_reason: e.held_reason || null,
+  });
+
+  const reminders = mine
+    .filter(e => TODAY_REMINDER_TYPES.has(String(e.source_type || '').toLowerCase()))
+    .map(shape);
+
+  // Chronological, all-day first: an all-day item has no time to sort by, and
+  // burying it at the end is how a minimum day gets missed.
+  const events = mine
+    .filter(e => TODAY_EVENT_TYPES.has(String(e.source_type || '').toLowerCase()))
+    .map(shape)
+    .sort((a, b) => {
+      if (a.is_all_day !== b.is_all_day) return a.is_all_day ? -1 : 1;
+      return String(a.time || '').localeCompare(String(b.time || ''));
+    });
+
+  res.json({
+    date, timezone: tz,
+    greeting: todayGreeting(hour),
+    // Sections are omitted when empty -- the caller renders what it is given.
+    reminders, events,
+    counts: { reminders: reminders.length, events: events.length },
+  });
+});
+
 // GET /api/events/sources — the Criba-added events on the calendar, grouped by
 // where they came from, so a whole batch can go in one action.
 //

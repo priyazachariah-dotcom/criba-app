@@ -313,6 +313,21 @@
   .review-badge-financial { background: var(--bg2); color: #137333; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
   .review-badge-recurring { background: var(--bg2); color: var(--ink); font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 
+  /* Clear-a-whole-sender block. Sits above the row list on the same tab: it is
+     a shortcut for the list below it, not a separate place to go. */
+  .src-wrap { border: 1.5px solid var(--ink); padding: 14px 16px; margin: 0 0 18px; }
+  .src-head { font-weight: 700; font-size: 14px; letter-spacing: .02em; }
+  .src-sub { font-size: 12.5px; color: var(--text2); margin: 4px 0 12px; max-width: 640px; }
+  .src-row { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between;
+             padding: 10px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .src-info { min-width: 0; flex: 1 1 260px; }
+  .src-name { font-weight: 600; font-size: 13.5px; word-break: break-all; }
+  .src-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+  .src-eg { font-size: 11.5px; color: var(--text2); margin-top: 4px; opacity: .85; }
+  /* Wraps rather than truncating: the button states that it also stops future
+     events, and a clipped label would hide half of what the click does. */
+  .src-btn { flex: 0 1 auto; max-width: 100%; white-space: normal; text-align: left; line-height: 1.3; }
+
   /* ── Recent event rows (Edit Calendar Events) ─────────────────────────
      Boxed cards, matching the Review queue, so the two lists read as one app. */
   .recent-card { border: 1.5px solid var(--ink); background: var(--surface); margin-bottom: 8px; }
@@ -1328,6 +1343,7 @@
       <div class="page-headline page-headline-sm">EDIT YOUR EVENTS</div>
       <div class="page-desc">Everything Criba has handled for you. Rows marked <strong>Synced</strong> are on your Google Calendar right now; <strong>Not on calendar</strong> ones aren&rsquo;t, and can be put back with one click. Edit any time.</div>
     </div>
+    <div id="source-groups"></div>
     <div id="recent-list"></div>
   </div>
 
@@ -3175,6 +3191,82 @@ async function loadRecentEvents() {
     recentLoadError = 'Could not reach Criba. Check your connection and reload.';
   }
   renderRecent();
+  loadSourceGroups();
+}
+
+// ── Remove a whole source in one action ──────────────────────────────────
+//
+// One SF Grind issue produced 19 events. Clearing that by hand is 19 clicks,
+// and -- because deleting through Criba nulls calEventId -- teaches Criba
+// nothing, so the next issue brings 19 more. This is the same "delete the junk"
+// gesture made once, and it records the intent instead of hoping the
+// deletion-watcher infers it.
+let sourceGroups = [];
+
+async function loadSourceGroups() {
+  try {
+    const res = await fetch('/api/events/sources');
+    if (!res.ok) { document.getElementById('source-groups').innerHTML = ''; return; }
+    const d = await res.json();
+    sourceGroups = d.groups || [];
+  } catch { sourceGroups = []; }
+  renderSourceGroups();
+}
+
+function renderSourceGroups() {
+  const host = document.getElementById('source-groups');
+  if (!host) return;
+  // Only worth showing where a batch actually exists. A source with one
+  // upcoming event is already a one-click job in the list below.
+  const groups = sourceGroups.filter(g => !g.muted && g.upcoming >= 3);
+  if (!groups.length) { host.innerHTML = ''; return; }
+  host.innerHTML = `
+    <div class="src-wrap">
+      <div class="src-head">Clear a whole sender</div>
+      <div class="src-sub">Criba added several events from these. Removing a batch also stops future
+        events from that sender — you can turn it back on any time under Circles.</div>
+      ${groups.map(g => {
+        const who = g.scope === 'domain' ? g.domain : g.sender;
+        const pastNote = g.past ? ` · ${g.past} past event${g.past > 1 ? 's' : ''} left alone` : '';
+        return `<div class="src-row">
+          <div class="src-info">
+            <div class="src-name">${escHtml(who)}</div>
+            <div class="src-meta">${g.upcoming} upcoming${escHtml(pastNote)}${g.scope === 'domain' ? ` · all ${g.addresses.length} addresses` : ''}</div>
+            <div class="src-eg">${g.upcomingTitles.map(t => escHtml(String(t).slice(0, 48))).join(' · ')}</div>
+          </div>
+          <button class="btn-danger src-btn"
+            onclick="removeSource('${g.scope}','${escHtml(who)}','${escHtml(g.category)}',${g.upcoming},${g.past})">
+            Remove all ${g.upcoming} and stop future events from ${escHtml(who)}
+          </button>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+async function removeSource(scope, target, category, upcoming, past) {
+  // Says both things it does, and what it deliberately does not do. Past events
+  // are a record of what happened; "stop sending me these" is not a request to
+  // rewrite history.
+  const pastLine = past
+    ? `\n\n${past} past event${past > 1 ? 's' : ''} from ${target} will be left on your calendar — only upcoming ones are removed.`
+    : '';
+  const ok = await cribaConfirm(
+    `Remove ${upcoming} upcoming event${upcoming > 1 ? 's' : ''} from ${target}, and stop adding new ones?${pastLine}`
+    + `\n\nYou can turn ${target} back on any time under Circles → Start adding again.`,
+    { confirmLabel: `Remove ${upcoming} and stop`, danger: true });
+  if (!ok) return;
+  try {
+    const res = await fetch('/api/events/remove-by-source', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scope, target, category }),
+    });
+    const d = await res.json();
+    if (!res.ok) { await cribaAlert(d.error || 'Could not remove those just now.'); return; }
+    await loadRecentEvents();
+    await cribaAlert(`Removed ${d.deleted} event${d.deleted === 1 ? '' : 's'} from ${target}. Criba has stopped adding new ones.`);
+  } catch {
+    await cribaAlert('Could not reach Criba. Check your connection and try again.');
+  }
 }
 
 async function loadCalendars() {

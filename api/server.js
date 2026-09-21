@@ -1173,6 +1173,27 @@ function learningCategoryOf(ev) {
 // deletes with 0 keeps; un-pause the moment the user keeps one. Trusted senders
 // are never paused (trusted beats muted). Tune these once real numbers land.
 function learnedMuteKey(domain, cat) { return `${domain}|${cat}`; }
+
+// A second scope on the SAME store, not a second store.
+//
+// The domain key cannot express "this newsletter, not this person": muting
+// siprep.org to stop the newsletter would also silence a teacher writing from
+// the same domain, which is the one failure this product cannot have. So a mute
+// may also name an exact From address.
+//
+// Prefixed rather than guessed at, because a bare "a@b.com" and a bare "b.com"
+// are both plausible map keys and a parser that has to tell them apart by
+// looking for "@" would break on the first odd address.
+const MUTE_ADDR_PREFIX = 'addr:';
+function learnedMuteAddressKey(address, cat) {
+  return `${MUTE_ADDR_PREFIX}${String(address || '').toLowerCase().trim()}|${cat}`;
+}
+function parseLearnedMuteKey(key) {
+  const [lhs, category = ''] = String(key || '').split('|');
+  return lhs.startsWith(MUTE_ADDR_PREFIX)
+    ? { scope: 'address', target: lhs.slice(MUTE_ADDR_PREFIX.length), category }
+    : { scope: 'domain', target: lhs, category };
+}
 function shouldLearnMute(stat) { return (stat?.deleted || 0) >= 3 && (stat?.kept || 0) === 0; }
 
 async function getLearnedMutes(email) {
@@ -1184,8 +1205,12 @@ async function getLearnedMutes(email) {
 async function saveLearnedMutes(email, mutes) {
   await getUserSettings(email).set('learnedMutes', { mutes });
 }
-function isLearnedMuted(mutes, domain, cat) {
-  return !!(domain && mutes && mutes[learnedMuteKey(domain, cat)]);
+function isLearnedMuted(mutes, domain, cat, senderEmail = null) {
+  if (!mutes) return false;
+  // Exact address first: it is the narrower statement, so it decides.
+  const addr = String(senderEmail || '').toLowerCase().trim();
+  if (addr && mutes[learnedMuteAddressKey(addr, cat)]) return true;
+  return !!(domain && mutes[learnedMuteKey(domain, cat)]);
 }
 function learnedMuteHold(m) {
   const n = m?.deleted || 0;
@@ -1202,6 +1227,12 @@ async function reconcileLearnedMutes(email, stats) {
   try { trusted = await getTrustedDomains(email); } catch { trusted = new Set(); }
   const prev = await getLearnedMutes(email);
   const next = {};
+  // Explicit mutes are carried forward untouched. reconcile rebuilds the set
+  // from the deletion tally, so anything not backed by tallied deletions would
+  // be dropped on the next check -- and a mute the user asked for directly has
+  // no tally behind it by design. Without this, "remove all 19 and stop future
+  // events" would silently undo itself the next time the app was opened.
+  for (const [k, m] of Object.entries(prev)) if (m && m.source === 'explicit') next[k] = m;
   for (const [domain, cats] of Object.entries(stats || {})) {
     if (domainMatches(trusted, `x@${domain}`)) continue; // trusted is never paused
     for (const [cat, c] of Object.entries(cats)) {
@@ -2875,8 +2906,17 @@ app.get('/api/learn/stats', requireAuth, async (req, res) => {
   rows.sort((a, b) => b.deleted - a.deleted || b.total - a.total);
   const mutes = await getLearnedMutes(req.user.email);
   const paused = Object.entries(mutes).map(([key, m]) => {
-    const [domain, category] = key.split('|');
-    return { domain, category, deleted: m.deleted || 0, since: m.since || null };
+    const { scope, target, category } = parseLearnedMuteKey(key);
+    return {
+      // "domain" is kept as the field name the Circles control already sends
+      // back to unmute; for an address-scope mute it carries the address.
+      domain: target, category, scope,
+      // An explicit bulk removal has no deletion tally behind it -- reporting 0
+      // would read as "paused for no reason" in the one place that explains why.
+      deleted: m.deleted || m.removed || 0,
+      explicit: m.source === 'explicit',
+      since: m.since || null,
+    };
   });
   res.json({ rows, paused });
 });
@@ -2889,10 +2929,15 @@ app.post('/api/learn/unmute', requireAuth, async (req, res) => {
   const domain = String(req.body?.domain || '').toLowerCase().trim();
   const category = String(req.body?.category || '').toLowerCase().trim();
   if (!domain || !category) return res.status(400).json({ error: 'domain and category required' });
-  const key = learnedMuteKey(domain, category);
+  // Clear whichever scope holds it. The Circles control sends back whatever it
+  // was shown, so an address arrives in the same field a domain does.
+  const domainKey = learnedMuteKey(domain, category);
+  const addressKey = learnedMuteAddressKey(domain, category);
   try {
     const mutes = await getLearnedMutes(email);
-    if (mutes[key]) { delete mutes[key]; await saveLearnedMutes(email, mutes); }
+    let changed = false;
+    for (const k of [domainKey, addressKey]) if (mutes[k]) { delete mutes[k]; changed = true; }
+    if (changed) await saveLearnedMutes(email, mutes);
     const stats = await getSenderStats(email);
     if (stats[domain] && stats[domain][category]) {
       delete stats[domain][category];
@@ -3547,19 +3592,16 @@ app.post('/api/events/delete-from-calendar', requireAuth, async (req, res) => {
 // ── Full cleanup (dev/testing reset) ─────────────────────────────────────
 // Deletes every Criba-tracked calendar event from Google Calendar and clears
 // the corresponding Redis records. One-shot dev tool — no confirmation step.
-app.post('/api/events/cleanup-all', requireAuth, async (req, res) => {
-  const eventsStore = getUserEvents(req.user.email);
-  const auth = await getUserOAuthClient(req.user);
-  const calendar = google.calendar({ version: 'v3', auth });
-  const CLEANUP_STATUSES = new Set(['added', 'approved', 'reviewed']);
-  const all = await eventsStore.entries();
-  const toDelete = all.filter(([, ev]) => CLEANUP_STATUSES.has(ev.status) && ev.calEventId);
+const CLEANUP_STATUSES = new Set(['added', 'approved', 'reviewed']);
 
+// The one multi-event deletion implementation. cleanup-all and remove-by-source
+// both call it, so error handling ("already gone" counts as cleaned up) and the
+// single-pipeline Redis clear cannot drift apart between them.
+async function deleteEventEntries(email, calendar, entries) {
   let deleted = 0;
   const results = [];
   const redisDeleteIds = [];
-
-  for (const [id, ev] of toDelete) {
+  for (const [id, ev] of entries) {
     try {
       await calendar.events.delete({ calendarId: ev.gcalId || 'primary', eventId: ev.calEventId });
       results.push({ title: ev.title, date: ev.date, status: 'deleted' });
@@ -3571,16 +3613,129 @@ app.post('/api/events/cleanup-all', requireAuth, async (req, res) => {
     }
     redisDeleteIds.push(id); // always clear from Redis
   }
-
-  // Clear Redis records in one pipeline
   if (redisDeleteIds.length) {
     const pipeline = redis.pipeline();
-    for (const id of redisDeleteIds) pipeline.hdel(`events:${req.user.email}`, id);
+    for (const id of redisDeleteIds) pipeline.hdel(`events:${email}`, id);
     await pipeline.exec();
   }
+  return { deleted, total: entries.length, results };
+}
 
-  console.log(`[cleanup-all] email=${req.user.email} deleted=${deleted} total=${toDelete.length}`);
-  res.json({ ok: true, deleted, total: toDelete.length, results });
+// GET /api/events/sources — the Criba-added events on the calendar, grouped by
+// where they came from, so a whole batch can go in one action.
+//
+// Grouping is by exact From address, not domain. One SF Grind issue produced 19
+// events; one school newsletter and one teacher share siprep.org and must stay
+// separable. A domain roll-up is offered ONLY when a domain has more than one
+// sending address (Amazon ships from several), and even then the per-address
+// groups remain, so the narrow choice is always available.
+app.get('/api/events/sources', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const today = new Date().toISOString().slice(0, 10);
+  const entries = await getUserEvents(email).entries();
+  const bySender = new Map();
+
+  for (const [id, ev] of entries) {
+    if (!CLEANUP_STATUSES.has(ev.status) || !ev.calEventId) continue;
+    const sender = String(ev.sender_email || '').toLowerCase().trim();
+    if (!sender) continue;                       // nothing to group or mute on
+    const category = learningCategoryOf({ source_type: ev.source_type });
+    const key = `${sender}|${category}`;
+    if (!bySender.has(key)) {
+      bySender.set(key, { sender, domain: domainOf(sender) || '', category,
+        upcoming: 0, past: 0, upcomingTitles: [] });
+    }
+    const g = bySender.get(key);
+    // Past events are counted but never removed: they are a record of what
+    // happened, and rewriting history is not what "stop sending me these" means.
+    if (String(ev.date || '') < today) g.past++;
+    else { g.upcoming++; if (g.upcomingTitles.length < 4) g.upcomingTitles.push(ev.title); }
+  }
+
+  const mutes = await getLearnedMutes(email);
+  const groups = [...bySender.values()].map(g => ({ ...g, scope: 'address',
+    muted: !!mutes[learnedMuteAddressKey(g.sender, g.category)] }));
+
+  // Roll-up only where it buys something: a domain with several sending
+  // addresses in the same category.
+  const byDomain = new Map();
+  for (const g of groups) {
+    const k = `${g.domain}|${g.category}`;
+    if (!byDomain.has(k)) byDomain.set(k, []);
+    byDomain.get(k).push(g);
+  }
+  for (const [k, list] of byDomain) {
+    if (list.length < 2) continue;
+    const [domain, category] = k.split('|');
+    groups.push({ scope: 'domain', domain, category, sender: null,
+      addresses: list.map(x => x.sender),
+      upcoming: list.reduce((n, x) => n + x.upcoming, 0),
+      past: list.reduce((n, x) => n + x.past, 0),
+      upcomingTitles: list.flatMap(x => x.upcomingTitles).slice(0, 4),
+      muted: !!mutes[learnedMuteKey(domain, category)] });
+  }
+
+  groups.sort((a, b) => (b.upcoming + b.past) - (a.upcoming + a.past));
+  res.json({ today, groups });
+});
+
+// POST /api/events/remove-by-source — remove a group's UPCOMING events and stop
+// future ones from that source, in one action.
+//
+// The mute is written explicitly rather than left for the deletion-watcher to
+// infer. Deleting through Criba's own UI nulls calEventId, and learnFromCalendar
+// only considers events that still have one -- so a bulk removal is invisible to
+// it by construction. Pria deleted 13 SF Grind events that way and the tally
+// stayed empty. Marked source:'explicit' so reconcileLearnedMutes carries it
+// forward instead of rebuilding it away.
+app.post('/api/events/remove-by-source', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const scope = req.body?.scope === 'domain' ? 'domain' : 'address';
+  const category = String(req.body?.category || '').toLowerCase().trim();
+  const target = String(req.body?.target || '').toLowerCase().trim();
+  if (!target || !category) return res.status(400).json({ error: 'target and category are required' });
+
+  // Trusted wins, exactly as it does for a hand-typed mute: a request to mute a
+  // school the user named is far likelier to be a misclick than a decision.
+  const trusted = await getTrustedDomains(email);
+  const probe = scope === 'domain' ? `x@${target}` : target;
+  if (domainMatches(trusted, probe)) {
+    return res.status(409).json({ trusted: true,
+      error: `${target} is on your trusted list as a school or club, so Criba will keep reading it. Remove it from trusted senders first if you really want to stop.` });
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const entries = (await getUserEvents(email).entries()).filter(([, ev]) => {
+    if (!CLEANUP_STATUSES.has(ev.status) || !ev.calEventId) return false;
+    if (String(ev.date || '') < today) return false;            // upcoming only
+    if (learningCategoryOf({ source_type: ev.source_type }) !== category) return false;
+    const sender = String(ev.sender_email || '').toLowerCase().trim();
+    return scope === 'domain' ? (domainOf(sender) === target) : (sender === target);
+  });
+
+  const auth = await getUserOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const out = await deleteEventEntries(email, calendar, entries);
+
+  const mutes = await getLearnedMutes(email);
+  const key = scope === 'domain' ? learnedMuteKey(target, category) : learnedMuteAddressKey(target, category);
+  mutes[key] = { since: new Date().toISOString(), source: 'explicit', scope, target, category,
+                 removed: out.deleted };
+  await saveLearnedMutes(email, mutes);
+
+  console.log(`[remove-by-source] email=${email} ${scope}=${target} cat=${category} removed=${out.deleted}`);
+  res.json({ ok: true, scope, target, category, muted: true, ...out });
+});
+
+app.post('/api/events/cleanup-all', requireAuth, async (req, res) => {
+  const eventsStore = getUserEvents(req.user.email);
+  const auth = await getUserOAuthClient(req.user);
+  const calendar = google.calendar({ version: 'v3', auth });
+  const all = await eventsStore.entries();
+  const toDelete = all.filter(([, ev]) => CLEANUP_STATUSES.has(ev.status) && ev.calEventId);
+  const out = await deleteEventEntries(req.user.email, calendar, toDelete);
+  console.log(`[cleanup-all] email=${req.user.email} deleted=${out.deleted} total=${out.total}`);
+  res.json({ ok: true, ...out });
 });
 
 // Cancel ONE date of a recurring series, leaving the rest of the series intact.
@@ -8013,7 +8168,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         if (!hold) {
           const lmDomain = domainOf(senderEmail);
           const lmCat = learningCategoryOf({ source_type: ev.source_type });
-          if (isLearnedMuted(gpLearnedMutes, lmDomain, lmCat)) {
+          if (isLearnedMuted(gpLearnedMutes, lmDomain, lmCat, senderEmail)) {
             hold = learnedMuteHold(gpLearnedMutes[learnedMuteKey(lmDomain, lmCat)]);
           }
         }
@@ -10914,7 +11069,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           if (!hold) {
             const lmDomain = domainOf(senderEmail);
             const lmCat = learningCategoryOf({ source_type: ev.source_type });
-            if (isLearnedMuted(bfLearnedMutes, lmDomain, lmCat)) {
+            if (isLearnedMuted(bfLearnedMutes, lmDomain, lmCat, senderEmail)) {
               hold = learnedMuteHold(bfLearnedMutes[learnedMuteKey(lmDomain, lmCat)]);
             }
           }

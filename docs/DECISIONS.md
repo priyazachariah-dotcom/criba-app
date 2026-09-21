@@ -7,6 +7,57 @@ feature in depth see `docs/LEARNING.md`.
 
 ---
 
+## 2026-09-21 — Bulk remove-by-source (extends the Sep 16 decision)
+
+**Why:** The Sep 16 design says learn from what people already do, with no
+training step. Real data showed it had a hole. One SF Grind newsletter produced
+**19 events in a single batch**; Pria removed 13 of them and `senderStats` for
+`thesfgrind.com` stayed **empty**. The sender only stopped because someone
+hand-muted the domain -- the manual fallback the design was meant to make
+unnecessary.
+
+The cause is structural, not a bug in the tally. `learnFromCalendar` only
+considers events that still have a `calEventId`, which is exactly how it tells
+*your* deletion in Google Calendar from *Criba's own*. Deleting through Criba's
+UI nulls that field. So a deletion made **inside Criba can never be observed by
+the watcher, by construction** -- and clearing a 19-event batch by hand is 19
+clicks that teach it nothing.
+
+**Decision:** Group the calendar events Criba added by their source, and let a
+whole batch go in one action that also records the intent. This is an
+**extension, not a reversal**: it is not a new place to go and train Criba, it
+is the same "delete the junk" gesture made once instead of nineteen times, on a
+tab that already exists.
+
+**Shape:**
+- **Grouped by exact From address**, not domain. `newsletters@siprep.org` and a
+  teacher at the same domain must stay separable, or stopping a newsletter
+  silences a real person. A domain roll-up appears only where a domain sends
+  from several addresses (Amazon), and the per-address groups remain alongside.
+- **Upcoming events only.** Past events are a record of what happened; "stop
+  sending me these" is not a request to rewrite history. 14 of the 19 SF Grind
+  events were already past. The confirmation says so.
+- **The mute is written explicitly** (`source: 'explicit'`), not inferred.
+  `reconcileLearnedMutes` rebuilds the mute set from the deletion tally, so an
+  explicit mute -- which has no tally behind it by design -- would have been
+  silently rebuilt away on the next app open. Explicit entries are now carried
+  forward.
+- **Reversal is the existing control**: Circles → *Start adding again*, the same
+  one Step 3 shipped. Address-scope mutes appear there like any other.
+
+**Rejected:** the interruptive ask-first design (hold the batch, push-notify
+"add events from this newsletter?"). It contradicts "no training screen" by
+making the user answer a question before anything lands, and it fails closed on
+silence -- a missed prompt means missed school events. Also noted: there is **no
+web-push infrastructure** in the codebase and none in progress, and on iOS web
+push needs a Home-Screen install, which for school parents is a real barrier.
+
+**Not built:** grouping delivery/logistics by category. There is **no
+delivery/logistics category in the data model** -- Amazon and FedEx events are
+`source_category: 'event'`, indistinguishable from a school event by category
+alone. Per-address grouping covers the same ground today; a real category tag
+would be needed to do it by category.
+
 ## 2026-09-16 — Learn from calendar activity (beta feedback)
 
 **Why:** Beta testers said (1) Amazon deliveries split the room, (2) random

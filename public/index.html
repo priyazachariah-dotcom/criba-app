@@ -1027,6 +1027,40 @@
   .undo-toast-btn { background: none; border: 1.5px solid var(--bg); color: var(--bg); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif; flex-shrink: 0; }
   .undo-toast-btn:hover { background: var(--bg); color: var(--ink); }
 
+  /* ── Inline delete countdown ─────────────────────────────────────────────
+     Replaces the confirm pop-up and the bottom toast: on delete the card dims
+     in place, a countdown bar runs, and it fades out when the timer ends — with
+     Undo right there on the card the whole time. Non-blocking and contextual. */
+  .card-dismissing { position: relative; }
+  .card-dismissing > *:not(.card-dismiss-overlay) { opacity: 0.25; pointer-events: none; filter: grayscale(0.25); }
+  .card-dismiss-overlay {
+    position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; gap: 14px;
+    padding: 0 18px; background: var(--surface); border: 1.5px solid var(--ink);
+  }
+  .cd-msg { flex: 1; font-size: 13.5px; color: var(--ink); min-width: 0; }
+  .cd-msg strong { font-weight: 600; }
+  .cd-undo {
+    background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink);
+    padding: 7px 15px; font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; cursor: pointer; font-family: 'Inter', sans-serif; flex-shrink: 0;
+  }
+  .cd-undo:hover { background: transparent; color: var(--ink); }
+  .card-dismiss-bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: var(--ink); }
+  .card-fade-out { transition: opacity 0.35s ease, transform 0.35s ease; opacity: 0 !important; transform: translateX(10px); }
+  @media (prefers-reduced-motion: reduce) {
+    .card-dismiss-bar, .card-fade-out { transition: none !important; }
+  }
+
+  /* Clickable links inside event text (notes/details). Client-side only — no
+     preview is fetched, so nothing costs an extra request; the full URL shows in
+     the native hover tooltip. Themed to the blue "external/reference" accent. */
+  .cd-link {
+    color: var(--blue); text-decoration: underline; text-underline-offset: 2px;
+    text-decoration-thickness: 1px; word-break: break-word; font-style: normal;
+  }
+  .cd-link:hover { color: var(--blue-dark); text-decoration-thickness: 2px; }
+  .cd-link .cd-ext { font-style: normal; opacity: 0.6; font-size: 0.9em; }
+
   /* ── Dismiss-reason prompt ──────────────────────────────────────────────
      Deliberately quieter than the undo toast: this one is an offer, not a
      deadline. It fades itself out and ignoring it is the expected answer. */
@@ -2610,38 +2644,80 @@ let _undoBarInterval = null;
 // Delete from Google Calendar, with an 8s undo window. Named for what it does
 // — the old name, dismissFromCalendar, is kept as an alias because the reminder
 // cards and cancellation cards still call it.
+// ── Inline delete countdown (replaces confirm pop-ups + the bottom toast) ───
+// Dims the card in place, runs a countdown bar, and fades the card out when it
+// ends — with Undo on the card throughout. The real action (`commit`) only runs
+// after the countdown, so Undo never has to reverse a server call. Each card
+// owns its own timer, so several can be mid-dismiss at once.
+function beginCardDelete(cardId, { title, durationMs = 6000, commit } = {}) {
+  const card = document.getElementById(cardId);
+  if (!card || card.classList.contains('card-dismissing')) return;
+  card.classList.add('card-dismissing');
+  const overlay = document.createElement('div');
+  overlay.className = 'card-dismiss-overlay';
+  overlay.innerHTML =
+    `<span class="cd-msg">Removing <strong>${escHtml(title || 'this event')}</strong>…</span>` +
+    `<button class="cd-undo" type="button">Undo</button>` +
+    `<span class="card-dismiss-bar"></span>`;
+  card.appendChild(overlay);
+  const bar = overlay.querySelector('.card-dismiss-bar');
+  requestAnimationFrame(() => { bar.style.transition = `width ${durationMs}ms linear`; bar.style.width = '0%'; });
+
+  let done = false;
+  const timer = setTimeout(commitNow, durationMs);
+  function restore() {
+    if (done) return;
+    done = true; clearTimeout(timer);
+    overlay.remove();
+    card.classList.remove('card-dismissing', 'card-fade-out');
+  }
+  async function commitNow() {
+    if (done) return;
+    done = true; clearTimeout(timer);
+    card.classList.add('card-fade-out');
+    setTimeout(async () => {
+      try { await commit(); }
+      catch {
+        card.classList.remove('card-dismissing', 'card-fade-out');
+        overlay.remove();
+        cribaAlert('Could not remove that — please try again.');
+      }
+    }, 350);
+  }
+  overlay.querySelector('.cd-undo').addEventListener('click', restore);
+}
+
+// Turn bare http(s) URLs in event text into themed, clickable links. Escapes
+// first (so this is XSS-safe), then links only http/https matches. No network
+// request is made — the full URL is shown in the native hover tooltip, so there
+// is no per-preview cost. The visible label is the hostname to keep cards tidy.
+function linkify(text) {
+  const esc = escHtml(text || '');
+  return esc.replace(/https?:\/\/[^\s<]+/g, (m) => {
+    const trail = (m.match(/(&[a-z]+;|[.,;:!?)\]]+)$/i) || [''])[0];
+    const url = trail ? m.slice(0, m.length - trail.length) : m;
+    let host = url;
+    try { host = new URL(url.replace(/&amp;/g, '&')).hostname.replace(/^www\./, ''); } catch {}
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" title="${url}" class="cd-link">${escHtml(host)}<span class="cd-ext"> ↗</span></a>${trail}`;
+  });
+}
+
 function deleteFromReview(id) { return dismissFromCalendar(id); }
 
 function dismissFromCalendar(id) {
   const title = (pendingEvents.find(e => e.id === id) || {}).title;
-  // If there's already a pending undo, commit it now before starting a new one
-  if (_undoPendingId && _undoPendingId !== id) commitDismiss();
-
-  _undoPendingId = id;
-  const toast = document.getElementById('undo-toast');
-  const msg = document.getElementById('undo-toast-msg');
-  const bar = document.getElementById('undo-toast-bar');
-  if (msg) msg.textContent = `"${title || 'Event'}" removed from calendar`;
-  if (bar) { bar.style.transition = 'none'; bar.style.width = '100%'; }
-  if (toast) toast.classList.add('visible');
-
-  // Animate the progress bar over 8 seconds
-  clearInterval(_undoBarInterval);
-  clearTimeout(_undoTimer);
-  const DURATION = 8000;
-  const start = Date.now();
-  if (bar) {
-    requestAnimationFrame(() => {
-      bar.style.transition = `width ${DURATION}ms linear`;
-      bar.style.width = '0%';
-    });
-  }
-
-  _undoTimer = setTimeout(() => commitDismiss(), DURATION);
-
-  // Optimistically remove from review UI immediately
-  const card = document.getElementById(`rcard-${id}`);
-  if (card) card.style.opacity = '0.3';
+  beginCardDelete(`rcard-${id}`, {
+    title, durationMs: 8000,
+    commit: async () => {
+      try {
+        await fetch('/api/events/delete-from-calendar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      } catch {}
+      pendingEvents = pendingEvents.filter(e => e.id !== id);
+      renderReviewNow();
+      // Only once the dismissal is final, so it never competes with the countdown.
+      showDismissReason(id, title);
+    },
+  });
 }
 
 function undoDismiss() {
@@ -3749,7 +3825,7 @@ function renderPostWriteReviewCard(ev) {
     ? `<span class="pill state-pill state-draft">Not added yet</span>`
     : `<span class="pill state-pill state-added">On your calendar</span>`;
   const dot = eventDotHtml(ev);
-  const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem;font-style:italic">${escHtml(ev.notes)}</div>` : '';
+  const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem;font-style:italic">${linkify(ev.notes)}</div>` : '';
   return `
   <div class="review-card" id="rcard-${id}" style="transition:opacity 0.3s">
     <div class="review-card-row" id="rrow-${id}">
@@ -3869,19 +3945,17 @@ function renderReminderCard(ev) {
   </div>`;
 }
 
-async function deleteReminder(id) {
+function deleteReminder(id) {
   const title = (pendingEvents.find(e => e.id === id) || {}).title || 'this event';
-  if (!(await cribaConfirm(`Delete "${title}" from your calendar?`, { confirmLabel: 'Delete', danger: true }))) return;
-  const card = document.getElementById(`rcard-${id}`);
-  if (card) card.style.opacity = '0.4';
-  try {
-    await fetch('/api/events/delete-from-calendar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
-    pendingEvents = pendingEvents.filter(e => e.id !== id);
-    renderReviewNow();
-  } catch (e) {
-    if (card) card.style.opacity = '1';
-    cribaAlert('Failed to delete — please try again.');
-  }
+  beginCardDelete(`rcard-${id}`, {
+    title,
+    commit: async () => {
+      const res = await fetch('/api/events/delete-from-calendar', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      if (!res.ok) throw new Error('delete failed');
+      pendingEvents = pendingEvents.filter(e => e.id !== id);
+      renderReviewNow();
+    },
+  });
 }
 
 // Delete an already-approved event: removes it from Google Calendar and marks
@@ -3892,7 +3966,8 @@ async function deleteReminder(id) {
 // quote, which silently killed the whole handler.
 async function deleteApproved(id) {
   const title = (recentEvents.find(e => e.id === id) || {}).title || 'this event';
-  if (!(await cribaConfirm(`Delete "${title}" from your Google Calendar?`, { confirmLabel: 'Delete', danger: true }))) return;
+  // No confirm pop-up: the row stays and flips to "Not on calendar / Add to
+  // calendar", so the delete is reversible in place — the flip is the undo.
   const status = document.getElementById(`rv-status-${id}`);
   if (status) { status.textContent = 'Deleting…'; status.style.color = ''; }
   try {
@@ -5315,24 +5390,26 @@ async function approveReviewEvent(id) {
   }
 }
 
-async function dismissReviewEvent(id) {
+function dismissReviewEvent(id) {
   const title = (pendingEvents.find(e => e.id === id) || {}).title;
-  // The server decides what dismissal means, because only it knows whether the
-  // event reached Google. A draft is simply forgotten; anything already on the
-  // calendar is removed, and says so.
-  let removed = false;
-  try {
-    const res = await fetch('/api/events/dismiss', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ id }) });
-    const body = await res.json().catch(() => ({}));
-    removed = !!body.removedFromCalendar;
-  } catch {}
-  pendingEvents = pendingEvents.filter(e => e.id !== id);
-  renderReviewNow();
-  // Deliberately not the undo toast: its Undo button is wired to the delete
-  // flow's pending timer, and a button that does nothing is worse than none.
-  // The removal is recoverable from the edit tab, where it now shows as
-  // cancelled rather than disappearing.
-  showDismissReason(id, title, { removed });
+  // Same inline countdown as delete, so Discard also gets an undo window. The
+  // server call is deferred to commit, so Undo needs no reversal. The server
+  // decides what dismissal means — a draft is forgotten; anything already on the
+  // calendar is removed and says so.
+  beginCardDelete(`rcard-${id}`, {
+    title,
+    commit: async () => {
+      let removed = false;
+      try {
+        const res = await fetch('/api/events/dismiss', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+        const body = await res.json().catch(() => ({}));
+        removed = !!body.removedFromCalendar;
+      } catch {}
+      pendingEvents = pendingEvents.filter(e => e.id !== id);
+      renderReviewNow();
+      showDismissReason(id, title, { removed });
+    },
+  });
 }
 
 async function approveCancellation(id) {

@@ -156,9 +156,11 @@ async function priorRefusal(email, date, title) {
 
 // The exact fields a refusal-hold writes, shared by the replay endpoint and the
 // live path so what the debug endpoint shows is what the user will read.
-function refusalHold(d) {
+function refusalHold(d, key = null) {
   const when = String(d.decided_at || d.at || '').slice(0, 10) || 'earlier';
   return {
+    held_kind: 'refusal_hold',
+    held_key: key,
     held_reason: `you said no to this on ${when}`,
     conflict_note: `Not added — you said no to this on ${when}. It came up again, so it's here for you to decide.`,
   };
@@ -740,10 +742,12 @@ function eventRelevance(text, members, exclusions = [], senderEmail = null, audi
   // this far: held, not written, so the failure mode is a stray review card
   // rather than a discount code on the calendar.
   if (audience === 'promotion') {
-    return { relevant: false, reason: 'a promotional offer, not something on your calendar' };
+    return { relevant: false, held_kind: 'promotion', held_key: null,
+      reason: 'a promotional offer, not something on your calendar' };
   }
   if (audience === 'opportunity') {
-    return { relevant: false, reason: 'an opportunity from a newsletter, not something you signed up for' };
+    return { relevant: false, held_kind: 'opportunity', held_key: null,
+      reason: 'an opportunity from a newsletter, not something you signed up for' };
   }
   const base = gradeRelevance(text, members);
   if (!base.relevant) return base;
@@ -751,7 +755,9 @@ function eventRelevance(text, members, exclusions = [], senderEmail = null, audi
   const rules = Array.isArray(exclusions) ? exclusions : [];
   if (!rules.length) return base;
 
-  const held = rule => ({ relevant: false, reason: `you asked Criba to stop showing ${rule.label}` });
+  const held = rule => ({ relevant: false, held_kind: 'exclusion_rule',
+    held_key: rule.id || `${rule.type}:${rule.value}`,
+    reason: `you asked Criba to stop showing ${rule.label}` });
   const hit = (type, values) => rules.find(r =>
     r.type === type && values.has(r.value) && !familyHasPositive(members, r.type, r.value));
 
@@ -1205,16 +1211,27 @@ async function getLearnedMutes(email) {
 async function saveLearnedMutes(email, mutes) {
   await getUserSettings(email).set('learnedMutes', { mutes });
 }
-function isLearnedMuted(mutes, domain, cat, senderEmail = null) {
-  if (!mutes) return false;
+// Returns the key that actually matched, so a hold can record WHICH mute paused
+// it rather than only that some mute did. #22's sweep needs the instance, not
+// the category of thing.
+function matchedLearnedMuteKey(mutes, domain, cat, senderEmail = null) {
+  if (!mutes) return null;
   // Exact address first: it is the narrower statement, so it decides.
   const addr = String(senderEmail || '').toLowerCase().trim();
-  if (addr && mutes[learnedMuteAddressKey(addr, cat)]) return true;
-  return !!(domain && mutes[learnedMuteKey(domain, cat)]);
+  const addrKey = addr ? learnedMuteAddressKey(addr, cat) : null;
+  if (addrKey && mutes[addrKey]) return addrKey;
+  const domKey = domain ? learnedMuteKey(domain, cat) : null;
+  return (domKey && mutes[domKey]) ? domKey : null;
 }
-function learnedMuteHold(m) {
-  const n = m?.deleted || 0;
+
+function isLearnedMuted(mutes, domain, cat, senderEmail = null) {
+  return !!matchedLearnedMuteKey(mutes, domain, cat, senderEmail);
+}
+function learnedMuteHold(m, key = null) {
+  const n = m?.deleted || m?.removed || 0;
   return {
+    held_kind: 'learned_mute',
+    held_key: key,
     held_reason: `you deleted the last ${n} like this`,
     conflict_note: `Not added — you deleted ${n} like this, so Criba paused them. Add this one if you want it, or turn the sender back on in Circles.`,
   };
@@ -3621,6 +3638,33 @@ async function deleteEventEntries(email, calendar, entries) {
   return { deleted, total: entries.length, results };
 }
 
+// POST /api/today/mute-sender — "never show this sender again", from the
+// collapsed newsletters section.
+//
+// Writes the SAME explicit mute the bulk remove-by-source tool writes, so there
+// is one registry rather than a second one that drifts. Address-scoped: muting
+// a newsletter must never silence a person writing from the same domain.
+app.post('/api/today/mute-sender', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const sender = String(req.body?.sender || '').toLowerCase().trim();
+  const category = String(req.body?.category || '').toLowerCase().trim();
+  if (!sender || !category) return res.status(400).json({ error: 'sender and category are required' });
+
+  const trusted = await getTrustedDomains(email);
+  if (domainMatches(trusted, sender)) {
+    return res.status(409).json({ trusted: true,
+      error: `${sender} is on your trusted list as a school or club, so Criba will keep reading it. Remove it from trusted senders first if you really want to stop.` });
+  }
+
+  const mutes = await getLearnedMutes(email);
+  const key = learnedMuteAddressKey(sender, category);
+  mutes[key] = { since: new Date().toISOString(), source: 'explicit', scope: 'address',
+                 target: sender, category, via: 'today' };
+  await saveLearnedMutes(email, mutes);
+  console.log(`[today] muted sender=${sender} cat=${category} for ${email}`);
+  res.json({ ok: true, sender, category, key });
+});
+
 // ── Today ────────────────────────────────────────────────────────────────
 //
 // One content model, two surfaces. This is the whole digest -- the in-app view
@@ -3664,6 +3708,12 @@ app.get('/api/today', requireAuth, async (req, res) => {
   const mine = all.filter(e =>
     e && String(e.date || '') === date && !TODAY_EXCLUDED_STATUSES.has(e.status));
 
+  // Only these two are shown at all, and only in the collapsed newsletters
+  // section. Everything else held -- an exclusion rule, a learned mute, a
+  // refusal, or a hold predating held_kind -- is left out of Today entirely:
+  // those are questions with a home in Review, not today's plan.
+  const TODAY_SHOWN_HELD_KINDS = new Set(['opportunity', 'promotion']);
+
   const shape = e => ({
     id: e.id, title: e.title, time: e.time || null, end_time: e.end_time || null,
     location: e.location || null, is_all_day: !!e.is_all_day,
@@ -3673,15 +3723,26 @@ app.get('/api/today', requireAuth, async (req, res) => {
     category: learningCategoryOf({ source_type: e.source_type }),
     onCalendar: !!e.calEventId,
     held_reason: e.held_reason || null,
+    held_kind: e.held_kind || null,
+    held_key: e.held_key || null,
   });
 
-  const reminders = mine
+  // A held item never belongs in the main lists, whatever its category: Criba
+  // decided not to put it on the calendar, so it is not today's plan.
+  const notHeld = mine.filter(e => !e.held_reason);
+  const heldShown = mine
+    .filter(e => e.held_reason && TODAY_SHOWN_HELD_KINDS.has(String(e.held_kind || '')))
+    .map(shape);
+  const heldHiddenCount = mine.filter(e =>
+    e.held_reason && !TODAY_SHOWN_HELD_KINDS.has(String(e.held_kind || ''))).length;
+
+  const reminders = notHeld
     .filter(e => TODAY_REMINDER_TYPES.has(String(e.source_type || '').toLowerCase()))
     .map(shape);
 
   // Chronological, all-day first: an all-day item has no time to sort by, and
   // burying it at the end is how a minimum day gets missed.
-  const events = mine
+  const events = notHeld
     .filter(e => TODAY_EVENT_TYPES.has(String(e.source_type || '').toLowerCase()))
     .map(shape)
     .sort((a, b) => {
@@ -3694,7 +3755,11 @@ app.get('/api/today', requireAuth, async (req, res) => {
     greeting: todayGreeting(hour),
     // Sections are omitted when empty -- the caller renders what it is given.
     reminders, events,
-    counts: { reminders: reminders.length, events: events.length },
+    // Collapsed by default in the UI. Kept separate from the main lists so a
+    // newsletter suggestion can never be mistaken for something happening.
+    newsletters: heldShown,
+    counts: { reminders: reminders.length, events: events.length,
+      newsletters: heldShown.length, hiddenHeld: heldHiddenCount },
   });
 });
 
@@ -8245,9 +8310,12 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         if (!hold) {
           const lmDomain = domainOf(senderEmail);
           const lmCat = learningCategoryOf({ source_type: ev.source_type });
-          if (isLearnedMuted(gpLearnedMutes, lmDomain, lmCat, senderEmail)) {
-            hold = learnedMuteHold(gpLearnedMutes[learnedMuteKey(lmDomain, lmCat)]);
-          }
+          // Was: isLearnedMuted(...) then look up the DOMAIN key. When an
+          // address-scope mute matched, that lookup returned undefined and the
+          // card read "you deleted the last 0 like this". Use the key that
+          // actually matched.
+          const lmKey = matchedLearnedMuteKey(gpLearnedMutes, lmDomain, lmCat, senderEmail);
+          if (lmKey) hold = learnedMuteHold(gpLearnedMutes[lmKey], lmKey);
         }
         let calEventId = null;
         if (hold) {
@@ -8285,6 +8353,13 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
               ? calDupNote(calDup, targetCalId)
               : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
           held_reason: hold ? hold.held_reason : (relevance.reason || null),
+          // Write-once, at extraction. held_kind is the producer; held_key is
+          // the specific instance -- which mute, which rule -- because #22's
+          // sweep must look up the exact cause, not a category of cause.
+          // Deliberately never re-evaluated at read time: this records what was
+          // true when the decision was made.
+          held_kind: hold ? (hold.held_kind || null) : (relevance.held_kind || null),
+          held_key: hold ? (hold.held_key || null) : (relevance.held_key || null),
           source_type: ev.source_type || null,
           recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
           source: 'gmail',
@@ -11146,9 +11221,8 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           if (!hold) {
             const lmDomain = domainOf(senderEmail);
             const lmCat = learningCategoryOf({ source_type: ev.source_type });
-            if (isLearnedMuted(bfLearnedMutes, lmDomain, lmCat, senderEmail)) {
-              hold = learnedMuteHold(bfLearnedMutes[learnedMuteKey(lmDomain, lmCat)]);
-            }
+            const bfLmKey = matchedLearnedMuteKey(bfLearnedMutes, lmDomain, lmCat, senderEmail);
+            if (bfLmKey) hold = learnedMuteHold(bfLearnedMutes[bfLmKey], bfLmKey);
           }
           if (hold) {
             await traceEmail(email, { runId, stage: refusal ? 'HELD-REFUSAL' : 'HELD-LEARNED-MUTE', messageId, subject, from,
@@ -11171,6 +11245,13 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
                 ? calDupNote(otherCalDup, bfCalId)
                 : (relevance.reason ? `Not added — ${relevance.reason}` : conflictNote || null),
             held_reason: hold ? hold.held_reason : (relevance.reason || null),
+          // Write-once, at extraction. held_kind is the producer; held_key is
+          // the specific instance -- which mute, which rule -- because #22's
+          // sweep must look up the exact cause, not a category of cause.
+          // Deliberately never re-evaluated at read time: this records what was
+          // true when the decision was made.
+          held_kind: hold ? (hold.held_kind || null) : (relevance.held_kind || null),
+          held_key: hold ? (hold.held_key || null) : (relevance.held_key || null),
             duplicate_of_calendar: !!otherCalDup,
             source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
             source: 'gmail', gmail_message_id: messageId, thread_id: threadId || null,

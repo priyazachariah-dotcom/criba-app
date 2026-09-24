@@ -349,6 +349,21 @@
     .today-greeting { font-size: 20px; }
   }
 
+  /* Collapsed newsletter suggestions. Visually quieter than the real plan
+     above it — these were deliberately NOT added to the calendar. */
+  .today-nl-head { display: flex; width: 100%; justify-content: space-between; align-items: center;
+                   background: none; border: none; border-bottom: 1px solid var(--line);
+                   padding: 6px 0; cursor: pointer; font: inherit; font-size: 11.5px;
+                   letter-spacing: .09em; text-transform: uppercase; color: var(--text2); }
+  .today-nl-chev { font-size: 15px; line-height: 1; }
+  .today-nl-note { font-size: 12px; color: var(--text2); margin: 8px 0 4px; }
+  .today-nl-item { opacity: .92; }
+  .today-nl-actions { display: flex; gap: 8px; margin-top: 7px; flex-wrap: wrap; }
+  .today-act { background: none; border: 1px solid var(--line); padding: 4px 9px;
+               font: inherit; font-size: 11.5px; cursor: pointer; color: var(--text2); }
+  .today-act:hover { border-color: var(--ink); color: var(--ink); }
+  .today-act-danger:hover { border-color: var(--red, #b3261e); color: var(--red, #b3261e); }
+
   /* Clear-a-whole-sender block. Sits above the row list on the same tab: it is
      a shortcut for the list below it, not a separate place to go. */
   .src-wrap { border: 1.5px solid var(--ink); padding: 14px 16px; margin: 0 0 18px; }
@@ -3322,6 +3337,63 @@ async function loadRecentEvents() {
 // without a second definition drifting away from this one.
 let todayData = null;
 let todayError = null;
+let todayNlOpen = false;
+
+function toggleTodayNewsletters() { todayNlOpen = !todayNlOpen; renderToday(); }
+
+// Approve — the one action here that writes to Google Calendar. Reuses the
+// existing approve path so a newsletter item lands exactly like any other
+// approved event.
+async function todayAddToCalendar(id) {
+  try {
+    const res = await fetch('/api/events/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) throw new Error('approve failed');
+  } catch {
+    await cribaAlert('Could not add that just now. Check your connection and try again.');
+    return;
+  }
+  await loadToday();
+}
+
+async function todayDismissOne(id) {
+  try {
+    const res = await fetch('/api/events/dismiss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) throw new Error('dismiss failed');
+  } catch {
+    await cribaAlert('Could not dismiss that just now. Check your connection and try again.');
+    return;
+  }
+  await loadToday();
+}
+
+// Mutes the exact address, never the domain: a newsletter and a person can
+// share a domain, and silencing the person is the failure this cannot have.
+async function todayMuteSender(sender, category) {
+  if (!sender) { await cribaAlert('Criba does not have a sender address for that item.'); return; }
+  const ok = await cribaConfirm(
+    `Stop showing anything from ${sender}?\n\nNothing already on your calendar is removed. You can turn it back on under Circles → Start adding again.`,
+    { confirmLabel: 'Never show again', danger: true });
+  if (!ok) return;
+  try {
+    const res = await fetch('/api/today/mute-sender', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sender, category }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { await cribaAlert(body.error || 'Could not mute that sender just now.'); return; }
+  } catch {
+    await cribaAlert('Could not reach Criba. Check your connection and try again.');
+    return;
+  }
+  await loadToday();
+  if (typeof loadSourceGroups === 'function') loadSourceGroups();
+}
 
 async function loadToday() {
   // The repeat-offender link reads sourceGroups, which only loadRecentEvents
@@ -3405,6 +3477,38 @@ function renderToday() {
          <div class="today-time">${escHtml(todayTimeLabel(it))}</div>
          ${todayItem(it)}
        </div>`).join('')}
+    </div>`);
+  }
+
+  // Collapsed by default. These were NOT added to the calendar -- they are
+  // suggestions from newsletters -- so they sit below today's real plan behind
+  // a single line, and never mix into it.
+  const nl = d.newsletters || [];
+  if (nl.length) {
+    sections.push(`<div class="today-section today-nl">
+      <button class="today-nl-head" onclick="toggleTodayNewsletters()" aria-expanded="${todayNlOpen}">
+        <span>From newsletters (${nl.length})</span>
+        <span class="today-nl-chev">${todayNlOpen ? '&minus;' : '+'}</span>
+      </button>
+      <div class="today-nl-body" ${todayNlOpen ? '' : 'hidden'}>
+        <div class="today-nl-note">Not added to your calendar. Criba spotted these in newsletters you receive.</div>
+        ${nl.map(it => `<div class="today-item today-nl-item" id="today-${escHtml(it.id)}">
+          <div class="today-main">
+            <div class="today-title">${escHtml(it.title || '(untitled)')}</div>
+            <div class="today-meta">${[it.time && !it.is_all_day ? escHtml(it.time) : 'All day',
+                                       it.location ? escHtml(it.location) : null,
+                                       escHtml(it.sender_name || it.sender_email || '')]
+                                       .filter(Boolean).join(' · ')}</div>
+            <div class="today-nl-actions">
+              <button class="today-act" onclick="todayAddToCalendar('${escHtml(it.id)}')">Add to calendar</button>
+              <button class="today-act" onclick="todayDismissOne('${escHtml(it.id)}')">Dismiss</button>
+              <button class="today-act today-act-danger"
+                onclick="todayMuteSender('${escHtml(it.sender_email || '')}','${escHtml(it.category || '')}')">
+                Never show this sender again</button>
+            </div>
+          </div>
+        </div>`).join('')}
+      </div>
     </div>`);
   }
 

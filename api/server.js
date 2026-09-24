@@ -2906,6 +2906,117 @@ app.post('/api/learn/check', requireAuth, async (req, res) => {
   }
 });
 
+// ===== TEMPORARY TEST SCAFFOLDING — REMOVE AFTER #22 VERIFICATION =====
+// Creates two synthetic held events from ONE sender with DIFFERENT causes, so
+// the sweep's negative case can be tested: un-muting must restore only the
+// mute-held one and leave the opportunity-held one alone. Waiting for real mail
+// from a muted sender has no schedule; this produces the same two hold shapes
+// the real pipeline produces.
+//
+// Admin-only, creates nothing on any calendar, and is deleted in the commit
+// that records the passing test.
+app.post('/api/admin/test-seed-holds', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const email = req.user.email;
+  const sender = String(req.body?.sender || 'seed@test-sweep.invalid').toLowerCase();
+  const category = String(req.body?.category || 'event').toLowerCase();
+  const muteKey = learnedMuteAddressKey(sender, category);
+  const store = getUserEvents(email);
+  const today = new Date().toISOString().slice(0, 10);
+  const mk = (suffix, kind, key, reason) => {
+    const id = `sweeptest-${suffix}-${Date.now()}`;
+    return [id, { id, title: `SWEEP TEST ${suffix}`, date: today, time: '09:00',
+      status: 'pending', reviewed: false, source: 'gmail', source_type: category,
+      sender_email: sender, sender_name: 'Sweep Test', calEventId: null,
+      held_reason: reason, held_kind: kind, held_key: key,
+      created_at: new Date().toISOString() }];
+  };
+  const a = mk('MUTE-HELD', 'learned_mute', muteKey, 'you deleted the last 3 like this');
+  const b = mk('OPPORTUNITY-HELD', 'opportunity', null, 'an opportunity from a newsletter, not something you signed up for');
+  await store.set(a[0], a[1]);
+  await store.set(b[0], b[1]);
+  const mutes = await getLearnedMutes(email);
+  mutes[muteKey] = { since: new Date().toISOString(), source: 'explicit', scope: 'address',
+                     target: sender, category, deleted: 3 };
+  await saveLearnedMutes(email, mutes);
+  res.json({ ok: true, sender, category, muteKey, ids: [a[0], b[0]] });
+});
+
+app.post('/api/admin/test-seed-cleanup', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const email = req.user.email;
+  const store = getUserEvents(email);
+  let removed = 0;
+  for (const [id, ev] of await store.entries()) {
+    if (String(id).startsWith('sweeptest-') || String(ev?.title || '').startsWith('SWEEP TEST')) {
+      await store.delete(id); removed++;
+    }
+  }
+  const mutes = await getLearnedMutes(email);
+  let mutesRemoved = 0;
+  for (const k of Object.keys(mutes)) {
+    if (k.includes('test-sweep.invalid')) { delete mutes[k]; mutesRemoved++; }
+  }
+  await saveLearnedMutes(email, mutes);
+  res.json({ ok: true, removed, mutesRemoved });
+});
+// ===== END TEMPORARY TEST SCAFFOLDING =====
+
+// ── #22: re-surface items held by a cause that no longer exists ──────────
+//
+// Clearing a mute or deleting a rule only changed what happens NEXT. Anything
+// already held by that cause stayed held, carrying a reason that had become
+// untrue -- so "Start adding again" looked like it did nothing to the backlog.
+//
+// Scoped by held_kind + held_key, never by a domain+category guess: an
+// opportunity-held item and a mute-held item from the same sender look
+// identical on sender and category, and sweeping on those would re-surface
+// decisions the user never revisited.
+//
+// Re-surfacing restores a normal decidable pending item. It never writes to the
+// calendar: the user still chooses.
+async function sweepHeldByCause(email, kind, keys) {
+  const wanted = new Set((Array.isArray(keys) ? keys : [keys]).filter(Boolean));
+  if (!kind || !wanted.size) return { restored: 0, skipped: 0, items: [] };
+
+  const store = getUserEvents(email);
+  let entries = [];
+  try { entries = await store.entries(); } catch { return { restored: 0, skipped: 0, items: [] }; }
+
+  const decisions = getUserDecisions(email);
+  let restored = 0, skipped = 0;
+  const items = [];
+
+  for (const [id, ev] of entries) {
+    if (!ev || ev.held_kind !== kind || !wanted.has(ev.held_key)) continue;
+
+    // Idempotency. Only a still-pending item is restored: one already added,
+    // dismissed or cancelled has moved on, and re-surfacing it would undo a
+    // decision rather than unblock one.
+    if (ev.status !== 'pending') { skipped++; continue; }
+
+    // A recorded "no" outranks the sweep. The cause going away does not undo
+    // the user having already refused this specific event.
+    try {
+      const d = await decisions.get(decisionKey(ev.date, ev.title));
+      if (d && d.verdict === 'no') { skipped++; continue; }
+    } catch {}
+
+    const next = { ...ev };
+    delete next.held_reason; delete next.held_kind;
+    delete next.held_key; delete next.conflict_note;
+    next.resurfaced_at = new Date().toISOString();
+    try { await store.set(id, next); restored++; items.push({ id, title: ev.title, date: ev.date }); }
+    catch { skipped++; }
+  }
+  console.log(`[sweep] email=${email} kind=${kind} keys=${[...wanted].join(',')} restored=${restored} skipped=${skipped}`);
+  return { restored, skipped, items };
+}
+
 // Read-only view of the learned tally — delete/keep counts per sender + category,
 // with a computed delete-rate. Used to see the real numbers before Step 2 turns
 // on any automatic muting.
@@ -2955,13 +3066,17 @@ app.post('/api/learn/unmute', requireAuth, async (req, res) => {
     let changed = false;
     for (const k of [domainKey, addressKey]) if (mutes[k]) { delete mutes[k]; changed = true; }
     if (changed) await saveLearnedMutes(email, mutes);
+    // #22: the backlog this mute was holding is unblocked too, not just future
+    // mail. Both key shapes are swept because the caller sends back whatever it
+    // was shown and either scope may have been the one that held an item.
+    const swept = await sweepHeldByCause(email, 'learned_mute', [domainKey, addressKey]);
     const stats = await getSenderStats(email);
     if (stats[domain] && stats[domain][category]) {
       delete stats[domain][category];
       if (!Object.keys(stats[domain]).length) delete stats[domain];
       await saveSenderStats(email, stats);
     }
-    res.json({ ok: true });
+    res.json({ ok: true, resurfaced: swept.restored, skipped: swept.skipped });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3504,7 +3619,10 @@ app.post('/api/exclusions', requireAuth, async (req, res) => {
 
 app.delete('/api/exclusions/:id', requireAuth, async (req, res) => {
   await getUserExclusions(req.user.email).delete(req.params.id);
-  res.json({ ok: true });
+  // #22: items this rule was holding become decidable again. Keyed on the rule
+  // id that held them, so deleting one rule never disturbs another's holds.
+  const swept = await sweepHeldByCause(req.user.email, 'exclusion_rule', [req.params.id]);
+  res.json({ ok: true, resurfaced: swept.restored, skipped: swept.skipped });
 });
 
 // Read-only view of the reasons that deliberately wrote nothing. The point is

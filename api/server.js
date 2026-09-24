@@ -1289,16 +1289,29 @@ function bumpSenderStat(stats, ev, outcome) {
 // which the user has since deleted vs kept, and marks each one so it is only
 // counted once. Deliberately bounded per call (calendar reads cost API quota)
 // and safe to call opportunistically — it accumulates across sessions.
-async function learnFromCalendar(email, calendar, { limit = 12 } = {}) {
+// limit was 12 per app open against a 92-candidate backlog -- eight opens to
+// pass over the queue once, and only five events had ever been checked. A
+// deletion made an hour ago sat in the same undifferentiated pile as one from
+// three weeks back, so the tally described the sample, not the user.
+//
+// reconcile is an option because filling that backlog is exactly the moment the
+// auto-pause rule could fire on senders whose deletions were simply never
+// looked at. A catch-up pass must be able to gather evidence WITHOUT changing
+// what Criba mutes.
+async function learnFromCalendar(email, calendar, { limit = 40, reconcile = true } = {}) {
   const store = getUserEvents(email);
   let all;
   try { all = await store.values(); } catch { return { checked: 0, deleted: 0, kept: 0 }; }
   const now = Date.now();
   const MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000; // stop re-checking after 60 days
+  // Newest first. What the user did today is the signal most worth having, and
+  // arbitrary store order meant recent deletions could wait behind weeks of
+  // older events that were never going to resolve either way.
   const candidates = all.filter(e =>
     e && e.calEventId && e.source === 'gmail' && !e.learn_checked &&
     e.created_at && (now - Date.parse(e.created_at)) < MAX_AGE_MS
-  ).slice(0, limit);
+  ).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
+   .slice(0, limit);
 
   let checked = 0, deleted = 0, kept = 0, redundant = 0, dirty = false;
   const stats = await getSenderStats(email);
@@ -1368,8 +1381,11 @@ async function learnFromCalendar(email, calendar, { limit = 12 } = {}) {
   }
   if (dirty) {
     try { await saveSenderStats(email, stats); } catch {}
-    // Step 2: turn the fresh tally into pause/un-pause decisions.
-    try { await reconcileLearnedMutes(email, stats); } catch {}
+    // Step 2: turn the fresh tally into pause/un-pause decisions. Skipped on a
+    // catch-up pass: clearing a backlog is not the user changing their mind,
+    // and a sender should not be paused by evidence that was always there and
+    // merely unread.
+    if (reconcile) { try { await reconcileLearnedMutes(email, stats); } catch {} }
     // #28, detector only: computes and logs what it WOULD suggest. Surfaces
     // nothing and changes nothing. Wrapped so a detector fault can never break
     // the learning pass it is observing.
@@ -2944,7 +2960,7 @@ app.post('/api/learn/check', requireAuth, async (req, res) => {
   try {
     const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    const result = await learnFromCalendar(req.user.email, calendar, { limit: 12 });
+    const result = await learnFromCalendar(req.user.email, calendar, { limit: 40 });
     res.json(result);
   } catch (err) {
     res.json({ checked: 0, deleted: 0, kept: 0, error: err.message });
@@ -3143,6 +3159,43 @@ app.get('/api/admin/pattern-detector', requireAuth, async (req, res) => {
       minTokenSupport: PATTERN_MIN_TOKEN_SUPPORT },
     runs: raw.map(r => JSON.parse(r)),
   });
+});
+
+// POST /api/admin/learn-catchup — clear the unchecked backlog without letting
+// it change what Criba mutes.
+//
+// The instruction was "raise throughput" AND "must not change anything about
+// muting". Those conflict at exactly this moment: 92 unchecked candidates
+// resolved at once is precisely when deleted >= 3 && kept === 0 could trip on a
+// sender whose deletions were simply never read. That would be Criba pausing a
+// sender on evidence that was always there, in the same breath as fixing the
+// reason it had not been read -- indistinguishable, to the user, from the
+// catch-up itself deciding something.
+//
+// So the catch-up gathers and tallies with reconcile off. The detector still
+// runs and still only logs. Nothing is muted, nothing is suggested. Turning the
+// tally into decisions stays a separate, deliberate step.
+app.post('/api/admin/learn-catchup', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const limit = Math.min(parseInt(req.body?.limit, 10) || 40, 120);
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const before = await getLearnedMutes(req.user.email);
+    const result = await learnFromCalendar(req.user.email, calendar, { limit, reconcile: false });
+    const after = await getLearnedMutes(req.user.email);
+    res.json({
+      ...result, limit,
+      // Proof, not assurance: the mute set is read either side and compared.
+      mutesBefore: Object.keys(before).length,
+      mutesAfter: Object.keys(after).length,
+      mutesUnchanged: Object.keys(before).length === Object.keys(after).length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Read-only view of the learned tally — delete/keep counts per sender + category,

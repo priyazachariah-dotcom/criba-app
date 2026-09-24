@@ -1300,7 +1300,7 @@ async function learnFromCalendar(email, calendar, { limit = 12 } = {}) {
     e.created_at && (now - Date.parse(e.created_at)) < MAX_AGE_MS
   ).slice(0, limit);
 
-  let checked = 0, deleted = 0, kept = 0, dirty = false;
+  let checked = 0, deleted = 0, kept = 0, redundant = 0, dirty = false;
   const stats = await getSenderStats(email);
   for (const ev of candidates) {
     let outcome = null;
@@ -1318,6 +1318,47 @@ async function learnFromCalendar(email, calendar, { limit = 12 } = {}) {
       else continue; // transient (auth/network) — try again next time
     }
     if (!outcome) continue;
+
+    // Deleting a redundant copy is not rejection.
+    //
+    // Three emails about one $2,850 tuition payment become three calendar
+    // entries. Tidying two of them by hand in Google looks identical, to this
+    // check, to "stop sending me these" -- and would file two rejections
+    // against a sender whose mail the user actually wants.
+    //
+    // The duplicate-cleanup tool is already safe: it nulls calEventId, so its
+    // records never become candidates here. This covers the case it does not --
+    // deduplication done by hand on the calendar.
+    //
+    // Recorded as deleted_redundant rather than silently skipped. A dropped
+    // deletion is indistinguishable from one never checked, and this whole area
+    // has repeatedly been bitten by probes that cannot tell absence from
+    // failure.
+    if (outcome === 'deleted') {
+      const survivor = all.find(o =>
+        o && o.id !== ev.id && o.calEventId &&
+        // A copy already judged gone is not a survivor. Without this, deleting
+        // EVERY copy would excuse itself: each would point at the others and
+        // nothing would count. Ordering means the last one checked still
+        // registers as one genuine rejection.
+        o.learn_outcome !== 'deleted' && o.learn_outcome !== 'deleted_redundant' &&
+        String(o.date || '') === String(ev.date || '') &&
+        titlesLooselyMatch(ev.title, o.title) &&
+        (() => {
+          const bothTimed = ev.time && o.time && !ev.is_all_day && !o.is_all_day;
+          return !bothTimed || Math.abs(timeToMinutes(ev.time) - timeToMinutes(o.time)) <= 30;
+        })());
+      if (survivor) {
+        ev.learn_checked = true;
+        ev.learn_outcome = 'deleted_redundant';
+        ev.learn_redundant_of = survivor.id;
+        try { await store.set(ev.id, ev); } catch {}
+        checked++; dirty = true; redundant++;
+        console.log(`[learn] REDUNDANT "${ev.title}" on ${ev.date} — a near-duplicate survives (${survivor.id}); not counted`);
+        continue;
+      }
+    }
+
     bumpSenderStat(stats, ev, outcome);
     ev.learn_checked = true;
     ev.learn_outcome = outcome;
@@ -1330,7 +1371,7 @@ async function learnFromCalendar(email, calendar, { limit = 12 } = {}) {
     // Step 2: turn the fresh tally into pause/un-pause decisions.
     try { await reconcileLearnedMutes(email, stats); } catch {}
   }
-  return { checked, deleted, kept };
+  return { checked, deleted, kept, redundant };
 }
 
 // Subdomain-aware on purpose. A school on Google Workspace mails from
@@ -2972,6 +3013,15 @@ app.get('/api/learn/stats', requireAuth, async (req, res) => {
     }
   }
   rows.sort((a, b) => b.deleted - a.deleted || b.total - a.total);
+  // How often the redundant-copy guard fired. An exclusion nobody can see is
+  // an exclusion nobody can check, and this one deliberately withholds signal.
+  let redundantExcluded = 0;
+  try {
+    for (const ev of await getUserEvents(req.user.email).values()) {
+      if (ev?.learn_outcome === 'deleted_redundant') redundantExcluded++;
+    }
+  } catch {}
+
   const mutes = await getLearnedMutes(req.user.email);
   const paused = Object.entries(mutes).map(([key, m]) => {
     const { scope, target, category } = parseLearnedMuteKey(key);
@@ -2986,7 +3036,7 @@ app.get('/api/learn/stats', requireAuth, async (req, res) => {
       since: m.since || null,
     };
   });
-  res.json({ rows, paused });
+  res.json({ rows, paused, redundantExcluded });
 });
 
 // "Start adding again" — the user turns a paused sender+category back on. We drop

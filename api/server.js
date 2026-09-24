@@ -1370,6 +1370,10 @@ async function learnFromCalendar(email, calendar, { limit = 12 } = {}) {
     try { await saveSenderStats(email, stats); } catch {}
     // Step 2: turn the fresh tally into pause/un-pause decisions.
     try { await reconcileLearnedMutes(email, stats); } catch {}
+    // #28, detector only: computes and logs what it WOULD suggest. Surfaces
+    // nothing and changes nothing. Wrapped so a detector fault can never break
+    // the learning pass it is observing.
+    try { await runPatternDetector(email); } catch (e) { console.error('[pattern] failed:', e.message); }
   }
   return { checked, deleted, kept, redundant };
 }
@@ -2997,6 +3001,149 @@ async function sweepHeldByCause(email, kind, keys) {
   console.log(`[sweep] email=${email} kind=${kind} keys=${[...wanted].join(',')} restored=${restored} skipped=${skipped}`);
   return { restored, skipped, items };
 }
+
+// ── Pattern detector (#28) — DETECTOR ONLY, SURFACES NOTHING ─────────────
+//
+// Asks, per sender: does the difference between what was kept and what was
+// deleted have a shape? Three possible answers -- the sender itself is the
+// pattern, a particular word is the pattern, or there is no pattern and we say
+// so.
+//
+// It computes and logs. It does not mute, hold, hide or suggest anything to
+// anyone. The log is how we find out whether it would have been right, before
+// it is ever allowed to act.
+//
+// Reuses distinctiveTokens -- the tokenizer behind titlesLooselyMatch, which
+// already knows that names, opponents and grades carry the signal and that
+// generic words do not. A fifth tokenizer would be a fifth thing to disagree.
+
+// Loose bars, not hard ones. Below these there is not enough to look at.
+const PATTERN_MIN_DELETIONS = 3;
+// A wrong suggestion about a tuition or payment reminder costs more than a
+// wrong suggestion about a newsletter, so it has to clear a higher bar.
+const PATTERN_MIN_DELETIONS_FINANCIAL = 6;
+const PATTERN_MIN_TOKEN_SUPPORT = 3;
+const PATTERN_LOG_MAX = 200;
+
+function patternMinDeletionsFor(category) {
+  return category === 'financial_reminder'
+    ? PATTERN_MIN_DELETIONS_FINANCIAL : PATTERN_MIN_DELETIONS;
+}
+
+// Only outcomes that mean "the user rejected this". deleted_redundant is
+// explicitly NOT rejection -- it is a duplicate tidied away -- and reading it
+// here would reintroduce the contamination the redundancy guard removes.
+function isRejectionOutcome(o) { return o === 'deleted'; }
+
+export function analyseSenderPattern({ deletedTitles = [], keptTitles = [], category = 'event' } = {}) {
+  const minDel = patternMinDeletionsFor(category);
+  const distinctDeleted = [...new Set(deletedTitles.map(t => String(t || '').trim()).filter(Boolean))];
+  const base = {
+    category, minDeletionsRequired: minDel,
+    deleted: distinctDeleted.length, kept: keptTitles.length,
+  };
+  if (distinctDeleted.length < minDel) {
+    return { ...base, verdict: 'insufficient',
+      why: `${distinctDeleted.length} distinct deleted titles; need ${minDel} for ${category}` };
+  }
+
+  const delTokenSets = distinctDeleted.map(t => distinctiveTokens(t));
+  const keptTokenSets = keptTitles.map(t => distinctiveTokens(t));
+  const keptTokens = new Set();
+  for (const s of keptTokenSets) for (const w of s) keptTokens.add(w);
+
+  // Word-level is checked FIRST because it is the narrower claim. When both
+  // could fire, the narrower one is the safer thing to have suggested.
+  const support = new Map();
+  for (const s of delTokenSets) for (const w of s) support.set(w, (support.get(w) || 0) + 1);
+  const wordCandidates = [...support.entries()]
+    .filter(([w, n]) => n >= PATTERN_MIN_TOKEN_SUPPORT && !keptTokens.has(w))
+    .sort((a, b) => b[1] - a[1])
+    .map(([token, n]) => ({ token, inDeleted: n, inKept: 0 }));
+
+  if (wordCandidates.length) {
+    return { ...base, verdict: 'word_level', tokens: wordCandidates,
+      why: wordCandidates.map(c => `"${c.token}" in ${c.inDeleted}/${distinctDeleted.length} deleted, 0 kept`).join('; ') };
+  }
+
+  // Sender-level: nothing in the content separates the deletions from each
+  // other, and there is nothing kept to contradict it.
+  let shared = null;
+  for (const s of delTokenSets) {
+    if (shared === null) { shared = new Set(s); continue; }
+    for (const w of [...shared]) if (!s.has(w)) shared.delete(w);
+  }
+  const sharedTokens = [...(shared || [])];
+  if (keptTitles.length === 0 && sharedTokens.length === 0) {
+    return { ...base, verdict: 'sender_level',
+      why: `${distinctDeleted.length} distinct deleted titles share no distinctive token, and nothing from this sender was kept` };
+  }
+
+  return { ...base, verdict: 'no_clear_pattern',
+    why: keptTitles.length
+      ? `every candidate token also appears in something kept (${keptTitles.length} kept)`
+      : `deleted titles share ${sharedTokens.length} token(s) (${sharedTokens.slice(0, 4).join(', ')}) but none reached ${PATTERN_MIN_TOKEN_SUPPORT} support with zero keeps` };
+}
+
+// Groups this user's labelled outcomes by (sender, category) and runs the
+// analysis over each. Reads only; writes nothing but its own log.
+async function runPatternDetector(email) {
+  let all = [];
+  try { all = await getUserEvents(email).values(); } catch { return { groups: 0, findings: [] }; }
+
+  const groups = new Map();
+  for (const ev of all) {
+    if (!ev?.learn_checked || !ev.sender_email) continue;
+    const isRejection = isRejectionOutcome(ev.learn_outcome);
+    const isKeep = ev.learn_outcome === 'kept';
+    if (!isRejection && !isKeep) continue;      // deleted_redundant and anything else: ignored
+    const sender = String(ev.sender_email).toLowerCase();
+    const category = learningCategoryOf({ source_type: ev.source_type });
+    const k = `${sender}|${category}`;
+    if (!groups.has(k)) groups.set(k, { sender, category, deletedTitles: [], keptTitles: [] });
+    (isRejection ? groups.get(k).deletedTitles : groups.get(k).keptTitles).push(ev.title || '');
+  }
+
+  const findings = [];
+  for (const g of groups.values()) {
+    const r = analyseSenderPattern(g);
+    findings.push({ sender: g.sender, ...r });
+  }
+  // Only the interesting ones are worth reading later; "insufficient" is the
+  // overwhelming majority and would bury the rest.
+  const notable = findings.filter(f => f.verdict !== 'insufficient');
+
+  const entry = { at: new Date().toISOString(), groups: groups.size,
+    notable: notable.length, findings: notable };
+  try {
+    const key = `patternDetector:${email}`;
+    await redis.lpush(key, JSON.stringify(entry));
+    await redis.ltrim(key, 0, PATTERN_LOG_MAX - 1);
+    await redis.expire(key, 60 * 24 * 60 * 60);
+  } catch {}
+  if (notable.length) {
+    console.log(`[pattern] ${email}: ${notable.map(f => `${f.sender}|${f.category}=${f.verdict}`).join(' ')}`);
+  }
+  return { groups: groups.size, findings: notable };
+}
+
+// GET /api/admin/pattern-detector — the accumulated log. Admin-only, and the
+// ONLY way to see any of this: nothing reaches the app.
+app.get('/api/admin/pattern-detector', requireAuth, async (req, res) => {
+  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
+    return res.status(403).json({ error: 'Not authorised.' });
+  }
+  const target = String(req.query.email || req.user.email).toLowerCase();
+  const limit = Math.min(parseInt(req.query.limit || '25', 10), PATTERN_LOG_MAX);
+  const raw = await redis.lrange(`patternDetector:${target}`, 0, limit - 1);
+  res.json({
+    email: target,
+    thresholds: { minDeletions: PATTERN_MIN_DELETIONS,
+      minDeletionsFinancial: PATTERN_MIN_DELETIONS_FINANCIAL,
+      minTokenSupport: PATTERN_MIN_TOKEN_SUPPORT },
+    runs: raw.map(r => JSON.parse(r)),
+  });
+});
 
 // Read-only view of the learned tally — delete/keep counts per sender + category,
 // with a computed delete-rate. Used to see the real numbers before Step 2 turns

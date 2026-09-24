@@ -1298,7 +1298,11 @@ function bumpSenderStat(stats, ev, outcome) {
 // auto-pause rule could fire on senders whose deletions were simply never
 // looked at. A catch-up pass must be able to gather evidence WITHOUT changing
 // what Criba mutes.
-async function learnFromCalendar(email, calendar, { limit = 40, reconcile = true } = {}) {
+// reconcile defaults to FALSE. Every caller today passes false explicitly, and
+// a new caller that simply forgets the option must not silently re-enable
+// automatic muting. Opting IN to changing what Criba mutes should be a thing
+// someone typed on purpose.
+async function learnFromCalendar(email, calendar, { limit = 40, reconcile = false } = {}) {
   const store = getUserEvents(email);
   let all;
   try { all = await store.values(); } catch { return { checked: 0, deleted: 0, kept: 0 }; }
@@ -2960,7 +2964,18 @@ app.post('/api/learn/check', requireAuth, async (req, res) => {
   try {
     const auth = await getUserOAuthClient(req.user);
     const calendar = google.calendar({ version: 'v3', auth });
-    const result = await learnFromCalendar(req.user.email, calendar, { limit: 40 });
+    // reconcile: false, matching the cron exactly.
+    //
+    // "Attended" was never much of a safeguard: opening Criba to look at Today
+    // is not the same as watching for a sender to auto-pause, so an in-app
+    // surprise is barely different from an overnight one. And two paths running
+    // the same check with different behaviour is the same "two things that
+    // should agree, don't" shape found repeatedly today -- self-inflicted this
+    // time rather than discovered.
+    //
+    // Muting now has exactly one trigger: a deliberate decision after the
+    // sender-level / word-level report has been read. Nothing else.
+    const result = await learnFromCalendar(req.user.email, calendar, { limit: 40, reconcile: false });
     res.json(result);
   } catch (err) {
     res.json({ checked: 0, deleted: 0, kept: 0, error: err.message });

@@ -9744,9 +9744,19 @@ app.get('/api/cron/learn', async (req, res) => {
         process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
       auth.setCredentials({ refresh_token: refreshToken });
       const calendar = google.calendar({ version: 'v3', auth });
-      // reconcile left at its default, exactly as the in-app check runs it.
-      // Scheduling changes WHEN the check happens, not what it concludes.
-      const r = await learnFromCalendar(email, calendar, { limit: 40 });
+      // reconcile: false, deliberately.
+      //
+      // Scheduling this is what makes auto-pause reachable without anyone
+      // present: a sender crossing deleted >= 3 && kept === 0 would go quiet
+      // overnight with nobody having reviewed anything. That collides with the
+      // standing decision that nothing about muting changes until the
+      // sender-level / word-level report has been read over real accumulated
+      // data.
+      //
+      // So the cron gathers and tallies; the detector still runs and still only
+      // logs. Turning the tally into decisions stays a deliberate, attended
+      // step. Flip this to true only when that report has been seen.
+      const r = await learnFromCalendar(email, calendar, { limit: 40, reconcile: false });
       out.users++; out.checked += r.checked; out.deleted += r.deleted;
       out.kept += r.kept; out.redundant += r.redundant || 0;
     } catch (err) {

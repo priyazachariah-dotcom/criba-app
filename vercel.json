@@ -27,6 +27,10 @@
     {
       "path": "/api/cron/household-conflicts",
       "schedule": "0 4,12,20 * * *"
+    },
+    {
+      "path": "/api/cron/learn",
+      "schedule": "0 5 * * *"
     }
   ]
 }

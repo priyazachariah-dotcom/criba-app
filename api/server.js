@@ -9705,6 +9705,59 @@ app.get('/api/cron/ical', async (req, res) => {
 
 // GET /api/cron/gmail — Vercel cron job (daily at 2am UTC).
 // Renews expiring Gmail watches and sends evening notification emails.
+// GET /api/cron/learn — Vercel cron. Run the calendar-deletion check for every
+// active mailbox, whether or not anyone opens the app.
+//
+// The check used to be opportunistic: the browser called /api/learn/check on
+// app open. Real beta behaviour is that people look at their CALENDAR, not at
+// Criba -- so for most users it effectively never ran. That is why 92 candidates
+// sat unchecked and five events had ever been looked at.
+//
+// Daily is the right cadence, and deliberately not faster. An outcome only
+// resolves when an event is cancelled or has passed its end time, so a shorter
+// interval mostly re-reads events that cannot resolve yet, spending Google API
+// calls to learn nothing. A day is also the natural grain of the signal: the
+// question is "did you delete this", not "when today did you delete it".
+//
+// Same shape as the watch-renewal cron: one fast pass per user under a deadline
+// that stops short of the function cap, with each user wrapped so one bad
+// mailbox cannot starve the rest.
+app.get('/api/cron/learn', async (req, res) => {
+  const isVercelCron = req.headers['x-vercel-cron'] === '1';
+  const hasCronSecret = process.env.CRON_SECRET && req.headers['x-cron-secret'] === process.env.CRON_SECRET;
+  if (!isVercelCron && !hasCronSecret) return res.status(401).json({ error: 'Unauthorized' });
+
+  // Headroom under the 60s cap, matching the drain deadline in the gmail cron.
+  const deadline = Date.now() + 45000;
+  const emails = await redis.smembers('gmailWatchedUsers');
+  const out = { users: 0, skippedPaused: 0, checked: 0, deleted: 0, kept: 0, redundant: 0, errors: [], ranOut: false };
+
+  for (const email of emails) {
+    if (Date.now() > deadline) { out.ranOut = true; break; }
+    try {
+      // A paused account is one Criba is not working on. Reading its calendar
+      // to learn from would spend Google calls on a signal nothing will act on.
+      if (await isGmailPaused(email)) { out.skippedPaused++; continue; }
+      const refreshToken = await redis.get(`refreshToken:${email}`);
+      if (!refreshToken) continue;
+      const auth = new google.auth.OAuth2(
+        process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET, process.env.GOOGLE_REDIRECT_URI);
+      auth.setCredentials({ refresh_token: refreshToken });
+      const calendar = google.calendar({ version: 'v3', auth });
+      // reconcile left at its default, exactly as the in-app check runs it.
+      // Scheduling changes WHEN the check happens, not what it concludes.
+      const r = await learnFromCalendar(email, calendar, { limit: 40 });
+      out.users++; out.checked += r.checked; out.deleted += r.deleted;
+      out.kept += r.kept; out.redundant += r.redundant || 0;
+    } catch (err) {
+      out.errors.push({ email, error: err.message });
+      console.error(`[cron/learn] ${email}:`, err.message);
+    }
+  }
+  console.log(`[cron/learn] users=${out.users} checked=${out.checked} deleted=${out.deleted} kept=${out.kept} skippedPaused=${out.skippedPaused}`);
+  res.json(out);
+});
+
 app.get('/api/cron/gmail', async (req, res) => {
   // Accept calls from Vercel cron (x-vercel-cron header) or from CRON_SECRET
   const isVercelCron = req.headers['x-vercel-cron'] === '1';

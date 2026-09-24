@@ -2906,66 +2906,6 @@ app.post('/api/learn/check', requireAuth, async (req, res) => {
   }
 });
 
-// ===== TEMPORARY TEST SCAFFOLDING — REMOVE AFTER #22 VERIFICATION =====
-// Creates two synthetic held events from ONE sender with DIFFERENT causes, so
-// the sweep's negative case can be tested: un-muting must restore only the
-// mute-held one and leave the opportunity-held one alone. Waiting for real mail
-// from a muted sender has no schedule; this produces the same two hold shapes
-// the real pipeline produces.
-//
-// Admin-only, creates nothing on any calendar, and is deleted in the commit
-// that records the passing test.
-app.post('/api/admin/test-seed-holds', requireAuth, async (req, res) => {
-  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
-    return res.status(403).json({ error: 'Not authorised.' });
-  }
-  const email = req.user.email;
-  const sender = String(req.body?.sender || 'seed@test-sweep.invalid').toLowerCase();
-  const category = String(req.body?.category || 'event').toLowerCase();
-  const muteKey = learnedMuteAddressKey(sender, category);
-  const store = getUserEvents(email);
-  const today = new Date().toISOString().slice(0, 10);
-  const mk = (suffix, kind, key, reason) => {
-    const id = `sweeptest-${suffix}-${Date.now()}`;
-    return [id, { id, title: `SWEEP TEST ${suffix}`, date: today, time: '09:00',
-      status: 'pending', reviewed: false, source: 'gmail', source_type: category,
-      sender_email: sender, sender_name: 'Sweep Test', calEventId: null,
-      held_reason: reason, held_kind: kind, held_key: key,
-      created_at: new Date().toISOString() }];
-  };
-  const a = mk('MUTE-HELD', 'learned_mute', muteKey, 'you deleted the last 3 like this');
-  const b = mk('OPPORTUNITY-HELD', 'opportunity', null, 'an opportunity from a newsletter, not something you signed up for');
-  await store.set(a[0], a[1]);
-  await store.set(b[0], b[1]);
-  const mutes = await getLearnedMutes(email);
-  mutes[muteKey] = { since: new Date().toISOString(), source: 'explicit', scope: 'address',
-                     target: sender, category, deleted: 3 };
-  await saveLearnedMutes(email, mutes);
-  res.json({ ok: true, sender, category, muteKey, ids: [a[0], b[0]] });
-});
-
-app.post('/api/admin/test-seed-cleanup', requireAuth, async (req, res) => {
-  if (!ADMIN_EMAILS.has(String(req.user.email).toLowerCase())) {
-    return res.status(403).json({ error: 'Not authorised.' });
-  }
-  const email = req.user.email;
-  const store = getUserEvents(email);
-  let removed = 0;
-  for (const [id, ev] of await store.entries()) {
-    if (String(id).startsWith('sweeptest-') || String(ev?.title || '').startsWith('SWEEP TEST')) {
-      await store.delete(id); removed++;
-    }
-  }
-  const mutes = await getLearnedMutes(email);
-  let mutesRemoved = 0;
-  for (const k of Object.keys(mutes)) {
-    if (k.includes('test-sweep.invalid')) { delete mutes[k]; mutesRemoved++; }
-  }
-  await saveLearnedMutes(email, mutes);
-  res.json({ ok: true, removed, mutesRemoved });
-});
-// ===== END TEMPORARY TEST SCAFFOLDING =====
-
 // ── #22: re-surface items held by a cause that no longer exists ──────────
 //
 // Clearing a mute or deleting a rule only changed what happens NEXT. Anything

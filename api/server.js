@@ -9166,6 +9166,12 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
         users, sinceDays: Math.min(120, Math.max(1, Number(req.body?.sinceDays) || 60)),
       }));
     }
+    // Title traceability audit. Makes no model calls -- it refetches bodies and
+    // scores titles the run already produced, so it is safe to run freely.
+    if (req.body?.titleAudit) {
+      return res.json(await mod.titleAudit(String(req.body.runId || ''),
+        String(req.body?.email || req.user.email).toLowerCase()));
+    }
     if (req.body?.status) {
       return res.json(await mod.shadowRunStatus(String(req.body.runId || '')));
     }

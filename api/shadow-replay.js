@@ -128,8 +128,62 @@ A newsletter listing fifteen dated items must yield fifteen events. Returning
 the five most interesting ones is a failure, not a summary. Before you finish,
 re-read the source and confirm every date you can see appears in your output.`;
 
+// literal-titles tests the counterweight hypothesis from the Shiok Kitchen
+// fabrication (message 1a0d5e1fad137d90). Sonnet 5 titled a bare "Reserve with
+// Google" restaurant confirmation "Cooking Class Reservation at Shiok Singapore
+// Kitchen". The source names a venue, a party size, a time and a food
+// description -- no class, no activity, no event type of any kind. Fable 5 on
+// byte-identical input wrote "Reservation at Shiok Singapore Kitchen".
+//
+// This is not a gap-filling failure: a complete, correct, literal title was
+// already sitting in the source. The production prompt pushes one way only --
+// every rule rewards inference and completeness, and the title field spec
+// ("clear, specific -- not generic") actively penalises the correct generic
+// word. Nothing anywhere says do not state what the source does not.
+//
+// The variant adds that counterweight, scoped to NAMING only. Rules 1-8 must
+// keep inferring freely about WHETHER an item is calendar-worthy and WHEN it
+// happens -- that inference is what catches the school newsletter that never
+// says "your child's class", and suppressing it would breach the cardinal rule
+// to catch a cosmetic one.
+// Additive only: Rules 1-10 and the field specs are left exactly as they are.
+// The existing inference instructions do real work elsewhere -- inferring from
+// team name, teacher or grade that a newsletter mention is an actual event --
+// and narrowing them to fix a naming failure would trade a cardinal-rule miss
+// for a cosmetic one.
+
+const RULE11_LITERAL = `Rule 11: Naming. Infer freely about WHETHER something belongs on the calendar
+and WHEN it happens -- Rules 1-10 stand unchanged. Stay literal about what it
+is CALLED.
+
+When naming the event, do not add descriptive specifics -- event type, category,
+activity -- that the source does not state, even if they seem plausible from
+other details like a venue name, a sender, a booking platform or a menu
+description. If the source does not name a specific type, use the source's own
+generic language for the title ("Reservation", "Appointment", "Booking")
+together with what it does name: the venue, the sender, the person.
+
+Where the source DOES name the activity -- "cooking class", "parent-teacher
+conference", "U9B scrimmage" -- use it and keep its specifics. This rule
+suppresses invention, never correct detail.
+
+Before returning, check each title: every descriptive word in it should be
+traceable to words actually present in the content.
+
+`;
+
+const JSON_TAIL = 'Return a JSON array only.';
+
 export function applyPromptVariant(prompt, variant) {
   if (!variant || variant === 'production') return prompt;
+  if (variant === 'literal-titles') {
+    // Fail loudly rather than silently replay the unmodified prompt and report
+    // the result as though the counterweight had been applied.
+    if (!prompt.includes(JSON_TAIL)) {
+      throw new Error('literal-titles: the closing JSON instruction was not found — the variant has nowhere to anchor Rule 11');
+    }
+    return prompt.replace(JSON_TAIL, RULE11_LITERAL + JSON_TAIL);
+  }
   if (variant === 'rule8-strict') {
     if (!prompt.includes(RULE8_ORIGINAL)) {
       // Fail rather than silently replay the unmodified prompt and report the
@@ -242,6 +296,55 @@ export function titleSimilarity(a, b) {
   let inter = 0;
   for (const t of A) if (B.has(t)) inter++;
   return inter / (A.size + B.size - inter);
+}
+
+// ── Title traceability ───────────────────────────────────────────────────
+// Scores one title against the source it came from: which descriptive words in
+// the title cannot be traced to words actually present in the content.
+//
+// This is a detector for INVENTION, not for specificity. A title that is more
+// specific than the baseline is fine when the source supports it -- "U9B
+// Pre-NPL Scrimmage vs Alameda" should score clean against a source containing
+// those words. What it catches is "Cooking Class Reservation at Shiok Singapore
+// Kitchen" against a source with no cooking and no class anywhere in it.
+//
+// Deliberately generous, because a noisy detector is a useless one:
+// - substring matching against the whole normalised source, so plurals,
+//   possessives and inflections ("practices" -> "practice") all trace
+// - structural and connective words are ignored outright
+// - generic naming words a model legitimately supplies when the source names no
+//   activity ("Reservation", "Appointment", "Booking") are allowed, since Rule
+//   11 explicitly endorses them. Descriptive words -- an activity, a category,
+//   a type -- are not, and those are the ones that matter here.
+const TITLE_AUDIT_STOPWORDS = new Set([
+  'a', 'an', 'the', 'at', 'in', 'on', 'of', 'for', 'to', 'and', 'or', 'with',
+  'vs', 'v', 'by', 'from', 'this', 'that', 'is', 'are', 'be', 'your', 'our',
+  'my', 'their', 'his', 'her', 'its', 'you',
+]);
+
+// Generic naming words, not descriptive specifics. Supplying one of these when
+// the source names no activity is exactly what Rule 11 asks for.
+const TITLE_AUDIT_GENERIC = new Set([
+  'event', 'events', 'reminder', 'reminders', 'deadline', 'deadlines', 'due',
+  'rsvp', 'appointment', 'appointments', 'reservation', 'reservations',
+  'booking', 'bookings', 'meeting', 'meetings', 'confirmed', 'confirmation',
+]);
+
+export function untraceableTitleTokens(title, sourceText) {
+  const src = normTitle(`${sourceText || ''}`);
+  if (!src) return [];
+  const out = [];
+  for (const tok of normTitle(title).split(' ').filter(Boolean)) {
+    if (tok.length < 3) continue;
+    if (TITLE_AUDIT_STOPWORDS.has(tok)) continue;
+    if (TITLE_AUDIT_GENERIC.has(tok)) continue;
+    if (/^[0-9]+$/.test(tok)) continue;
+    // Trace the stem, so "classes" traces to "class" and vice versa.
+    const stem = tok.replace(/(ies|es|s)$/, '');
+    if (src.includes(tok) || (stem.length >= 3 && src.includes(stem))) continue;
+    out.push(tok);
+  }
+  return out;
 }
 
 export function compareSets(sonnetEvents, fableEvents, threshold = TITLE_MATCH_THRESHOLD) {
@@ -784,6 +887,67 @@ export async function runReplay({
 
 // Scoring lives in one place so a batched run and a single-shot run cannot
 // diverge. Takes finished pairs, returns the report.
+// ── Title audit ──────────────────────────────────────────────────────────
+// Scores the titles a run already produced against the mail they came from.
+// Makes NO model calls: it refetches the message bodies from Gmail and runs the
+// traceability detector over the stored titles, so auditing a hundred-message
+// run costs nothing but Gmail reads.
+//
+// The refetch is necessary because a stored pair keeps titles but not content
+// -- the harness strips bodies by design -- so the source text has to come back
+// from Gmail to be compared against.
+//
+// Note what this can and cannot tell you. Run over an EXISTING run it scores
+// titles produced under whatever prompt that run used; it establishes a
+// baseline and proves out the detector, but it cannot show a prompt change
+// working. For that, re-run the messages under the new variant and audit the
+// new runId.
+export async function titleAudit(runId, email) {
+  if (!runId) throw new Error('runId is required');
+  const raw = (await redis.hgetall(runResultsKey(runId))) || {};
+  const ids = Object.keys(raw);
+  if (!ids.length) throw new Error(`no stored pairs for run "${runId}" (it may have expired)`);
+  const gmail = await gmailFor(email);
+
+  const rows = [];
+  let titlesChecked = 0;
+  let flaggedTitles = 0;
+  for (const id of ids) {
+    let pair;
+    try { pair = JSON.parse(raw[id]); } catch { continue; }
+    const titles = (pair.sonnetEventsHere || []).map(e => e.title).filter(Boolean);
+    if (!titles.length) continue;
+
+    let body = '';
+    let subject = pair.subject || '';
+    try {
+      const msg = await gmail.users.messages.get({ userId: 'me', id, format: 'full' });
+      subject = headerOf(msg.data, 'Subject') || subject;
+      body = extractPlainText(msg.data.payload);
+    } catch (e) {
+      rows.push({ id, subject, error: `body refetch failed: ${e.message}` });
+      continue;
+    }
+    // The subject is part of what the model saw, so a title tracing only to the
+    // subject line is traced, not invented.
+    const source = `${subject}\n${body}`;
+    for (const title of titles) {
+      titlesChecked++;
+      const untraceable = untraceableTitleTokens(title, source);
+      if (!untraceable.length) continue;
+      flaggedTitles++;
+      rows.push({ id, subject, from: pair.from, title, untraceable,
+        modelUsed: pair.modelUsed, variantUsed: pair.variantUsed });
+    }
+  }
+  rows.sort((a, b) => (b.untraceable?.length || 0) - (a.untraceable?.length || 0));
+  return {
+    runId, messages: ids.length, titlesChecked, flaggedTitles,
+    cleanRate: rate(titlesChecked - flaggedTitles, titlesChecked),
+    flagged: rows,
+  };
+}
+
 export function scorePairs(pairs, senders, extra = {}) {
   const senderSet = new Set(senders.map(s => s.toLowerCase()));
   // Track 2 records a stratum on each pair (single vs multi event). When it is

@@ -128,8 +128,68 @@ A newsletter listing fifteen dated items must yield fifteen events. Returning
 the five most interesting ones is a failure, not a summary. Before you finish,
 re-read the source and confirm every date you can see appears in your output.`;
 
+// literal-titles tests the counterweight hypothesis from the Shiok Kitchen
+// fabrication (message 1a0d5e1fad137d90). Sonnet 5 titled a bare "Reserve with
+// Google" restaurant confirmation "Cooking Class Reservation at Shiok Singapore
+// Kitchen". The source names a venue, a party size, a time and a food
+// description -- no class, no activity, no event type of any kind. Fable 5 on
+// byte-identical input wrote "Reservation at Shiok Singapore Kitchen".
+//
+// This is not a gap-filling failure: a complete, correct, literal title was
+// already sitting in the source. The production prompt pushes one way only --
+// every rule rewards inference and completeness, and the title field spec
+// ("clear, specific -- not generic") actively penalises the correct generic
+// word. Nothing anywhere says do not state what the source does not.
+//
+// The variant adds that counterweight, scoped to NAMING only. Rules 1-8 must
+// keep inferring freely about WHETHER an item is calendar-worthy and WHEN it
+// happens -- that inference is what catches the school newsletter that never
+// says "your child's class", and suppressing it would breach the cardinal rule
+// to catch a cosmetic one.
+const TITLE_FIELD_ORIGINAL = '- title (clear, specific \u2014 not generic)';
+
+const TITLE_FIELD_LITERAL = '- title (name the event in the source\u2019s own words \u2014 as specific as the source is, and no more; see Rule 11)';
+
+const RULE11_LITERAL = `Rule 11: Name it from the source. Rules 1-8 tell you to infer generously about
+WHETHER something belongs on the calendar and WHEN it happens. That licence
+does not extend to what the event is CALLED.
+
+- Never put a type, category or activity in a title that the source does not
+  state. A booking confirmation giving only a venue, a party size and a time is
+  "Reservation at [venue]" -- not a class, tasting, workshop, party or lesson,
+  however plausible the venue name, the menu description, the sender or the
+  booking platform makes one sound.
+- Where the source DOES name the activity -- "cooking class", "parent-teacher
+  conference", "U9B scrimmage", "annual fundraising gala" -- use it, and keep
+  its specifics. Being literal means carrying across the detail that is there,
+  never stripping it out.
+- When the source names no activity, use its own generic word ("Reservation",
+  "Appointment", "Booking", "Order") together with what it does name: the
+  venue, the sender, the person. A generic title that is true is correct. A
+  specific title that is invented is a failure, even when it reads better.
+
+Before returning, check each title against the source: every descriptive word
+in it should be traceable to words actually present in the content.
+
+`;
+
+const JSON_TAIL = 'Return a JSON array only.';
+
 export function applyPromptVariant(prompt, variant) {
   if (!variant || variant === 'production') return prompt;
+  if (variant === 'literal-titles') {
+    // Fail loudly rather than silently replay the unmodified prompt and report
+    // the result as though the counterweight had been applied.
+    if (!prompt.includes(TITLE_FIELD_ORIGINAL)) {
+      throw new Error('literal-titles: the title field spec was not found verbatim in the production prompt — it has changed and the variant needs updating');
+    }
+    if (!prompt.includes(JSON_TAIL)) {
+      throw new Error('literal-titles: the closing JSON instruction was not found — the variant has nowhere to anchor Rule 11');
+    }
+    return prompt
+      .replace(TITLE_FIELD_ORIGINAL, TITLE_FIELD_LITERAL)
+      .replace(JSON_TAIL, RULE11_LITERAL + JSON_TAIL);
+  }
   if (variant === 'rule8-strict') {
     if (!prompt.includes(RULE8_ORIGINAL)) {
       // Fail rather than silently replay the unmodified prompt and report the

@@ -7758,7 +7758,49 @@ function sameDayAndTime(ev, date, time) {
   return !evTime || !time || evTime === time;
 }
 
-function isDuplicateEventIn(all, title, date, opts = {}) {
+// Which record collides, not merely whether one does.
+//
+// isDuplicateEventIn answered "is this a duplicate" and every caller dropped on
+// true. That is how a paid ticket confirmation carrying 18:00 and Kezar Stadium
+// was discarded in favour of an all-day newsletter mention of the same game
+// that happened to arrive first: first writer wins, with no comparison of what
+// either record actually contains.
+//
+// Returning the match lets the caller ask the better question -- is the thing I
+// am about to throw away actually better than the thing I am keeping.
+function findDuplicateEventIn(all, title, date, opts = {}) {
+  let found = null;
+  isDuplicateEventIn(all, title, date, opts, ev => { found = ev; });
+  return found;
+}
+
+// Strictly more specific, never merely different. Supersession must be
+// unambiguous or it becomes a second way to lose information.
+//
+// Deliberately NOT included: a longer title, more notes, a newer arrival. None
+// of those make an entry more useful to someone deciding when to leave the
+// house, and "newer wins" would just invert today's bug.
+function moreSpecificThan(incoming, existing) {
+  const inTime = String(incoming?.time || '').trim();
+  const exTime = String(existing?.time || '').trim();
+  const inAllDay = !!incoming?.is_all_day;
+  const exAllDay = !!existing?.is_all_day;
+
+  // A time where there was none. This is the case that matters: an all-day
+  // banner tells a parent a game exists; it does not tell them when to leave.
+  if (inTime && !inAllDay && (!exTime || exAllDay)) return true;
+
+  // Same clock time, but one of them knows where. Only compared when the times
+  // already agree, so this can never quietly move an event.
+  if (inTime && exTime && inTime === exTime) {
+    const inLoc = String(incoming?.location || '').trim();
+    const exLoc = String(existing?.location || '').trim();
+    if (inLoc && !exLoc) return true;
+  }
+  return false;
+}
+
+function isDuplicateEventIn(all, title, date, opts = {}, onMatch = null) {
   const shape = recurrenceShape(opts.recurrence);
   const time = opts.time || '';
   const threadId = opts.threadId || '';
@@ -7784,12 +7826,15 @@ function isDuplicateEventIn(all, title, date, opts = {}) {
     //
     // Runs behind blocksDuplicate like every other clause, so a dead record can
     // no more suppress mail via its thread than via its title.
-    if (threadId && ev.thread_id === threadId && sameDayAndTime(ev, date, time)) return true;
+    if (threadId && ev.thread_id === threadId && sameDayAndTime(ev, date, time)) { if (onMatch) onMatch(ev); return true; }
 
     if (!titlesLooselyMatch(ev.title, title)) return false;
-    if (sameDayAndTime(ev, date, time)) return true;
+    if (sameDayAndTime(ev, date, time)) { if (onMatch) onMatch(ev); return true; }
     if (!shape) return false;
-    return recurrenceShape(ev.recurrence_rule) === shape && (ev.time || '') === time;
+    if (recurrenceShape(ev.recurrence_rule) === shape && (ev.time || '') === time) {
+      if (onMatch) onMatch(ev); return true;
+    }
+    return false;
   });
 }
 
@@ -8584,7 +8629,47 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         // extraction. Gate first, dedup second: a prior "no" can never become
         // a silent drop.
         const refusal = await priorRefusal(email, ev.date, ev.title);
-        if (!refusal && await isDuplicateEvent(eventsStore, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) {
+        const dupOf = refusal ? null : findDuplicateEventIn(
+          await eventsStore.values(), ev.title, ev.date,
+          { time: ev.start_time || '', recurrence: ev.recurrence, threadId });
+        if (dupOf) {
+          const incoming = { time: ev.start_time || '', is_all_day: !!ev.is_all_day, location: ev.location || '' };
+          // Supersede rather than drop when the new extraction is strictly more
+          // useful. A ticket confirmation carrying 18:00 and a stadium address
+          // used to lose to an all-day newsletter mention that arrived first.
+          if (moreSpecificThan(incoming, dupOf) && dupOf.calEventId) {
+            try {
+              await calendarApi.events.patch({
+                calendarId: dupOf.gcalId || 'primary',
+                eventId: dupOf.calEventId,
+                // Reuses the same time builder the write path uses, so a
+                // superseded event is shaped exactly like a freshly written
+                // one rather than by a second, parallel formatter.
+                resource: (() => {
+                  const { start, end } = buildCalendarTimes(
+                    ev.date, ev.start_time || '', ev.end_date || '', ev.end_time || '', userTz);
+                  const r = { start, end };
+                  if (ev.location) r.location = ev.location;
+                  return r;
+                })(),
+              });
+              dupOf.time = incoming.time;
+              dupOf.end_time = ev.end_time || dupOf.end_time || '';
+              dupOf.is_all_day = false;
+              if (incoming.location) dupOf.location = incoming.location;
+              dupOf.superseded_at = new Date().toISOString();
+              dupOf.superseded_from_message = messageId;
+              await eventsStore.set(dupOf.id, dupOf);
+              console.log(`[gmail-process] msg=${messageId} DEDUP SUPERSEDE "${ev.title}" on ${ev.date} -> ${incoming.time}`);
+              await traceEmail(email, { stage: 'SUPERSEDED', via: 'webhook', messageId, subject,
+                title: ev.title, date: ev.date, newTime: incoming.time, threadId: threadId || null });
+              continue;
+            } catch (patchErr) {
+              // Never worse than today's behaviour: if the patch fails the
+              // record stays exactly as it was and this logs as a plain skip.
+              console.error(`[gmail-process] supersede patch failed for "${ev.title}":`, patchErr.message);
+            }
+          }
           console.log(`[gmail-process] msg=${messageId} DEDUP SKIP event "${ev.title}" on ${ev.date} already exists`);
           // A skip that only exists in a log line is a skip nobody can audit.
           // This is the path that once ate real school mail, so every drop now

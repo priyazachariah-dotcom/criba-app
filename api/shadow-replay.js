@@ -309,8 +309,10 @@ export function titleSimilarity(a, b) {
 // Kitchen" against a source with no cooking and no class anywhere in it.
 //
 // Deliberately generous, because a noisy detector is a useless one:
-// - substring matching against the whole normalised source, so plurals,
-//   possessives and inflections ("practices" -> "practice") all trace
+// - matching is on whole words, with both sides stemmed, so plurals and
+//   inflections ("practices" -> "practice") trace. NOT substring matching:
+//   that traced "class" to "classic" in the very first real run and let half
+//   the Shiok fabrication through unflagged.
 // - structural and connective words are ignored outright
 // - generic naming words a model legitimately supplies when the source names no
 //   activity ("Reservation", "Appointment", "Booking") are allowed, since Rule
@@ -330,18 +332,44 @@ const TITLE_AUDIT_GENERIC = new Set([
   'booking', 'bookings', 'meeting', 'meetings', 'confirmed', 'confirmation',
 ]);
 
+// Every plural/singular form a word could correspond to. A single stem is not
+// enough: stemming "practices" to "practic" stops it matching "practice", while
+// stemming only the "s" stops "classes" matching "class". Comparing candidate
+// sets from BOTH sides matches each of those without matching "class" to
+// "classic", which is the error that matters here.
+function wordVariants(w) {
+  const v = new Set([w]);
+  if (w.endsWith('ies') && w.length > 4) v.add(w.slice(0, -3) + 'y');
+  if (w.endsWith('es') && w.length > 3) v.add(w.slice(0, -2));
+  if (w.endsWith('s') && w.length > 2) v.add(w.slice(0, -1));
+  return v;
+}
+
+// Known limitation: only plural/singular forms are matched, not derivational
+// ones -- a title "Delivery" against a source saying "delivered" is reported.
+// Left as-is deliberately. That direction produces a false positive a reviewer
+// discards in a second; the failure that matters is the opposite one, a
+// fabricated word traced to something it has nothing to do with.
+
 export function untraceableTitleTokens(title, sourceText) {
   const src = normTitle(`${sourceText || ''}`);
   if (!src) return [];
+  // Whole words only, each stored alongside its stem, so matching runs in both
+  // directions: title "practice" traces to source "practices", and vice versa.
+  const srcTokens = new Set();
+  for (const w of src.split(' ')) {
+    if (!w) continue;
+    for (const v of wordVariants(w)) srcTokens.add(v);
+  }
   const out = [];
   for (const tok of normTitle(title).split(' ').filter(Boolean)) {
     if (tok.length < 3) continue;
     if (TITLE_AUDIT_STOPWORDS.has(tok)) continue;
     if (TITLE_AUDIT_GENERIC.has(tok)) continue;
     if (/^[0-9]+$/.test(tok)) continue;
-    // Trace the stem, so "classes" traces to "class" and vice versa.
-    const stem = tok.replace(/(ies|es|s)$/, '');
-    if (src.includes(tok) || (stem.length >= 3 && src.includes(stem))) continue;
+    let traced = false;
+    for (const v of wordVariants(tok)) if (srcTokens.has(v)) { traced = true; break; }
+    if (traced) continue;
     out.push(tok);
   }
   return out;

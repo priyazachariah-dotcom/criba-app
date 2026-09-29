@@ -3118,9 +3118,12 @@ export function analyseSenderPattern({ deletedTitles = [], keptTitles = [], cate
 
 // Groups this user's labelled outcomes by (sender, category) and runs the
 // analysis over each. Reads only; writes nothing but its own log.
-async function runPatternDetector(email) {
+// The grouping the detector runs on, split out so the read-only preview can
+// report on EXACTLY what the detector saw rather than a second copy of these
+// rules that could drift from it.
+async function collectPatternGroups(email) {
   let all = [];
-  try { all = await getUserEvents(email).values(); } catch { return { groups: 0, findings: [] }; }
+  try { all = await getUserEvents(email).values(); } catch { return null; }
 
   // Group by DOMAIN, not by sending address. A school sends from a dozen
   // addresses and a bank from "alert@" and "alerts@" one character apart; keyed
@@ -3142,7 +3145,7 @@ async function runPatternDetector(email) {
     const { key, scope } = groupKeyFor(sender);
     if (!groups.has(key)) {
       groups.set(key, { key, scope, deletedTitles: [], keptTitles: [],
-        categories: new Set(), seen: new Set(), fromDecisions: 0 });
+        deletedDetail: [], categories: new Set(), seen: new Set(), fromDecisions: 0 });
     }
     return groups.get(key);
   };
@@ -3160,6 +3163,7 @@ async function runPatternDetector(email) {
     if (isRejection) {
       g.seen.add(decisionKey(ev.date, ev.title));
       g.deletedTitles.push(ev.title || '');
+      g.deletedDetail.push({ title: ev.title || '', origin: 'google-calendar' });
     } else {
       g.keptTitles.push(ev.title || '');
     }
@@ -3190,17 +3194,31 @@ async function runPatternDetector(email) {
     const src = d.source_event_id ? byId.get(d.source_event_id) : null;
     if (src) g.categories.add(learningCategoryOf({ source_type: src.source_type }));
     g.deletedTitles.push(d.title || '');
+    g.deletedDetail.push({ title: d.title || '', origin: 'criba', via: d.via || null });
     g.fromDecisions++;
   }
+
+  return { groups, all };
+}
+
+// The category a merged group is scored against: the strictest bar present.
+function patternCategoryFor(g) {
+  return g.categories.has('financial_reminder')
+    ? 'financial_reminder'
+    : (g.categories.values().next().value || 'general');
+}
+
+async function runPatternDetector(email) {
+  const collected = await collectPatternGroups(email);
+  if (!collected) return { groups: 0, findings: [] };
+  const { groups } = collected;
 
   const findings = [];
   for (const g of groups.values()) {
     // Categories are no longer split, so a group can hold several. The bar is
     // the strictest one present: any financial_reminder in the group requires 6
     // deletions, not 3. Merging must not quietly lower a threshold.
-    const category = g.categories.has('financial_reminder')
-      ? 'financial_reminder'
-      : (g.categories.values().next().value || 'general');
+    const category = patternCategoryFor(g);
     const r = analyseSenderPattern({
       deletedTitles: g.deletedTitles, keptTitles: g.keptTitles, category });
     findings.push({ sender: g.key, scope: g.scope,
@@ -3223,6 +3241,83 @@ async function runPatternDetector(email) {
   }
   return { groups: groups.size, findings: notable };
 }
+
+// GET /api/debug/pattern-preview — read-only. Answers two questions the log
+// cannot: what exactly would each crossed finding act on, and which "cancelled"
+// rows are the user's own deletions versus the sender calling its own event off.
+//
+// Reads the SAME groups the detector builds (collectPatternGroups), so this can
+// never describe a rule the detector would not actually have suggested.
+// Nothing is written and nothing is muted.
+app.get('/api/debug/pattern-preview', requireAuth, async (req, res) => {
+  try {
+    const email = req.user.email;
+    const collected = await collectPatternGroups(email);
+    if (!collected) return res.status(500).json({ error: 'could not read events' });
+    const { groups, all } = collected;
+
+    const crossed = [];
+    for (const g of groups.values()) {
+      const r = analyseSenderPattern({
+        deletedTitles: g.deletedTitles, keptTitles: g.keptTitles,
+        category: patternCategoryFor(g) });
+      if (r.verdict !== 'word_level' && r.verdict !== 'sender_level') continue;
+
+      const tokens = (r.tokens || []).map(t => t.token);
+      // A word-level rule acts on titles carrying one of its tokens. A
+      // sender-level one acts on everything from the sender, so every title is
+      // "caught" and the spared list is necessarily empty -- which is the point
+      // worth seeing before anyone agrees to it.
+      const hits = (title) => r.verdict === 'sender_level'
+        || tokens.some(tok => distinctiveTokens(title).has(tok));
+
+      const caught = g.deletedDetail.filter(d => hits(d.title));
+      const sparedFromDeleted = g.deletedDetail.filter(d => !hits(d.title));
+      const sparedFromKept = g.keptTitles.filter(t => !hits(t));
+
+      crossed.push({
+        sender: g.key, scope: g.scope, verdict: r.verdict,
+        categories: [...g.categories].sort(),
+        deleted: r.deleted, kept: r.kept, minDeletionsRequired: r.minDeletionsRequired,
+        wouldMute: r.verdict === 'sender_level' ? '(everything from this sender)' : tokens,
+        why: r.why,
+        fromCriba: g.deletedDetail.filter(d => d.origin === 'criba').length,
+        fromGoogleCalendar: g.deletedDetail.filter(d => d.origin === 'google-calendar').length,
+        examplesCaught: caught.slice(0, 3).map(d => `${d.title}  [${d.origin}]`),
+        examplesKept: [...sparedFromKept, ...sparedFromDeleted.map(d => d.title)].slice(0, 3),
+        keptCountSpared: sparedFromKept.length,
+      });
+    }
+    crossed.sort((a, b) => b.deleted - a.deleted);
+
+    // The "cancelled" ambiguity: the same status is written when the user
+    // deletes an event and when the sender calls its own event off. recordRefusal
+    // stored a distinct `via` for each gesture, so they are separable.
+    const decisions = await getUserDecisions(email).values().catch(() => []);
+    const byVia = {};
+    for (const d of decisions) {
+      if (d?.verdict !== 'no') continue;
+      const via = d.via || '(none)';
+      byVia[via] = (byVia[via] || 0) + 1;
+    }
+    const cancelledRows = all.filter(ev => ev?.status === 'cancelled');
+    const cancelledSplit = {
+      totalCancelledRows: cancelledRows.length,
+      withUserActionAt: cancelledRows.filter(ev => ev.user_action_at).length,
+      withoutUserActionAt: cancelledRows.filter(ev => !ev.user_action_at).length,
+    };
+
+    res.json({
+      note: 'read-only; nothing written, nothing muted, detector unchanged',
+      crossedFindings: crossed.length,
+      crossed,
+      decisionsByVia: byVia,
+      cancelledSplit,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'pattern-preview failed', detail: err.message });
+  }
+});
 
 // GET /api/admin/pattern-detector — the accumulated log. Admin-only, and the
 // ONLY way to see any of this: nothing reaches the app.

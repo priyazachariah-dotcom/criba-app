@@ -3122,23 +3122,89 @@ async function runPatternDetector(email) {
   let all = [];
   try { all = await getUserEvents(email).values(); } catch { return { groups: 0, findings: [] }; }
 
+  // Group by DOMAIN, not by sending address. A school sends from a dozen
+  // addresses and a bank from "alert@" and "alerts@" one character apart; keyed
+  // per address, one real pattern was split across four groups, each of them
+  // comfortably under threshold forever.
+  //
+  // Freemail is the exception, and it matters: gmail.com covers the user, her
+  // husband and a club treasurer. There the address IS the identity, so merging
+  // would build a pattern out of unrelated people.
+  const groupKeyFor = (sender) => {
+    const d = domainOf(sender);
+    return (!d || FREEMAIL_DOMAINS.has(d))
+      ? { key: String(sender || '').toLowerCase(), scope: 'address' }
+      : { key: d, scope: 'domain' };
+  };
+
   const groups = new Map();
+  const ensure = (sender) => {
+    const { key, scope } = groupKeyFor(sender);
+    if (!groups.has(key)) {
+      groups.set(key, { key, scope, deletedTitles: [], keptTitles: [],
+        categories: new Set(), seen: new Set(), fromDecisions: 0 });
+    }
+    return groups.get(key);
+  };
+
+  const byId = new Map();
+  for (const ev of all) if (ev?.id) byId.set(ev.id, ev);
+
   for (const ev of all) {
     if (!ev?.learn_checked || !ev.sender_email) continue;
     const isRejection = isRejectionOutcome(ev.learn_outcome);
     const isKeep = ev.learn_outcome === 'kept';
     if (!isRejection && !isKeep) continue;      // deleted_redundant and anything else: ignored
-    const sender = String(ev.sender_email).toLowerCase();
-    const category = learningCategoryOf({ source_type: ev.source_type });
-    const k = `${sender}|${category}`;
-    if (!groups.has(k)) groups.set(k, { sender, category, deletedTitles: [], keptTitles: [] });
-    (isRejection ? groups.get(k).deletedTitles : groups.get(k).keptTitles).push(ev.title || '');
+    const g = ensure(ev.sender_email);
+    g.categories.add(learningCategoryOf({ source_type: ev.source_type }));
+    if (isRejection) {
+      g.seen.add(decisionKey(ev.date, ev.title));
+      g.deletedTitles.push(ev.title || '');
+    } else {
+      g.keptTitles.push(ev.title || '');
+    }
+  }
+
+  // Deletions made in Criba's own UI never reach learn_outcome at all: deleting
+  // nulls calEventId, and learnFromCalendar requires one to consider a row a
+  // candidate, so the row is not "missed this run" but permanently ineligible.
+  // recordRefusal wrote each of them down at the time, with the sender. Reading
+  // them here is what makes a deletion count wherever it was made.
+  //
+  // Deduplicated against the event rows on (date, normalised title) -- the same
+  // key the write-guard and the decision gate use -- so a deletion recorded in
+  // both places counts once.
+  let decisions = [];
+  try { decisions = await getUserDecisions(email).values(); } catch (e) {
+    console.error('[pattern] decisions read failed, events only:', e.message);
+  }
+  for (const d of decisions) {
+    if (!d?.sender_email || d.verdict !== 'no') continue;
+    const g = ensure(d.sender_email);
+    const k = decisionKey(d.date, d.title);
+    if (g.seen.has(k)) continue;
+    g.seen.add(k);
+    // Decisions carry no source_type. The row they were recorded against does,
+    // when it still exists -- and the category only sets the threshold, so an
+    // unresolvable one simply leaves the group at the default bar.
+    const src = d.source_event_id ? byId.get(d.source_event_id) : null;
+    if (src) g.categories.add(learningCategoryOf({ source_type: src.source_type }));
+    g.deletedTitles.push(d.title || '');
+    g.fromDecisions++;
   }
 
   const findings = [];
   for (const g of groups.values()) {
-    const r = analyseSenderPattern(g);
-    findings.push({ sender: g.sender, ...r });
+    // Categories are no longer split, so a group can hold several. The bar is
+    // the strictest one present: any financial_reminder in the group requires 6
+    // deletions, not 3. Merging must not quietly lower a threshold.
+    const category = g.categories.has('financial_reminder')
+      ? 'financial_reminder'
+      : (g.categories.values().next().value || 'general');
+    const r = analyseSenderPattern({
+      deletedTitles: g.deletedTitles, keptTitles: g.keptTitles, category });
+    findings.push({ sender: g.key, scope: g.scope,
+      categories: [...g.categories].sort(), fromDecisions: g.fromDecisions, ...r });
   }
   // Only the interesting ones are worth reading later; "insufficient" is the
   // overwhelming majority and would bury the rest.

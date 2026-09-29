@@ -3066,7 +3066,59 @@ function patternMinDeletionsFor(category) {
 // here would reintroduce the contamination the redundancy guard removes.
 function isRejectionOutcome(o) { return o === 'deleted'; }
 
-export function analyseSenderPattern({ deletedTitles = [], keptTitles = [], category = 'event' } = {}) {
+// Token quality, for the DETECTOR ONLY.
+//
+// Deliberately not a change to distinctiveTokens(). That function is the
+// calendar dedup matcher (titlesShareDistinctiveTokens, findCalendarDuplicate),
+// where short and numeric tokens are the most load-bearing things there are:
+// "U9B", "JV", "2027", "K-2nd" are exactly what separates one fixture or one
+// evening from another. Dropping them there would make two different games look
+// like one, and a false duplicate match means an event is silently never
+// written -- the one failure mode that matters more than any amount of noise.
+//
+// So the filtering lives here, applied to candidate tokens after the shared
+// matcher has produced them, and changes nothing outside the detector.
+const PATTERN_TOKEN_STOPWORDS = new Set([
+  'event', 'events', 'meeting', 'meetings', 'session', 'sessions', 'class',
+  'classes', 'program', 'programs', 'update', 'updates', 'reminder', 'reminders',
+  'deadline', 'deadlines', 'registration', 'register', 'notice', 'news',
+  'newsletter', 'weekly', 'monthly', 'annual', 'national', 'international',
+  'online', 'virtual', 'live', 'free', 'open', 'join', 'info', 'information',
+  'order', 'delivery', 'arriving', 'week', 'month', 'year', 'day', 'days',
+  'today', 'tomorrow', 'morning', 'evening', 'night', 'fall', 'winter',
+  'spring', 'summer', 'start', 'starts', 'ends', 'ending', 'final', 'first',
+  'last', 'next', 'new', 'now',
+]);
+
+// Words belonging to the sender itself. A rule that fires on "usrowing" for
+// mail from usrowing.org is not a topic -- it splits on whether the sender
+// happened to put its own name in that headline, which is house style, not
+// preference.
+function senderOwnWords(senderKey) {
+  const out = new Set();
+  const raw = String(senderKey || '').toLowerCase();
+  for (const part of raw.split(/[@.\-_]+/)) {
+    if (!part || part.length < 3) continue;
+    if (['com', 'org', 'net', 'edu', 'gov', 'www', 'mail', 'email', 'info',
+         'news', 'no', 'reply', 'noreply'].includes(part)) continue;
+    out.add(part);
+  }
+  return out;
+}
+
+function usablePatternToken(token, ownWords) {
+  const t = String(token || '');
+  if (t.length < 4) return false;                       // "ai", "hll", "u9b"
+  if (/\d/.test(t)) return false;                       // years, order-number fragments, receipt ids
+  if (PATTERN_TOKEN_STOPWORDS.has(t)) return false;
+  if (ownWords.has(t)) return false;
+  // A token that merely contains the sender's name ("usrowings") is the same
+  // signal as the name itself.
+  for (const w of ownWords) if (w.length >= 4 && t.includes(w)) return false;
+  return true;
+}
+
+export function analyseSenderPattern({ deletedTitles = [], keptTitles = [], category = 'event', sender = '' } = {}) {
   const minDel = patternMinDeletionsFor(category);
   const distinctDeleted = [...new Set(deletedTitles.map(t => String(t || '').trim()).filter(Boolean))];
   const base = {
@@ -3087,8 +3139,10 @@ export function analyseSenderPattern({ deletedTitles = [], keptTitles = [], cate
   // could fire, the narrower one is the safer thing to have suggested.
   const support = new Map();
   for (const s of delTokenSets) for (const w of s) support.set(w, (support.get(w) || 0) + 1);
+  const ownWords = senderOwnWords(sender);
   const wordCandidates = [...support.entries()]
-    .filter(([w, n]) => n >= PATTERN_MIN_TOKEN_SUPPORT && !keptTokens.has(w))
+    .filter(([w, n]) => n >= PATTERN_MIN_TOKEN_SUPPORT && !keptTokens.has(w)
+      && usablePatternToken(w, ownWords))
     .sort((a, b) => b[1] - a[1])
     .map(([token, n]) => ({ token, inDeleted: n, inKept: 0 }));
 
@@ -3201,6 +3255,30 @@ async function collectPatternGroups(email) {
   return { groups, all };
 }
 
+// Senders the user has already decided about. Reporting a pattern for one is
+// noise at best -- the decision is made, and the deletions that produced the
+// finding are usually the ones that led to the rule in the first place, so the
+// detector would keep re-proposing something already done.
+//
+// Matches the live gate: sender rules are held against the FULL domain of the
+// sending address (see eventRelevance), so an exact key match is the same test
+// the exclusion actually applies.
+async function patternMutedSenders(email) {
+  const keys = new Set();
+  try {
+    for (const r of await getUserExclusions(email).values()) {
+      if (r?.type === 'sender' && r.value) keys.add(String(r.value).toLowerCase());
+    }
+  } catch (e) { console.error('[pattern] exclusion read failed:', e.message); }
+  try {
+    for (const k of Object.keys((await getLearnedMutes(email)) || {})) {
+      const parsed = parseLearnedMuteKey(k);
+      if (parsed?.value) keys.add(String(parsed.value).toLowerCase());
+    }
+  } catch (e) { console.error('[pattern] learned-mute read failed:', e.message); }
+  return keys;
+}
+
 // The category a merged group is scored against: the strictest bar present.
 function patternCategoryFor(g) {
   return g.categories.has('financial_reminder')
@@ -3212,15 +3290,18 @@ async function runPatternDetector(email) {
   const collected = await collectPatternGroups(email);
   if (!collected) return { groups: 0, findings: [] };
   const { groups } = collected;
+  const muted = await patternMutedSenders(email);
 
   const findings = [];
+  let skippedMuted = 0;
   for (const g of groups.values()) {
+    if (muted.has(g.key)) { skippedMuted++; continue; }
     // Categories are no longer split, so a group can hold several. The bar is
     // the strictest one present: any financial_reminder in the group requires 6
     // deletions, not 3. Merging must not quietly lower a threshold.
     const category = patternCategoryFor(g);
     const r = analyseSenderPattern({
-      deletedTitles: g.deletedTitles, keptTitles: g.keptTitles, category });
+      deletedTitles: g.deletedTitles, keptTitles: g.keptTitles, category, sender: g.key });
     findings.push({ sender: g.key, scope: g.scope,
       categories: [...g.categories].sort(), fromDecisions: g.fromDecisions, ...r });
   }
@@ -3229,7 +3310,7 @@ async function runPatternDetector(email) {
   const notable = findings.filter(f => f.verdict !== 'insufficient');
 
   const entry = { at: new Date().toISOString(), groups: groups.size,
-    notable: notable.length, findings: notable };
+    skippedMuted, notable: notable.length, findings: notable };
   try {
     const key = `patternDetector:${email}`;
     await redis.lpush(key, JSON.stringify(entry));
@@ -3239,7 +3320,7 @@ async function runPatternDetector(email) {
   if (notable.length) {
     console.log(`[pattern] ${email}: ${notable.map(f => `${f.sender}|${f.category}=${f.verdict}`).join(' ')}`);
   }
-  return { groups: groups.size, findings: notable };
+  return { groups: groups.size, skippedMuted, findings: notable };
 }
 
 // GET /api/debug/pattern-preview — read-only. Answers two questions the log
@@ -3256,11 +3337,14 @@ app.get('/api/debug/pattern-preview', requireAuth, async (req, res) => {
     if (!collected) return res.status(500).json({ error: 'could not read events' });
     const { groups, all } = collected;
 
+    const muted = await patternMutedSenders(email);
     const crossed = [];
+    const skippedMuted = [];
     for (const g of groups.values()) {
+      if (muted.has(g.key)) { skippedMuted.push(g.key); continue; }
       const r = analyseSenderPattern({
         deletedTitles: g.deletedTitles, keptTitles: g.keptTitles,
-        category: patternCategoryFor(g) });
+        category: patternCategoryFor(g), sender: g.key });
       if (r.verdict !== 'word_level' && r.verdict !== 'sender_level') continue;
 
       const tokens = (r.tokens || []).map(t => t.token);
@@ -3309,6 +3393,7 @@ app.get('/api/debug/pattern-preview', requireAuth, async (req, res) => {
 
     res.json({
       note: 'read-only; nothing written, nothing muted, detector unchanged',
+      skippedAlreadyMuted: skippedMuted.sort(),
       crossedFindings: crossed.length,
       crossed,
       decisionsByVia: byVia,

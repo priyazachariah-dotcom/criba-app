@@ -4260,8 +4260,11 @@ function todayGreeting(hour) {
   return 'Good evening';
 }
 
-app.get('/api/today', requireAuth, async (req, res) => {
-  const email = req.user.email;
+// Extracted so the summary endpoint scores the SAME payload the screen shows.
+// Two definitions of "what is on today" would eventually disagree, and the
+// summary would describe a day the list did not.
+async function buildTodayPayload(user) {
+  const email = user.email;
   const tz = await getUserTimezone(email);
   const now = new Date();
   const date = isoDateInZone(now, tz);
@@ -4328,17 +4331,25 @@ app.get('/api/today', requireAuth, async (req, res) => {
       return String(a.time || '').localeCompare(String(b.time || ''));
     });
 
-  res.json({
+  return {
     date, timezone: tz,
     greeting: todayGreeting(hour),
-    // Sections are omitted when empty -- the caller renders what it is given.
     reminders, events,
-    // Collapsed by default in the UI. Kept separate from the main lists so a
-    // newsletter suggestion can never be mistaken for something happening.
+    // "Want it on your calendar?" on the Today screen. Kept separate from the
+    // main lists so a suggestion can never be mistaken for something happening.
     newsletters: heldShown,
     counts: { reminders: reminders.length, events: events.length,
       newsletters: heldShown.length, hiddenHeld: heldHiddenCount },
-  });
+  };
+}
+
+app.get('/api/today', requireAuth, async (req, res) => {
+  try {
+    res.json(await buildTodayPayload(req.user));
+  } catch (err) {
+    console.error('[today] failed:', err.message);
+    res.status(500).json({ error: 'Could not load today just now.' });
+  }
 });
 
 // GET /api/events/sources — the Criba-added events on the calendar, grouped by
@@ -6949,6 +6960,20 @@ function findAheadConflicts(events) {
         if (bStart >= aEnd) break;             // sorted, so nothing later can overlap either
         const bEnd = b.end_time ? timeToMinutes(b.end_time) : bStart + 60;
         if (timeToMinutes(a.time) < bEnd && aEnd > bStart) {
+          // Two overlapping entries are not automatically a clash.
+          //
+          // This reported 41 for one week, and most were not problems. Two
+          // children in two places at once is an ordinary Tuesday, not a
+          // conflict for the person reading the screen -- and memberId was
+          // carried on both sides here and never once compared. The same game
+          // arriving from the club feed and from a coach's email was reported
+          // as clashing with itself.
+          //
+          // A wrong count is worse than no count: it makes a calm week look
+          // unmanageable, and nothing on the screen says which of the 41 to
+          // believe.
+          if (a.memberId && b.memberId && a.memberId !== b.memberId) continue;
+          if (titlesLooselyMatch(a.title, b.title)) continue;
           out.push({ date, a: { id: a.id, title: a.title, time: a.time, memberId: a.memberId },
                             b: { id: b.id, title: b.title, time: b.time, memberId: b.memberId } });
         }
@@ -7126,6 +7151,79 @@ Be concrete and name real events and days. Never invent an event, a time, a plac
     generatedAt: new Date().toISOString(),
   };
 }
+
+// ── Today's summary ──────────────────────────────────────────────────────
+// Cached per day, but keyed on a hash of the day's own contents as well as the
+// date. A summary keyed on the date alone goes stale the moment three events
+// arrive at lunchtime, and it would keep describing a morning that is over --
+// which matters more here than on the week view, because this one writes itself
+// on a landing screen rather than waiting for someone to press a button.
+const TODAY_SUMMARY_TTL_S = 20 * 60 * 60;
+
+function todaySummaryKey(email, fingerprint) {
+  return `todaySummary:${email}:${new Date().toISOString().slice(0, 10)}:${fingerprint}`;
+}
+
+// Changes whenever the day's shape changes: what is on it, when, and whether
+// it is still waiting. Nothing about the text of the summary is in here.
+function todayFingerprint(payload) {
+  const parts = [...(payload.events || []), ...(payload.reminders || [])]
+    .map(e => `${e.id}|${e.time || ''}|${e.title || ''}`)
+    .sort();
+  return crypto.createHash('sha1').update(parts.join('\n')).digest('hex').slice(0, 12);
+}
+
+async function buildTodaySummary(user, payload) {
+  const items = [...(payload.events || []), ...(payload.reminders || [])].map(e => ({
+    title: e.title, time: e.is_all_day ? 'all day' : e.time, end: e.end_time || null,
+    where: e.location || null, notes: e.notes ? String(e.notes).slice(0, 300) : null,
+    kind: e.source_type || 'event',
+  }));
+  if (!items.length) {
+    return { text: 'Nothing on today.', items: 0, generatedAt: new Date().toISOString() };
+  }
+  const prompt = `You are writing a short note about one day for a busy parent. Today is ${payload.date} (timezone ${payload.timezone}).
+
+Here is everything on their day:
+${JSON.stringify(items)}
+
+Write plain text, no markdown, no headings, no bullet characters. Three sentences at most:
+1. What the day looks like -- how busy, and the shape of it.
+2. Anything that needs preparing beforehand, or any deadline today. Only if it is actually visible in the details above.
+3. Any clash or tight turnaround between two things. If there is none, leave this out rather than saying there is none.
+
+Name real events and real times. Never invent anything that is not above. Under 80 words. If the day is quiet, one sentence is the right answer.`;
+
+  const response = await callClaude(user.email, {
+    model: 'claude-opus-4-7',
+    max_tokens: 400,
+    messages: [{ role: 'user', content: prompt }],
+  }, 'today-summary');
+
+  return {
+    text: getResponseText(response).trim(),
+    items: items.length,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+app.get('/api/today/summary', requireAuth, async (req, res) => {
+  try {
+    const payload = await buildTodayPayload(req.user);
+    const fp = todayFingerprint(payload);
+    const key = todaySummaryKey(req.user.email, fp);
+    if (req.query.force !== '1') {
+      const cached = await redis.get(key);
+      if (cached) return res.json({ ...JSON.parse(cached), cached: true });
+    }
+    const summary = await buildTodaySummary(req.user, payload);
+    await redis.set(key, JSON.stringify(summary), 'EX', TODAY_SUMMARY_TTL_S);
+    res.json({ ...summary, cached: false });
+  } catch (err) {
+    console.error('[today-summary] failed:', err.message);
+    res.status(502).json({ error: 'Could not write the summary just now.' });
+  }
+});
 
 app.get('/api/ahead/summary', requireAuth, async (req, res) => {
   const key = aheadSummaryKey(req.user.email);

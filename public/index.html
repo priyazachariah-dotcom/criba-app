@@ -742,6 +742,50 @@
      Reuses the existing palette only: pink --bg, ink borders, white cards,
      Archivo Black headings. Proposed (awaiting approval) reads as a dashed
      chip; already-on-your-calendar reads as a solid muted chip. */
+  .src-title { font-size: 2.1rem; font-weight: 400; margin: 0 0 0.35rem; }
+  .src-lead { font-size: 0.92rem; color: var(--text2); margin: 0 0 1.6rem; }
+  .src-block { margin-bottom: 2rem; }
+  .src-block-head { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.6rem; }
+  @media (min-width: 700px) { .src-title { font-size: 2.6rem; } }
+
+  /* Today */
+  .today-date { font-size: 2.1rem; font-weight: 400; margin-bottom: 0.9rem; }
+  .today-summary { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between;
+    border-left: 2px solid var(--ink); padding: 0.5rem 0 0.5rem 0.9rem; margin-bottom: 1.8rem; }
+  .today-summary-text { font-size: 0.95rem; line-height: 1.55; color: var(--ink); }
+  .today-rewrite { font-family: inherit; font-size: 0.75rem; background: none; border: none;
+    color: var(--text2); text-decoration: underline; cursor: pointer; flex-shrink: 0; padding: 0; }
+  .today-section { margin-bottom: 2rem; }
+  .today-section-head { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem; }
+  .today-maybe-note { font-size: 0.85rem; color: var(--text2); margin-bottom: 0.7rem; }
+  .today-none { font-size: 0.9rem; color: var(--text2); }
+  .today-peek { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    font-size: 0.92rem; padding: 0.45rem 0; border-bottom: 1px solid var(--bg2); }
+  .today-peek:last-child { border-bottom: none; }
+  .today-peek-time { color: var(--text2); font-size: 0.82rem; margin-right: 10px; }
+  .today-clear { font-size: 0.95rem; color: var(--text2); margin-bottom: 2rem; }
+  @media (min-width: 700px) { .today-date { font-size: 2.6rem; } }
+
+  /* What's Ahead. The whole screen is a list of dates; a day opens only when
+     it is asked for. The previous version put 116 rows on screen at once, each
+     with buttons demanding a decision, and there was no way to look at the week
+     without the entire backlog looking back. */
+  .wa-title { font-size: 2.1rem; font-weight: 400; margin: 0 0 0.35rem; }
+  .wa-sub { font-size: 0.92rem; color: var(--text2); margin: 0 0 1.6rem; }
+  .wa-day { border-bottom: 1px solid var(--bg2); }
+  .wa-dayhead { display: flex; align-items: center; justify-content: space-between; width: 100%;
+    font-family: inherit; font-size: 1.05rem; color: var(--ink); text-align: left;
+    background: none; border: none; padding: 0.85rem 0.1rem; cursor: pointer; }
+  .wa-dayhead:hover { background: var(--bg2); }
+  .wa-dayname { display: inline-flex; align-items: center; gap: 10px; }
+  .wa-count { font-size: 0.82rem; color: var(--text2); }
+  .wa-clash { font-size: 0.78rem; color: #b06a00; }
+  .wa-plus { font-size: 1.15rem; color: var(--text2); line-height: 1; }
+  .wa-daybody { padding: 0 0 0.6rem; }
+  .wa-daybody[hidden] { display: none; }
+  .wa-empty { font-size: 0.9rem; color: var(--text2); padding: 0.6rem 0.1rem; }
+  @media (min-width: 700px) { .wa-title { font-size: 2.6rem; } }
+
   /* Home. Mobile first; the desktop rule only widens the measure so the
      headline does not stretch across a monitor. Existing tokens only --
      no new colours while the palette is still being decided. */
@@ -1325,14 +1369,12 @@
     </div>
     <nav class="header-nav-section">
       <button class="nav-btn active" id="nav-home-btn" onclick="showPage('home', this)">Home</button>
-      <button class="nav-btn" id="nav-review-btn" onclick="showPage('review', this)">Review<span id="review-count-label"></span></button>
-      <button class="nav-btn" id="nav-ahead-btn" onclick="showPage('ahead', this)">What's Ahead</button>
+      <button class="nav-btn" id="nav-review-btn" onclick="showPage('review', this)">What’s Ahead<span id="review-count-label"></span></button>
       <button class="nav-btn" id="nav-today-btn" onclick="showPage('today', this)">Today</button>
-      <button class="nav-btn" id="nav-recent-btn" onclick="showPage('recent', this)">Edit Calendar Events</button>
-      <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Calendar Upload</button>
+      <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Sources</button>
       <!-- The Family page was built but never linked, so members could never be
            added — which silently disabled every colour feature downstream. -->
-      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">Circles</button>
+      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">People &amp; Rules</button>
     </nav>
     <div class="header-user-section">
       <span class="live-pill" id="live-pill" title="Checking…">
@@ -1431,20 +1473,12 @@
 
   <!-- Review queue (Gmail events) -->
   <div class="page" id="page-review">
-    <div class="page-title-block">
-      <div class="page-headline" id="review-page-title">REVIEW THE<br>QUEUE</div>
-      <div class="page-desc" id="review-page-sub">Criba adds these to your Google Calendar automatically — and never adds a duplicate. Review, edit, or remove anything it got wrong.</div>
-    </div>
-    <div class="review-legend" id="review-legend" hidden>
-      <span class="legend-lead">Key</span>
-      <span class="legend-item"><span class="pill state-pill state-added">On calendar</span> already added</span>
-      <span class="legend-item"><span class="pill state-pill state-draft">Not added yet</span> needs a look</span>
-      <span class="legend-item"><span class="legend-rail cancel"></span> cancelled</span>
-      <span class="legend-item"><span class="legend-rail resched"></span> rescheduled</span>
-      <span class="legend-item"><span class="legend-dot"></span> whose event (colour)</span>
-      <button class="legend-dismiss" onclick="dismissLegend()" title="Hide this key" aria-label="Hide key">&times;</button>
-    </div>
-    <div id="review-list"></div>
+    <h1 class="wa-title">What’s Ahead</h1>
+    <p class="wa-sub">The next seven days, from your Google Calendar.</p>
+    <div id="wa-list"></div>
+    <!-- The old queue still renders into this while Today is being built, so
+         nothing is stranded between steps. Removed with the old tabs. -->
+    <div id="review-list" hidden></div>
   </div>
 
   <!-- Edit Calendar Events (recently approved events) -->
@@ -1452,31 +1486,7 @@
        an editing surface. Read live from Google Calendar on every visit: people
        move practices and delete things without telling Criba, and a tidy view
        of what Criba once wrote would be confidently wrong. -->
-  <div class="page" id="page-ahead">
-    <div class="page-title-block">
-      <div class="page-headline page-headline-sm">WHAT'S AHEAD</div>
-      <div class="page-desc">Live from your Google Calendar — whatever it says right now, including anything you changed by hand. Nothing here can be edited; that stays in Edit Calendar Events.</div>
-    </div>
-    <div class="ahead-bar">
-      <div class="ahead-modes" id="ahead-views">
-        <button class="ahead-mode" id="ahead-view-tomorrow" onclick="setAheadView('tomorrow')">Tomorrow, per person</button>
-        <button class="ahead-mode on" id="ahead-view-week" onclick="setAheadView('week')">This week</button>
-      </div>
-      <button class="ahead-refresh" onclick="loadAhead(true)" title="Read the calendar again">Refresh</button>
-    </div>
-    <div class="ahead-meta" id="ahead-meta"></div>
-    <!-- The week in words. Costs a model call, so it is never generated on page
-         load or on Refresh — only when someone asks, and then cached for the day. -->
-    <div class="ahead-summary" id="ahead-summary">
-      <div class="asum-head">
-        <span class="asum-title" id="asum-title">The week in a nutshell</span>
-        <button class="asum-btn" id="asum-btn" onclick="loadAheadSummary(false)">Write it for me</button>
-      </div>
-      <div class="asum-body" id="asum-body"></div>
-    </div>
-    <div id="ahead-conflicts"></div>
-    <div id="ahead-body"></div>
-  </div>
+  
   <!-- Today — the daily digest, in app. Same content model the push
        notification will summarise, so the two can never disagree about what
        "today" holds. Deliberately not an editing surface: tap to remove, or
@@ -1509,21 +1519,19 @@
     <div id="today-body"></div>
   </div>
 
-  <div class="page" id="page-recent">
-    <div class="page-title-block">
-      <div class="page-headline page-headline-sm">EDIT YOUR EVENTS</div>
-      <div class="page-desc">Everything Criba has handled for you. Rows marked <strong>Synced</strong> are on your Google Calendar right now; <strong>Not on calendar</strong> ones aren&rsquo;t, and can be put back with one click. Edit any time.</div>
-    </div>
-    <div id="source-groups"></div>
-    <div id="recent-list"></div>
-  </div>
+  
 
   <!-- Calendar Upload (add form + list) -->
   <div class="page" id="page-calendars">
-    <div class="page-title-block">
-      <div class="page-headline page-headline-sm">UPLOAD</div>
-      <div class="page-desc">Connect calendar sources via URL, PDF or screenshot — or simply say or type &ldquo;coffee with Sarah on Thursday at 8&rdquo;. All these events show up on your calendar, with an option to edit them in Criba.</div>
-    </div>
+    <h1 class="src-title">Sources</h1>
+    <p class="src-lead">Where Criba looks, and the tools for fixing what it found.</p>
+    <!-- Moved here from the top bar and from the old queue: this is the page
+         about where events come from, which is where the controls over them
+         belong. -->
+    <div id="sources-status"></div>
+    <div id="sources-tools"></div>
+    <div id="sources-receipt"></div>
+    <div id="sources-cancelled"></div>
     <!-- Always open. Adding a calendar is the entire purpose of this page, so
          hiding it behind a "+ Add calendar" button made the first thing a new
          user needs the one thing they had to go looking for. -->
@@ -1584,11 +1592,11 @@
   <!-- Settings / Family members page -->
   <div class="page" id="page-settings">
     <div class="page-title-block" style="flex-direction:column;align-items:flex-start;gap:1.1rem">
-      <div class="page-headline page-headline-sm">CIRCLES</div>
-      <div class="page-desc" style="text-align:left;max-width:680px">Add the people in your life and group them into circles — family, friends, work, whoever. Each person gets a distinct event colour on your calendar. The details under each person teach Criba whose event is whose: a <em>grade</em> lets it hold back school mail meant for other grades, and <em>activity</em> tags (a topic plus the sender’s domain) let it colour an event for the right person even when their name isn’t in the email. The more you fill in, the fewer grey, unattributed events you’ll see.</div>
+      <h1 class="src-title">People &amp; Rules</h1>
+      <div class="src-lead" style="text-align:left;max-width:680px">Add the people in your life and group them into circles — family, friends, work, whoever. Each person gets a distinct event colour on your calendar. The details under each person teach Criba whose event is whose: a <em>grade</em> lets it hold back school mail meant for other grades, and <em>activity</em> tags (a topic plus the sender’s domain) let it colour an event for the right person even when their name isn’t in the email. The more you fill in, the fewer grey, unattributed events you’ll see.</div>
     </div>
     <div class="settings-section">
-      <div class="settings-section-title">Members</div>
+      <div class="src-block-head">Who’s in your circle</div>
       <div id="settings-members-list"></div>
       <button class="btn-secondary" id="settings-add-btn" onclick="toggleAddMemberForm()" style="margin-top:0.5rem">+ Add person</button>
       <div id="settings-add-form" style="display:none" class="add-member-form">
@@ -1612,7 +1620,7 @@
          in the words it was agreed to and removed with one click. -->
     <details class="settings-section">
       <summary style="flex-wrap:wrap">
-        <span class="settings-section-title">Rules you created</span>
+        <span class="src-block-head">Rules</span>
         <span class="excl-count" id="exclusion-count"></span>
         <div class="page-desc" style="margin:0.6rem 0 0;flex-basis:100%;max-width:none;order:3"><span style="display:block;max-width:680px">Criba learned these from what you’ve dismissed — each rule was created when you answered “yes” to a question after dismissing an event, and is written here in the words you agreed to. If Criba got one wrong, remove it with one click. Nothing is ever deleted by a rule: matching events still reach Review with the reason attached, one click from being added. <span style="font-style:normal;color:var(--text2)">(Expand to view the rules.)</span></span></div>
       </summary>
@@ -1633,7 +1641,7 @@
          next to setting up whose events they are — both are things a new user
          does once, and neither is a debugging tool. -->
     <div class="settings-section">
-      <div class="settings-section-title">Who else gets invited</div>
+      <div class="src-block-head">People you can add</div>
       <div class="page-desc" style="margin:0 0 0.75rem">Save the people you invite again and again — a co-parent, a grandparent. Each one becomes a tick box on every event, so you add them with one click instead of searching contacts. They get a normal Google Calendar invitation and can accept or decline.</div>
       <div id="recipient-list" style="margin-bottom:10px"></div>
       <div class="test-mode-field">
@@ -3492,6 +3500,13 @@ async function loadToday() {
     todayError = 'Could not reach Criba. Check your connection and reload.';
   }
   renderToday();
+  // Tomorrow's preview and the Just added list come from data other screens
+  // already load. Fetched only if absent, and the page repaints when they land.
+  if (!waData) { loadWhatsAhead().then(renderToday).catch(() => {}); }
+  if (typeof recentEvents === 'undefined' || !recentEvents.length) {
+    try { loadRecentEvents().then(renderToday).catch(() => {}); } catch {}
+  }
+  loadTodaySummary().then(() => {}).catch(() => {});
 }
 
 function todayDateLine(iso) {
@@ -3530,6 +3545,126 @@ function evIsPast(ev) {
   const now = new Date();
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   return (ev.end_time || ev.time) < hhmm;
+}
+
+// ── What's Ahead ────────────────────────────────────────────
+// Reads Google Calendar, not Criba's own store, so a day shows what is really
+// on the calendar -- including events Criba never created. Each day is joined
+// back to Criba's rows by calEventId, which is what gives Edit/Dismiss/Delete
+// something to act on; a Google-native event shows without them rather than
+// offering buttons that would not work.
+function renderSources() {
+  const status = document.getElementById('sources-status');
+  if (status) {
+    const live = document.getElementById('live-pill');
+    const on = live && !live.classList.contains('is-off');
+    const txt = document.getElementById('live-pill-text');
+    status.innerHTML = `<div class="src-block">
+      <div class="src-block-head">${on ? 'Watching Gmail' : 'Not watching'}</div>
+      <div class="src-lead" style="margin:0">${on
+        ? 'Criba is reading new mail as it arrives. You do not need to scan.'
+        : escHtml((txt && txt.textContent) || 'Criba is not currently watching your inbox.')}</div>
+    </div>`;
+  }
+  const tools = document.getElementById('sources-tools');
+  if (tools) tools.innerHTML = `<div class="src-block">${BACKFILL_BAR_HTML}</div>`;
+  const receipt = document.getElementById('sources-receipt');
+  if (receipt) receipt.innerHTML = receiptStripHtml();
+  const canc = document.getElementById('sources-cancelled');
+  if (canc) {
+    const rows = (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])
+      .filter(e => e.status === 'cancelled').slice(0, 12);
+    canc.innerHTML = rows.length ? `<div class="src-block">
+      <div class="src-block-head">Removed from your calendar</div>
+      ${rows.map(e => `<div class="today-peek"><span>${escHtml(e.title || '')}${
+        e.date ? ` \u00b7 ${escHtml(formatDate(e.date))}` : ''}</span></div>`).join('')}
+    </div>` : '';
+  }
+}
+
+let waData = null;
+let waError = null;
+let waOpen = {};          // date -> bool, so a day stays open across repaints
+
+function waDayLabel(iso) {
+  try {
+    return new Date(`${iso}T12:00:00Z`).toLocaleDateString(undefined,
+      { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC' });
+  } catch { return iso; }
+}
+
+// Tomorrow through day seven, in the user's own timezone. Today is Today's job
+// and anything past the week is what the Google Calendar link on Home is for.
+function waWindow() {
+  const out = [];
+  const base = new Date();
+  for (let i = 1; i <= 7; i++) {
+    const d = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  }
+  return out;
+}
+
+function waToggle(date) {
+  waOpen[date] = !waOpen[date];
+  renderWhatsAhead();
+}
+
+function renderWhatsAhead() {
+  const host = document.getElementById('wa-list');
+  if (!host) return;
+  if (waError) { host.innerHTML = `<div class="wa-empty">${escHtml(waError)}</div>`; return; }
+  if (!waData) { host.innerHTML = '<div class="wa-empty">Reading your calendar\u2026</div>'; return; }
+
+  const events = waData.events || [];
+  const conflicts = waData.conflicts || [];
+  const storedById = new Map();
+  for (const e of (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])) {
+    if (e.calEventId) storedById.set(e.calEventId, e);
+  }
+
+  host.innerHTML = waWindow().map(date => {
+    const day = events.filter(e => e.date === date);
+    const clashes = conflicts.filter(c => c.date === date).length;
+    const open = !!waOpen[date];
+    const body = !day.length
+      ? '<div class="wa-empty">Nothing on this day.</div>'
+      : day.map(e => {
+          // Join to Criba's row so the actions act on something Criba owns.
+          const mine = e.id && storedById.get(e.id);
+          const row = mine ? { ...mine, ...e, id: mine.id } : e;
+          return renderEventRow(row, 'ahead');
+        }).join('');
+    return `<div class="wa-day">
+      <button class="wa-dayhead" onclick="waToggle('${date}')" aria-expanded="${open}">
+        <span class="wa-dayname">${escHtml(waDayLabel(date))}
+          ${day.length ? `<span class="wa-count">${day.length}</span>` : ''}
+          ${clashes ? `<span class="wa-clash" title="Two things at once">overlap</span>` : ''}
+        </span>
+        <span class="wa-plus">${open ? '&minus;' : '+'}</span>
+      </button>
+      <div class="wa-daybody" ${open ? '' : 'hidden'}>${body}</div>
+    </div>`;
+  }).join('');
+}
+
+let _waLoading = false;
+async function loadWhatsAhead() {
+  if (_waLoading) return;
+  _waLoading = true;
+  renderWhatsAhead();
+  try {
+    const res = await fetch('/api/ahead?days=8');
+    if (!res.ok) throw new Error('Could not read your calendar just now.');
+    waData = await res.json();
+    waError = null;
+  } catch (e) {
+    waData = null;
+    waError = e.message;
+  } finally {
+    _waLoading = false;
+    renderWhatsAhead();
+  }
 }
 
 // ── Home ───────────────────────────────────────────────────
@@ -3665,65 +3800,108 @@ function renderToday() {
   const host = document.getElementById('today-body');
   if (!host) return;
   if (todayError) { host.innerHTML = `<div class="empty-state">${escHtml(todayError)}</div>`; return; }
-  if (!todayData) { host.innerHTML = `<div class="empty-state">Loading today…</div>`; return; }
+  if (!todayData) { host.innerHTML = `<div class="empty-state">Loading today\u2026</div>`; return; }
 
   const d = todayData;
   const head = `<div class="today-head">
-      <div class="today-greeting">${escHtml(d.greeting)}</div>
       <div class="today-date">${escHtml(todayDateLine(d.date))}</div>
+    </div>
+    <div class="today-summary" id="today-summary">
+      <div class="today-summary-text" id="today-summary-text">${
+        todaySummary ? escHtml(todaySummary.text) : 'Reading your day\u2026'}</div>
+      <button class="today-rewrite" onclick="loadTodaySummary(true)">Rewrite</button>
     </div>`;
 
-  // Empty sections are omitted, not shown empty. A heading over nothing reads
-  // as a failure to load.
   const sections = [];
-  if (d.reminders && d.reminders.length) {
+
+  // Reminders and events are one time-ordered list in the same component. They
+  // were two differently-shaped lists before, which made a deadline at 3pm look
+  // like a different kind of object from a meeting at 3pm.
+  const main = [...(d.reminders || []), ...(d.events || [])].sort((a, b) => {
+    if (!!a.is_all_day !== !!b.is_all_day) return a.is_all_day ? -1 : 1;
+    return String(a.time || '').localeCompare(String(b.time || ''));
+  });
+  if (main.length) {
     sections.push(`<div class="today-section">
-      <div class="today-section-head">Reminders</div>
-      ${d.reminders.map(it => renderEventRow(it, 'today')).join('')}
+      ${main.map(it => renderEventRow(it, 'today')).join('')}
     </div>`);
-  }
-  if (d.events && d.events.length) {
-    sections.push(`<div class="today-section">
-      <div class="today-section-head">Today</div>
-      ${d.events.map(it => renderEventRow(it, 'today')).join('')}
-    </div>`);
+  } else {
+    sections.push('<div class="today-clear">Nothing on today.</div>');
   }
 
-  // Collapsed by default. These were NOT added to the calendar -- they are
-  // suggestions from newsletters -- so they sit below today's real plan behind
-  // a single line, and never mix into it.
-  const nl = d.newsletters || [];
-  if (nl.length) {
-    sections.push(`<div class="today-section today-nl">
-      <button class="today-nl-head" onclick="toggleTodayNewsletters()" aria-expanded="${todayNlOpen}">
-        <span>From newsletters (${nl.length})</span>
-        <span class="today-nl-chev">${todayNlOpen ? '&minus;' : '+'}</span>
-      </button>
-      <div class="today-nl-body" ${todayNlOpen ? '' : 'hidden'}>
-        <div class="today-nl-note">Not added to your calendar. Criba spotted these in newsletters you receive.</div>
-        ${nl.map(it => `<div class="today-item today-nl-item" id="today-${escHtml(it.id)}">
-          <div class="today-main">
-            <div class="today-title">${escHtml(it.title || '(untitled)')}</div>
-            <div class="today-meta">${[it.time && !it.is_all_day ? escHtml(it.time) : 'All day',
-                                       it.location ? escHtml(it.location) : null,
-                                       escHtml(it.sender_name || it.sender_email || '')]
-                                       .filter(Boolean).join(' · ')}</div>
-            <div class="today-nl-actions">
-              <button class="today-act" onclick="todayAddToCalendar('${escHtml(it.id)}')">Add to calendar</button>
-              <button class="today-act" onclick="todayDismissOne('${escHtml(it.id)}')">Dismiss</button>
-              <button class="today-act today-act-danger"
-                onclick="todayMuteSender('${escHtml(it.sender_email || '')}','${escHtml(it.category || '')}')">
-                Never show this sender again</button>
-            </div>
+  // Always shown, empty or not. A section that appears only when it has
+  // contents teaches people it is not there, and these are the items most
+  // easily missed -- Criba found them and deliberately did not add them.
+  const nl = (d.newsletters || []).filter(it => it.date === d.date || it.date === todayPlusOne(d.date));
+  sections.push(`<div class="today-section today-maybe">
+    <div class="today-section-head">Want it on your calendar?</div>
+    <div class="today-maybe-note">Criba found these in your email but wasn\u2019t sure you\u2019d want them.</div>
+    ${nl.length ? nl.map(it => `<div class="ev-row" id="maybe-${escHtml(it.id)}">
+        <div class="ev-time">${escHtml(it.is_all_day || !it.time ? 'All day' : it.time)}</div>
+        <div class="ev-main">
+          <div class="ev-title">${escHtml(it.title || '(untitled)')}</div>
+          <div class="ev-meta">${escHtml([it.location, it.sender_name || it.sender_email].filter(Boolean).join(' \u00b7 '))}</div>
+          <div class="ev-actions">
+            <button class="ev-act" onclick="todayAddToCalendar('${escHtml(it.id)}')">Add</button>
+            <button class="ev-act" onclick="todayDismissOne('${escHtml(it.id)}')">Dismiss</button>
           </div>
-        </div>`).join('')}
-      </div>
+        </div>
+      </div>`).join('')
+    : '<div class="today-none">Nothing for today or tomorrow.</div>'}
+  </div>`);
+
+  // Tomorrow, read-only. A preview that could be acted on would be a second
+  // What's Ahead with different rules.
+  const tom = (waData && waData.events || []).filter(e => e.date === todayPlusOne(d.date));
+  if (tom.length) {
+    sections.push(`<div class="today-section">
+      <div class="today-section-head">Tomorrow</div>
+      ${tom.slice(0, 6).map(e => `<div class="today-peek">
+        <span class="today-peek-time">${escHtml(e.is_all_day || !e.time ? 'All day' : e.time)}</span>
+        <span>${escHtml(e.title || '')}</span></div>`).join('')}
     </div>`);
   }
 
-  host.innerHTML = head + (sections.length
-    ? sections.join('')
-    : `<div class="today-clear">Nothing on today. Anything new will appear here.</div>`);
+  // The last 24 hours of things Criba put on the calendar, with a way back.
+  const added = (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])
+    .filter(e => e.user_action_at && (Date.now() - Date.parse(e.user_action_at)) < 86400000 && e.calEventId);
+  if (added.length) {
+    sections.push(`<div class="today-section">
+      <div class="today-section-head">Just added</div>
+      ${added.slice(0, 6).map(e => `<div class="today-peek" id="justadded-${escHtml(e.id)}">
+        <span>${escHtml(e.title || '')}${e.date ? ` \u00b7 ${escHtml(formatDate(e.date))}` : ''}</span>
+        <button class="ev-act" onclick="evDelete('${escHtml(e.id)}','today')">Undo</button></div>`).join('')}
+    </div>`);
+  }
+
+  host.innerHTML = head + sections.join('');
+}
+
+function todayPlusOne(iso) {
+  try {
+    const d = new Date(`${iso}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.toISOString().slice(0, 10);
+  } catch { return ''; }
+}
+
+// Written automatically on first view and cached for the day. The server keys
+// the cache on the day's own contents, so it rewrites itself when the day
+// changes rather than describing a morning that is over.
+let todaySummary = null;
+let _todaySummaryLoading = false;
+async function loadTodaySummary(force) {
+  if (_todaySummaryLoading) return;
+  _todaySummaryLoading = true;
+  const el = document.getElementById('today-summary-text');
+  if (force && el) el.textContent = 'Reading your day\u2026';
+  try {
+    const res = await fetch('/api/today/summary' + (force ? '?force=1' : ''));
+    const j = await res.json();
+    if (res.ok) { todaySummary = j; if (el) el.textContent = j.text || ''; }
+    else if (el) el.textContent = '';
+  } catch { if (el) el.textContent = ''; }
+  finally { _todaySummaryLoading = false; }
 }
 
 // Tap to remove. /api/events/dismiss is reused deliberately: only the server
@@ -4143,7 +4321,7 @@ function showPage(page, btn) {
   // for the duration of this function.
   if (page !== 'review') { const el = document.getElementById('review-list'); if (el) el.innerHTML = ''; }
   if (page !== 'recent') { const el = document.getElementById('recent-list'); if (el) el.innerHTML = ''; }
-  if (page === 'review') renderReview();
+  if (page === 'review') { loadWhatsAhead(); loadRecentEvents(); }
   // Re-read on entry rather than repainting whatever the startup fetch left
   // behind. That fetch runs once, at load — so if it raced the session, failed,
   // or simply happened before the events existed, the list stayed empty for the
@@ -4153,6 +4331,7 @@ function showPage(page, btn) {
   if (page === 'recent') { renderRecent(); loadRecentEvents(); }
   // Always re-read: a digest showing a stale "today" is worse than a blank one,
   // and this view is cheap.
+  if (page === 'calendars') { renderSources(); loadRecentEvents().then(renderSources).catch(() => {}); }
   if (page === 'home') loadHome();
   if (page === 'today') loadToday();
   // renderSettingsPage returns early when there are no members, so the

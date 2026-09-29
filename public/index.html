@@ -736,6 +736,28 @@
      Reuses the existing palette only: pink --bg, ink borders, white cards,
      Archivo Black headings. Proposed (awaiting approval) reads as a dashed
      chip; already-on-your-calendar reads as a solid muted chip. */
+  /* Shared event row (Today + What's Ahead). Uses the existing ink/bg tokens
+     only -- no new colours, the palette is still being worked on. Mobile first:
+     the time sits above the title on narrow screens and beside it from 520px. */
+  .ev-row { display: grid; grid-template-columns: 1fr; gap: 2px 14px; padding: 0.7rem 0; border-bottom: 1px solid var(--bg2); }
+  .ev-row:last-child { border-bottom: none; }
+  .ev-time { font-size: 0.78rem; color: var(--text2); letter-spacing: 0.02em; white-space: nowrap; }
+  .ev-title { font-size: 0.98rem; line-height: 1.35; display: flex; align-items: baseline; }
+  .ev-meta { font-size: 0.78rem; color: var(--text2); margin-top: 2px; }
+  .ev-row.ev-past .ev-title, .ev-row.ev-past .ev-time { text-decoration: line-through; opacity: 0.55; }
+  .ev-actions { display: flex; gap: 8px; margin-top: 7px; flex-wrap: wrap; }
+  .ev-act { font-family: inherit; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.05em;
+            padding: 0.3rem 0.7rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
+  .ev-act:hover { background: var(--ink); color: var(--bg); }
+  .ev-act-danger { border-color: #c5221f; color: #c5221f; }
+  .ev-act-danger:hover { background: #c5221f; color: white; }
+  .ev-editor { grid-column: 1 / -1; }
+  .ev-editor[hidden] { display: none; }
+  @media (min-width: 520px) {
+    .ev-row { grid-template-columns: 64px 1fr; }
+    .ev-editor { grid-column: 2 / -1; }
+  }
+
   .rv-view-toggle { display: flex; gap: 0; margin: 0.75rem 0 0; }
   .rv-view-toggle button { font-family: inherit; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.5rem 1.1rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
   .rv-view-toggle button.on { background: var(--ink); color: var(--bg); }
@@ -3419,36 +3441,6 @@ function todayDateLine(iso) {
   } catch { return iso; }
 }
 
-function todayTimeLabel(it) {
-  if (it.is_all_day || !it.time) return 'All day';
-  return it.end_time ? `${it.time} – ${it.end_time}` : it.time;
-}
-
-// The "seen this sender before" affordance. Only offered when the sender has a
-// batch worth clearing -- otherwise it points at a tool that would show nothing.
-function todayRepeatLink(it) {
-  const g = (sourceGroups || []).find(x =>
-    x.scope === 'address' && x.sender === it.sender_email && x.category === it.category);
-  if (!g || g.muted || g.upcoming < 3) return '';
-  return `<button class="today-src" onclick="showPage('recent', document.getElementById('nav-recent-btn'))"
-    title="Clear this sender in one go">${g.upcoming} more from this sender →</button>`;
-}
-
-function todayItem(it) {
-  const meta = [];
-  if (it.location) meta.push(escHtml(it.location));
-  if (it.sender_name || it.sender_email) meta.push(escHtml(it.sender_name || it.sender_email));
-  return `<div class="today-item" id="today-${escHtml(it.id)}">
-    <button class="today-tick" title="Remove this" onclick="removeFromToday('${escHtml(it.id)}')">&times;</button>
-    <div class="today-main">
-      <div class="today-title">${escHtml(it.title || '(untitled)')}</div>
-      <div class="today-meta">${meta.join(' · ')}</div>
-      ${it.held_reason ? `<div class="today-held">${escHtml(it.held_reason)}</div>` : ''}
-      ${todayRepeatLink(it)}
-    </div>
-  </div>`;
-}
-
 function renderToday() {
   const host = document.getElementById('today-body');
   if (!host) return;
@@ -3467,16 +3459,13 @@ function renderToday() {
   if (d.reminders && d.reminders.length) {
     sections.push(`<div class="today-section">
       <div class="today-section-head">Reminders</div>
-      ${d.reminders.map(todayItem).join('')}
+      ${d.reminders.map(it => renderEventRow(it, 'today')).join('')}
     </div>`);
   }
   if (d.events && d.events.length) {
     sections.push(`<div class="today-section">
       <div class="today-section-head">Today</div>
-      ${d.events.map(it => `<div class="today-row">
-         <div class="today-time">${escHtml(todayTimeLabel(it))}</div>
-         ${todayItem(it)}
-       </div>`).join('')}
+      ${d.events.map(it => renderEventRow(it, 'today')).join('')}
     </div>`);
   }
 

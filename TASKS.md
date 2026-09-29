@@ -5,6 +5,33 @@ rather than deleting them, so the history of what was decided stays readable.
 
 ---
 
+## Learning / detector — PARKED 2026-09-29
+
+The pattern detector is parked by decision, not by blocker. It works: grouped by
+domain, reading deletions from both the calendar and Criba's own UI, with junk
+tokens filtered and already-muted senders skipped. Last run: 79 groups, 12
+skipped as already decided, 9 notable.
+
+Muting still has exactly one trigger: a deliberate decision. Nothing about that
+changes without a new one.
+
+- [ ] **youthoncourse.org is a DUPLICATES task, not a preference one.** The
+      detector scores it `word_level` on "connections"/"course" from three
+      deletions -- but those three are one golf event ("Connections on Course")
+      split into Check-in, Golf and Dinner. Deleting all three is the user
+      saying "this is one event", not "stop showing me this sender". Belongs
+      with the same-real-world-event work (#33/#18), and muting it would be the
+      wrong fix applied to a real problem.
+
+Noted, not actioned:
+- The bank finding (`strike`, 4 deletions across South Indian Bank and SBI) is
+  the cleanest pattern the detector has produced. No decision taken.
+- `usrowing.org` moved to `sender_level` only because its self-referential token
+  was filtered out, leaving six deletions sharing nothing. A stronger claim
+  reached by removing evidence -- treat with suspicion if it comes up again.
+- `insufficient` findings are still never written down, so nothing approaching a
+  threshold is visible. Only arrivals are.
+
 ## This week — beta rollout + setup flow
 
 The three items below are really one feature. They all answer the same

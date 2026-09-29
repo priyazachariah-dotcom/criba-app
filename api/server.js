@@ -4287,6 +4287,15 @@ app.get('/api/today', requireAuth, async (req, res) => {
     id: e.id, title: e.title, time: e.time || null, end_time: e.end_time || null,
     location: e.location || null, is_all_day: !!e.is_all_day,
     source_type: e.source_type || null,
+    // Carried so the shared event row can open the same inline editor the
+    // review queue uses, instead of a second editor fed by a thinner payload.
+    // Read-only additions: nothing about how events are written changes.
+    date: e.date || null, notes: e.notes || null, status: e.status || null,
+    attendees: Array.isArray(e.attendees) ? e.attendees : [],
+    recurrence_rule: e.recurrence_rule || null,
+    suggested_color: e.suggested_color || null,
+    suggested_reason: e.suggested_reason || null,
+    member_id: e.member_id || null,
     sender_email: e.sender_email || null, sender_name: e.sender_name || null,
     // Drives the "seen this sender before?" link into the bulk-mute tool.
     category: learningCategoryOf({ source_type: e.source_type }),

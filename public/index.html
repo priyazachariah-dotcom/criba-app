@@ -3441,6 +3441,112 @@ function todayDateLine(iso) {
   } catch { return iso; }
 }
 
+// ── Shared event row ─────────────────────────────────────────
+// One row component for Today and What's Ahead. Built here rather than copied
+// into each screen because the two lists showed the same events with different
+// actions and different names for the same gesture, which is how "delete" and
+// "dismiss" came to mean different things depending on which tab you were on.
+//
+// It renders markup only. Every action calls the endpoint that already handles
+// it, so nothing about how events are added, edited or removed changes.
+const evRegistry = new Map();
+
+function evRemember(ev) { if (ev && ev.id) evRegistry.set(ev.id, ev); return ev; }
+function evGet(id) {
+  return evRegistry.get(id)
+    || (typeof pendingEvents !== 'undefined' ? pendingEvents.find(e => e.id === id) : null)
+    || null;
+}
+
+function evTimeLabel(ev) {
+  if (ev.is_all_day || !ev.time) return 'All day';
+  return ev.end_time ? `${ev.time} – ${ev.end_time}` : ev.time;
+}
+
+// Past events are struck through rather than hidden: the day's shape is easier
+// to read when what has already happened is still visible in place.
+function evIsPast(ev) {
+  if (ev.is_all_day || !ev.time) return false;
+  const now = new Date();
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  return (ev.end_time || ev.time) < hhmm;
+}
+
+function renderEventRow(ev, ctx = 'today') {
+  evRemember(ev);
+  const id = ev.id;
+  const rid = `ev-${ctx}-${id}`;
+  const meta = [
+    ev.location ? escHtml(ev.location) : null,
+    ev.sender_name || ev.sender_email ? escHtml(ev.sender_name || ev.sender_email) : null,
+  ].filter(Boolean).join(' · ');
+  const past = evIsPast(ev) ? ' ev-past' : '';
+  return `
+  <div class="ev-row${past}" id="${rid}">
+    <div class="ev-time">${escHtml(evTimeLabel(ev))}</div>
+    <div class="ev-main">
+      <div class="ev-title">${eventDotHtml(ev)}${escHtml(ev.title || '(untitled)')}</div>
+      ${meta ? `<div class="ev-meta">${meta}</div>` : ''}
+      <div class="ev-actions">
+        <button class="ev-act" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
+        <button class="ev-act" onclick="evDismiss('${escHtml(id)}','${ctx}')">Dismiss</button>
+        <button class="ev-act ev-act-danger" onclick="evDelete('${escHtml(id)}','${ctx}')">Delete</button>
+      </div>
+    </div>
+    <div class="ev-editor" id="${rid}-editor" hidden></div>
+  </div>`;
+}
+
+// Opens the SAME editor the review queue uses. A second editor over a thinner
+// payload is how two screens end up disagreeing about what an event is.
+function evEdit(id, ctx) {
+  const host = document.getElementById(`ev-${ctx}-${id}-editor`);
+  const ev = evGet(id);
+  if (!host || !ev) return;
+  if (!host.hidden) { host.hidden = true; host.innerHTML = ''; return; }
+  host.innerHTML = renderReviewEditor(ev);
+  host.hidden = false;
+  initLocationAutocomplete(`rv-loc-${id}`);
+  if (ev.attendees && ev.attendees.length && !rvPeople[id]) {
+    rvPeople[id] = ev.attendees.filter(a => a && a.email);
+    renderRvPeople(id);
+  }
+}
+
+// Dismiss and Delete both route to the endpoints that already own the decision.
+// Only the server knows whether an event reached Google Calendar, so only the
+// server can say whether removing it means forgetting a draft or deleting a
+// real calendar entry.
+function evDismiss(id, ctx) {
+  const ev = evGet(id);
+  beginCardDelete(`ev-${ctx}-${id}`, {
+    title: ev && ev.title,
+    commit: async () => {
+      try {
+        await fetch('/api/events/dismiss', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      } catch {}
+      evRegistry.delete(id);
+      if (ctx === 'today') loadToday();
+    },
+  });
+}
+
+function evDelete(id, ctx) {
+  const ev = evGet(id);
+  beginCardDelete(`ev-${ctx}-${id}`, {
+    title: ev && ev.title, durationMs: 8000,
+    commit: async () => {
+      try {
+        await fetch('/api/events/delete-from-calendar', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+      } catch {}
+      evRegistry.delete(id);
+      if (ctx === 'today') loadToday();
+    },
+  });
+}
+
 function renderToday() {
   const host = document.getElementById('today-body');
   if (!host) return;

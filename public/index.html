@@ -115,8 +115,14 @@
     font-family: 'Archivo Black', sans-serif; font-size: 24px;
     color: var(--ink); text-transform: uppercase; letter-spacing: 0.04em; line-height: 1;
   }
-  .header-nav-section { display: flex; align-items: center; gap: 36px; flex: 0 0 auto; }
-  .header-user-section { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; overflow: hidden; }
+  /* The nav was fixed-width and could not shrink, so each added tab pushed it
+     into the status pill -- at seven tabs they sat 3px apart and would have
+     overlapped on a narrower laptop. It may shrink and scroll now, and the
+     user section keeps a hard gap so the two can never touch. */
+  .header-nav-section { display: flex; align-items: center; gap: 26px; flex: 0 1 auto;
+    min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .header-nav-section::-webkit-scrollbar { display: none; }
+  .header-user-section { flex: 0 1 auto; margin-left: 24px; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; overflow: hidden; }
   .header-user-section .user-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   nav { display: flex; align-items: center; gap: 36px; }
@@ -740,19 +746,18 @@
      headline does not stretch across a monitor. Existing tokens only --
      no new colours while the palette is still being decided. */
   #page-home { max-width: 34rem; }
-  .home-date { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text2); }
+  .home-date { font-size: 0.78rem; font-weight: 600; color: var(--text2); }
   .home-headline { font-size: 2.1rem; line-height: 1.12; margin: 1.1rem 0 0.9rem; font-weight: 400; }
   .home-summary { font-size: 0.95rem; line-height: 1.5; color: var(--text2); margin: 0 0 2.2rem; max-width: 30rem; }
-  .home-go { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text2); margin-bottom: 0.4rem; }
+  .home-go { font-size: 0.8rem; font-weight: 600; color: var(--text2); margin-bottom: 0.4rem; }
   .home-menu { display: flex; flex-direction: column; }
   .home-link { display: flex; align-items: center; justify-content: space-between; width: 100%;
     font-family: inherit; font-size: 1.15rem; color: var(--ink); text-align: left; cursor: pointer;
-    background: none; border: none; border-bottom: 1px solid var(--bg2); padding: 0.95rem 0.1rem; }
+    background: none; border: none; border-bottom: 1px solid var(--bg2); padding: 0.58rem 0.1rem; }
   .home-link:hover { background: var(--bg2); }
   .home-link-right { display: inline-flex; align-items: center; gap: 10px; }
   .home-arrow { color: var(--text2); font-size: 0.95rem; }
-  .home-new { font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.07em;
-    padding: 0.2rem 0.5rem; border: 1.5px solid var(--ink); }
+  .home-new { font-size: 0.72rem; font-weight: 600; padding: 0.2rem 0.5rem; border: 1.5px solid var(--ink); }
   .home-new[hidden] { display: none; }
   .home-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px;
     flex-wrap: wrap; margin-top: 2.2rem; }
@@ -771,7 +776,7 @@
   .ev-meta { font-size: 0.78rem; color: var(--text2); margin-top: 2px; }
   .ev-row.ev-past .ev-title, .ev-row.ev-past .ev-time { text-decoration: line-through; opacity: 0.55; }
   .ev-actions { display: flex; gap: 8px; margin-top: 7px; flex-wrap: wrap; }
-  .ev-act { font-family: inherit; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.05em;
+  .ev-act { font-family: inherit; font-size: 0.8rem; font-weight: 600;
             padding: 0.3rem 0.7rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
   .ev-act:hover { background: var(--ink); color: var(--bg); }
   .ev-act-danger { border-color: #c5221f; color: #c5221f; }
@@ -1098,11 +1103,11 @@
 
   /* Live status pill — tells the user Criba is watching Gmail in the
      background, so they know they do not need to press Scan. */
-  .live-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1.5px solid var(--ink); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+  .live-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1.5px solid var(--ink); font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
   .live-pill.is-off { border-color: #c5221f; color: #c5221f; }
   .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #1e8e3e; flex-shrink: 0; animation: blink 2.2s infinite; }
   .live-pill.is-off .live-dot { background: #c5221f; animation: none; }
-  .live-sub { font-size: 0.68rem; font-weight: 400; letter-spacing: 0; text-transform: none; opacity: 0.6; }
+  .live-sub { font-size: 0.72rem; font-weight: 400; opacity: 0.6; }
   /* The renewal date is the least load-bearing thing in the header, so it is
      the first to go when space runs short — before anything truncates. */
   @media (max-width: 1400px) { .live-sub { display: none; } }
@@ -3540,7 +3545,7 @@ function homeGo(page) {
 function homeDateLine() {
   try {
     return new Date().toLocaleDateString(undefined,
-      { weekday: 'short', month: 'short', day: 'numeric' }).toUpperCase();
+      { weekday: 'short', month: 'short', day: 'numeric' });
   } catch { return ''; }
 }
 

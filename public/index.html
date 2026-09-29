@@ -2596,6 +2596,11 @@ function showApp() {
   loadTestModeSettings();
   maybeShowHouseholdInvite();
   learnFromCalendar();
+  // Home is the landing page, but nothing had ever called into it: showPage()
+  // runs the per-page loader and the first paint never goes through showPage,
+  // so the screen sat on its placeholder text with no date and no summary
+  // until you navigated away and back.
+  loadHome();
 }
 
 // Fire-and-forget: asks the server to re-check a batch of Criba-added events

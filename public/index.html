@@ -4343,8 +4343,8 @@ function renderEventRow(ev, ctx = 'today') {
       </button>
       <div class="ev-menu" id="${rid}-menu" role="menu" hidden>
         <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
-        <button class="ev-menu-item" role="menuitem" onclick="evDismiss('${escHtml(id)}','${ctx}')">Dismiss</button>
-        <button class="ev-menu-item ev-menu-danger" role="menuitem" onclick="evDelete('${escHtml(id)}','${ctx}')">Delete</button>
+        <button class="ev-menu-item" role="menuitem" onclick="evKeep('${escHtml(id)}','${ctx}')">Keep</button>
+        <button class="ev-menu-item ev-menu-danger" role="menuitem" onclick="evDelete('${escHtml(id)}','${ctx}')">Remove from calendar</button>
       </div>
     </div>
     <div class="ev-editor" id="${rid}-editor" hidden></div>
@@ -4428,19 +4428,26 @@ function evEdit(id, ctx) {
 // Only the server knows whether an event reached Google Calendar, so only the
 // server can say whether removing it means forgetting a draft or deleting a
 // real calendar entry.
-function evDismiss(id, ctx) {
-  const ev = evGet(id);
-  beginCardDelete(`ev-${ctx}-${id}`, {
-    title: ev && ev.title,
-    commit: async () => {
-      try {
-        await fetch('/api/events/dismiss', { method: 'POST',
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-      } catch {}
-      evRegistry.delete(id);
-      if (ctx === 'today') loadToday();
-    },
-  });
+// "Dismiss" called /api/events/dismiss, which DELETES the event from Google
+// Calendar when it is on there -- so the menu offered two destructive actions
+// and warned about only one of them. Renaming the label alone would have made
+// that worse, not better: a button saying "Keep" that removes the event is a
+// lie rather than a confusing word.
+//
+// mark-reviewed is the action the label describes, and it already existed --
+// the old Review screen used it, labelled "OK". Collapsing the buttons into
+// this menu in step 4 is where it got dropped.
+async function evKeep(id, ctx) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  try {
+    await fetch('/api/events/mark-reviewed', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+  } catch {}
+  evRegistry.delete(id);
+  if (row) row.remove();
 }
 
 function evDelete(id, ctx) {

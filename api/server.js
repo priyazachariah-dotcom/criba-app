@@ -7135,7 +7135,9 @@ Write the briefing as plain text, no markdown, no headings, no bullets character
 2. A short list, one "- " line each, of things that need doing BEFORE the event: gear to pack, forms to return, RSVPs, things to buy. Only include ones you can actually see in the details. If there are none, say so in one line instead of inventing any.
 3. One closing line naming the single thing most likely to go wrong (a clash, a tight turnaround between two places, an early start) and nothing else.
 
-Be concrete and name real events and days. Never invent an event, a time, a place or a deadline that is not in the data above. Keep the whole thing under 200 words.`;
+Be concrete and name real events and days. Never invent an event, a time, a place or a deadline that is not in the data above. Keep the whole thing under 200 words.
+
+Never repeat a URL, a meeting ID, a passcode, a password, a dial-in number or a booking reference, even though some appear in the details above. Say "the link is in the event" instead.`;
 
   const response = await callClaude(user.email, {
     model: 'claude-opus-4-7',
@@ -7192,7 +7194,9 @@ Write plain text, no markdown, no headings, no bullet characters. Three sentence
 2. Anything that needs preparing beforehand, or any deadline today. Only if it is actually visible in the details above.
 3. Any clash or tight turnaround between two things. If there is none, leave this out rather than saying there is none.
 
-Name real events and real times. Never invent anything that is not above. Under 80 words. If the day is quiet, one sentence is the right answer.`;
+Name real events and real times. Never invent anything that is not above. Under 80 words. If the day is quiet, one sentence is the right answer.
+
+Never repeat a URL, a meeting ID, a passcode, a password, a dial-in number or a booking reference, even though some appear in the details above. This text is shown on a screen the reader may have open in front of other people. Say "the Zoom link is in the event" instead.`;
 
   const response = await callClaude(user.email, {
     model: 'claude-opus-4-7',

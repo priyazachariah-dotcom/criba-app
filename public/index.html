@@ -4074,7 +4074,20 @@ function evPersonName(ev) {
   const id = ev.member_id || ev.memberId;
   const m = id && typeof familyMembers !== 'undefined'
     ? familyMembers.find(x => x.id === id) : null;
-  return m ? m.name : (ev.sender_name || null);
+  if (m) return m.name;
+  // Falling back to the sender printed "West Hillsborough School · West
+  // Hillsborough Elementary School" -- the venue twice, in slightly different
+  // words. A sender that is just another name for the place adds nothing.
+  const sender = ev.sender_name || null;
+  if (!sender || !ev.location) return sender;
+  const norm = t => String(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const a = norm(sender), b = norm(ev.location);
+  if (!a) return null;
+  if (b.includes(a) || a.includes(b)) return null;
+  // Also catch the partial case: most words of one appear in the other.
+  const wa = a.split(' ').filter(w => w.length > 2);
+  if (wa.length && wa.filter(w => b.includes(w)).length / wa.length >= 0.6) return null;
+  return sender;
 }
 
 // "625 Oak Grove Ave, Menlo Park, CA 94025, USA" is a venue plus noise. Keep

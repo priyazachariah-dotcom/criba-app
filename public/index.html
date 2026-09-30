@@ -4008,6 +4008,13 @@ async function loadToday() {
   // Tomorrow's preview and the Just added list come from data other screens
   // already load. Fetched only if absent, and the page repaints when they land.
   if (!waData) { loadWhatsAhead().then(renderToday).catch(() => {}); }
+  // The unreviewed section is the review queue, so Today needs it loaded even
+  // when the user landed here first.
+  if (!pendingEvents.length) {
+    fetch('/api/events/pending').then(r => r.ok ? r.json() : null)
+      .then(rows => { if (Array.isArray(rows)) { pendingEvents = rows; renderToday(); } })
+      .catch(() => {});
+  }
   if (typeof recentEvents === 'undefined' || !recentEvents.length) {
     try { loadRecentEvents().then(renderToday).catch(() => {}); } catch {}
   }
@@ -4337,6 +4344,7 @@ function renderEventRow(ev, ctx = 'today') {
       ${meta && !past ? `<div class="ev-meta">${meta}</div>` : ''}
     </div>
     <div class="ev-actions">
+      ${ev.readOnly ? '' : `
       <button class="ev-more" id="${rid}-more" aria-label="More actions" aria-haspopup="menu"
         aria-expanded="false" onclick="evMenu('${escHtml(id)}','${ctx}')">
         <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="4" r="1.4" fill="currentColor"/><circle cx="9" cy="9" r="1.4" fill="currentColor"/><circle cx="9" cy="14" r="1.4" fill="currentColor"/></svg>
@@ -4345,7 +4353,7 @@ function renderEventRow(ev, ctx = 'today') {
         <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
         <button class="ev-menu-item" role="menuitem" onclick="evKeep('${escHtml(id)}','${ctx}')">Keep</button>
         <button class="ev-menu-item ev-menu-danger" role="menuitem" onclick="evDelete('${escHtml(id)}','${ctx}')">Remove from calendar</button>
-      </div>
+      </div>`}
     </div>
     <div class="ev-editor" id="${rid}-editor" hidden></div>
   </div>`;
@@ -4490,54 +4498,60 @@ function renderToday() {
 
   const sections = [];
 
-  // Reminders and events are one time-ordered list in the same component. They
-  // were two differently-shaped lists before, which made a deadline at 3pm look
-  // like a different kind of object from a meeting at 3pm.
-  const main = [...(d.reminders || []), ...(d.events || [])].sort((a, b) => {
+  // The schedule is read from Google Calendar, not from Criba's own rows.
+  // Reading its own store meant Today showed only what Criba had put there --
+  // missing a soccer practice on a subscribed feed while listing items that had
+  // never been approved, so the day's plan and the day's admin were mixed
+  // together in one list.
+  const calendarToday = ((waData && waData.events) || []).filter(e => e.date === d.date);
+  const mine = new Map();
+  for (const e of (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])) {
+    if (e.calEventId) mine.set(e.calEventId, e);
+  }
+  const schedule = calendarToday.slice().sort((a, b) => {
     if (!!a.is_all_day !== !!b.is_all_day) return a.is_all_day ? -1 : 1;
     return String(a.time || '').localeCompare(String(b.time || ''));
   });
-  if (main.length) {
+  if (schedule.length) {
     sections.push(`<div class="today-section">
       <div class="today-section-label">Schedule</div>
-      ${main.map(it => renderEventRow(it, 'today')).join('')}
+      ${schedule.map(e => {
+        // Joined to Criba's row where one exists, so Edit / Keep / Remove act
+        // on something Criba owns. An event Criba never created is shown
+        // without them rather than offering buttons that cannot work.
+        const own = e.id && mine.get(e.id);
+        return renderEventRow(own ? { ...own, ...e, id: own.id } : { ...e, readOnly: true }, 'today');
+      }).join('')}
     </div>`);
   } else {
-    sections.push('<div class="today-clear">Nothing on today.</div>');
+    sections.push('<div class="today-clear">Nothing on your calendar today.</div>');
   }
 
-  // Always shown, empty or not. A section that appears only when it has
-  // contents teaches people it is not there, and these are the items most
-  // easily missed -- Criba found them and deliberately did not add them.
-  const nl = (d.newsletters || []).filter(it => it.date === d.date || it.date === todayPlusOne(d.date));
+  // Everything Criba found and has not been told what to do with: queue items
+  // that were never approved, and the suggestions it deliberately held back.
+  // These are questions, not today's plan, so they sit below it under a heading
+  // that asks the question.
+  const queue = (typeof pendingEvents !== 'undefined' && Array.isArray(pendingEvents) ? pendingEvents : [])
+    .filter(e => e.status === 'pending' || e.status === 'draft');
+  const proposed = (d.newsletters || []);
+  const unreviewed = [...queue, ...proposed];
   sections.push(`<div class="today-section today-maybe">
-    <h2 class="today-section-head">Want it on your calendar?</h2>
-    <div class="today-maybe-note">Criba found these in your email but wasn\u2019t sure you\u2019d want them.</div>
-    ${nl.length ? nl.map(it => `<div class="ev-row" id="maybe-${escHtml(it.id)}">
-        <div class="ev-time">${escHtml(it.is_all_day || !it.time ? 'All day' : it.time)}</div>
+    <h2 class="today-section-head">Not reviewed \u2014 should these be on your calendar?</h2>
+    <div class="today-maybe-note">Criba found these and hasn\u2019t added them. Nothing here is on your calendar.</div>
+    ${unreviewed.length ? unreviewed.map(it => `<div class="ev-row" id="maybe-${escHtml(it.id)}">
+        <div class="ev-time">${escHtml(it.is_all_day || !it.time ? 'All day' : it.time)}${
+          it.date && it.date !== d.date ? `<span class="ev-time-end">${escHtml(formatDate(it.date))}</span>` : ''}</div>
         <div class="ev-main">
           <div class="ev-title">${escHtml(it.title || '(untitled)')}</div>
           <div class="ev-meta">${escHtml([it.location, it.sender_name || it.sender_email].filter(Boolean).join(' \u00b7 '))}</div>
           <div class="ev-actions-inline">
             <button class="ev-act ev-act-primary" onclick="todayAddToCalendar('${escHtml(it.id)}')">Add</button>
-            <button class="ev-act" onclick="todayDismissOne('${escHtml(it.id)}')">Dismiss</button>
+            <button class="ev-act" onclick="todayDismissOne('${escHtml(it.id)}')">Not this</button>
           </div>
         </div>
       </div>`).join('')
-    : '<div class="today-none">Nothing for today or tomorrow.</div>'}
+    : '<div class="today-none">Nothing waiting.</div>'}
   </div>`);
-
-  // Tomorrow, read-only. A preview that could be acted on would be a second
-  // What's Ahead with different rules.
-  const tom = (waData && waData.events || []).filter(e => e.date === todayPlusOne(d.date));
-  if (tom.length) {
-    sections.push(`<div class="today-section">
-      <h2 class="today-section-head">Tomorrow</h2>
-      ${tom.slice(0, 6).map(e => `<div class="today-peek">
-        <span class="today-peek-time">${escHtml(e.is_all_day || !e.time ? 'All day' : e.time)}</span>
-        <span>${escHtml(e.title || '')}</span></div>`).join('')}
-    </div>`);
-  }
 
   // The last 24 hours of things Criba put on the calendar, with a way back.
   const added = (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])

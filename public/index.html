@@ -599,6 +599,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── Category review page ─────────────────────────────────────────── */
+  #page-category { max-width: 720px; margin: 0 auto; }
   .cat-back-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; cursor: pointer; color: var(--text2); font-size: 0.875rem; padding: 0.25rem 0; margin-bottom: 1rem; }
   .cat-back-btn:hover { color: var(--ink); }
   .cat-back-btn .material-icons { font-size: 18px; }
@@ -844,11 +845,115 @@
      Reuses the existing palette only: pink --bg, ink borders, white cards,
      Archivo Black headings. Proposed (awaiting approval) reads as a dashed
      chip; already-on-your-calendar reads as a solid muted chip. */
-  .src-title { font-size: 2.1rem; font-weight: 400; margin: 0 0 0.35rem; line-height: 1.05; }
-  .src-lead { font-size: 0.92rem; color: var(--text2); margin: 0 0 1.6rem; }
-  .src-block { margin-bottom: 2rem; }
-  .src-block-head { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.6rem; }
-  @media (min-width: 700px) { .src-title { font-size: 2.6rem; } }
+  /* Sources, per 6c. Cards on --surface with a hairline, not black boxes. */
+  #page-calendars, #page-settings { max-width: 720px; margin: 0 auto; }
+  .src-title {
+    font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1.05;
+    color: var(--primary); margin: 0 0 12px;
+  }
+  .src-lead {
+    font-family: var(--font-body); font-size: 15px; line-height: 1.6; color: var(--text-2);
+    margin: 0 0 40px; max-width: 60ch;
+  }
+  .src-card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    padding: 24px; margin-bottom: 16px;
+  }
+  .src-card-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .src-card-head {
+    font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary); margin: 0;
+  }
+  .src-card-note { font-family: var(--font-body); font-size: 14px; color: var(--muted); margin-top: 8px; }
+  .src-section {
+    font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary);
+    margin: 48px 0 12px;
+  }
+  .src-block-head { font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary); margin: 0 0 12px; }
+  .src-rows { display: flex; flex-direction: column; }
+  .src-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    min-height: 46px; padding: 8px 0; border-bottom: 1px solid var(--line);
+    font-family: var(--font-body); font-size: 15px; color: var(--text);
+  }
+  .src-row:first-child { border-top: 1px solid var(--line); }
+  .src-row-meta { font-size: 13px; color: var(--muted); white-space: nowrap; }
+
+  /* Recently added: apricot, because it names what Criba did on its own. */
+  .src-recent { background: var(--apricot-tint); border: none; }
+  .src-recent-lead { font-family: var(--font-body); font-size: 15px; color: var(--text); }
+  .src-recent-lead b { font-weight: 600; }
+  /* Two lines of chips at most -- 67 of them turned the card into a wall. */
+  .src-recent-chips {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;
+    max-height: 72px; overflow: hidden;
+  }
+  .src-chip {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-pill);
+    padding: 6px 12px; font-size: 13px; color: var(--text);
+    max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .src-chip-more { background: transparent; border-color: var(--line-strong); }
+  .src-recent-note { font-size: 13px; color: var(--muted); margin-top: 12px; font-style: normal; }
+
+  /* Maintenance: text first, button second. */
+  .src-maint { margin-top: 48px; }
+  .src-maint-row { padding: 20px 0; border-bottom: 1px solid var(--line); }
+  .src-maint-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .src-maint-title { font-size: 15px; font-weight: 600; color: var(--text); }
+  .src-maint-desc { font-size: 14px; color: var(--muted); line-height: 1.6; max-width: 60ch; margin: 4px 0 12px; }
+
+  /* Buttons */
+  .btn-apricot {
+    background: var(--apricot); color: var(--on-apricot); border: 1px solid var(--apricot);
+    border-radius: var(--radius); min-height: 44px; padding: 0 20px;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; cursor: pointer;
+  }
+  .btn-apricot:hover { background: var(--apricot-hover); border-color: var(--apricot-hover); }
+  .btn-danger-text {
+    background: none; border: none; color: var(--danger); cursor: pointer;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; min-height: 44px; padding: 0;
+  }
+  .btn-danger-text:hover { text-decoration: underline; }
+  .btn-text {
+    background: none; border: none; color: var(--primary); cursor: pointer;
+    font-family: var(--font-body); font-size: 13px; font-weight: 500; padding: 0; text-decoration: underline;
+  }
+
+  /* Add calendar form */
+  .cal-form { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 24px; }
+  .cal-form .form-group { margin-bottom: 20px; }
+  .cal-form label { display: block; font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .cal-form .label-optional { font-weight: 400; color: var(--muted); }
+  .cal-form input[type="text"], .cal-form input[type="url"] {
+    width: 100%; height: 48px; background: var(--bg); border: 1px solid var(--line-strong);
+    border-radius: var(--radius); padding: 0 14px; font-family: var(--font-body); font-size: 15px; color: var(--text);
+  }
+  .cal-form input::placeholder, .cal-instructions::placeholder { color: var(--placeholder); }
+  .cal-form input:focus, .cal-instructions:focus { outline: none; border: 2px solid var(--primary); }
+  .cal-instructions {
+    width: 100%; background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    padding: 12px 14px; font-family: var(--font-body); font-size: 15px; color: var(--text); margin-top: 12px;
+  }
+  /* Segmented control, not two black buttons. */
+  .source-tabs {
+    display: flex; height: 44px; border: 1px solid var(--line-strong); border-radius: var(--radius);
+    overflow: hidden; margin-bottom: 12px;
+  }
+  .source-tab {
+    flex: 1 1 0; background: transparent; color: var(--primary); border: none; cursor: pointer;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500;
+  }
+  .source-tab.active { background: var(--apricot); color: var(--on-apricot); }
+  .drop-zone {
+    border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg);
+    padding: 28px 20px; text-align: center; color: var(--muted); font-size: 14px; cursor: pointer;
+  }
+  .drop-zone:hover { border-color: var(--primary); }
+  .form-actions { display: flex; align-items: center; gap: 12px; margin-top: 24px; }
+  @media (max-width: 480px) {
+    .src-card, .cal-form { padding: 20px; }
+    .src-card-row .btn-apricot { width: 100%; margin-top: 16px; }
+  }
 
   /* Today, per 6a. */
   #page-today { max-width: 720px; margin: 0 auto; }
@@ -1761,16 +1866,14 @@
     <!-- Moved here from the top bar and from the old queue: this is the page
          about where events come from, which is where the controls over them
          belong. -->
-    <div id="sources-status"></div>
     <div id="sources-tools"></div>
     <div id="sources-receipt"></div>
-    <div id="sources-cancelled"></div>
     <!-- Always open. Adding a calendar is the entire purpose of this page, so
          hiding it behind a "+ Add calendar" button made the first thing a new
          user needs the one thing they had to go looking for. -->
     <div id="cal-form-container">
       <div class="cal-form">
-        <h3>Add calendar</h3>
+        <h2 class="src-card-head">Add calendar</h2>
         <div class="form-group">
           <label>Calendar name <span class="label-optional">optional</span></label>
           <input type="text" id="cal-name" placeholder="Named from your file or link" oninput="calNameTouched = true" />
@@ -1819,7 +1922,10 @@
         </div>
       </div>
     </div>
+    <h2 class="src-section">Calendars you’re subscribed to</h2>
     <div id="cal-list"></div>
+    <div id="sources-cancelled"></div>
+    <div id="sources-maintenance"></div>
   </div>
 
   <!-- Settings / Family members page -->
@@ -1957,12 +2063,12 @@
   <div class="page" id="page-category">
     <div class="page-title-block" style="align-items:flex-start;flex-direction:column;gap:1.25rem">
       <button class="cat-back-btn" onclick="leaveCategoryPage()" style="margin-bottom:0">
-        <span class="material-icons">arrow_back</span>
-        Back to Calendar Upload
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M14.5 9h-11M8 4.5 3.5 9 8 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Back to Sources
       </button>
       <div style="display:flex;align-items:flex-end;justify-content:space-between;width:100%;gap:1rem;flex-wrap:wrap">
-        <div class="page-headline page-headline-sm" id="cat-page-title">REVIEW</div>
-        <button class="btn-filled btn-sm" id="cat-add-all-btn" onclick="catAddAllGroups()">Add All to Calendar</button>
+        <h1 class="src-title" id="cat-page-title">Review this upload</h1>
+        <button class="btn-apricot" id="cat-add-all-btn" onclick="catAddAllGroups()">Add all to calendar</button>
       </div>
       <div class="page-desc" id="cat-page-sub" style="text-align:left;max-width:none">Review events by group and add them to your calendar.</div>
       <div id="cat-add-all-status" style="text-align:left"></div>
@@ -3806,31 +3912,62 @@ function evIsPast(ev) {
 // something to act on; a Google-native event shows without them rather than
 // offering buttons that would not work.
 function renderSources() {
-  const status = document.getElementById('sources-status');
-  if (status) {
+  // Scan card: the heading, the primary action, and the watch status that used
+  // to live in the top bar.
+  const tools = document.getElementById('sources-tools');
+  if (tools) {
     const live = document.getElementById('live-pill');
     const on = live && !live.classList.contains('is-off');
-    const txt = document.getElementById('live-pill-text');
-    status.innerHTML = `<div class="src-block">
-      <div class="src-block-head">${on ? 'Watching Gmail' : 'Not watching'}</div>
-      <div class="src-lead" style="margin:0">${on
-        ? 'Criba is reading new mail as it arrives. You do not need to scan.'
-        : escHtml((txt && txt.textContent) || 'Criba is not currently watching your inbox.')}</div>
+    const txt = (document.getElementById('live-pill-text') || {}).textContent || '';
+    const sub = (document.getElementById('live-pill-sub') || {}).textContent || '';
+    tools.innerHTML = `<div class="src-card">
+      <div class="src-card-row">
+        <h2 class="src-card-head">Scan Gmail</h2>
+        <button class="btn-apricot" id="backfill-btn-2" onclick="runBackfill(2)">Scan last 48 hours</button>
+      </div>
+      <div class="src-card-note">${escHtml(on ? `${txt}${sub ? ' \u00b7 ' + sub : ''}` : (txt || 'Not watching'))}</div>
+      ${DEBUG_TOOLS ? `<div class="src-card-note"><button class="btn-text" onclick="toggleScanDebug()">Tools</button></div>` : ''}
+      <div id="scan-debug-bar" style="display:none;gap:6px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn-secondary btn-sm" id="backfill-btn-dry" onclick="runBackfill(2, true)">Dry run</button>
+        <button class="btn-secondary btn-sm" id="backfill-btn-clear" onclick="clearFingerprints(false)">Reset dedup</button>
+        <button class="btn-secondary btn-sm" id="backfill-btn-clear-force" onclick="clearFingerprints(true)">Force reset</button>
+        <button class="btn-secondary btn-sm" id="backfill-btn-cooldown" onclick="clearBackfillCooldown()">Reset lock</button>
+        <button class="btn-secondary btn-sm" onclick="showScanTrace()">Scan trace</button>
+        <button class="btn-secondary btn-sm" id="backfill-btn-7" onclick="runBackfill(7)">Last 7 days</button>
+      </div>
+      <div id="backfill-result"></div>
     </div>`;
   }
-  const tools = document.getElementById('sources-tools');
-  if (tools) tools.innerHTML = `<div class="src-block">${BACKFILL_BAR_HTML}</div>`;
+
   const receipt = document.getElementById('sources-receipt');
   if (receipt) receipt.innerHTML = receiptStripHtml();
+
   const canc = document.getElementById('sources-cancelled');
   if (canc) {
     const rows = (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])
       .filter(e => e.status === 'cancelled').slice(0, 12);
-    canc.innerHTML = rows.length ? `<div class="src-block">
-      <div class="src-block-head">Removed from your calendar</div>
-      ${rows.map(e => `<div class="today-peek"><span>${escHtml(e.title || '')}${
-        e.date ? ` \u00b7 ${escHtml(formatDate(e.date))}` : ''}</span></div>`).join('')}
-    </div>` : '';
+    canc.innerHTML = rows.length ? `<h2 class="src-section">Removed from your calendar</h2>
+      <div class="src-rows">${rows.map(e => `<div class="src-row"><span>${escHtml(e.title || '')}</span>
+        <span class="src-row-meta">${e.date ? escHtml(formatDate(e.date)) : ''}</span></div>`).join('')}</div>` : '';
+  }
+
+  // Maintenance last, and text before button: the description is what decides
+  // whether you want the button at all.
+  const maint = document.getElementById('sources-maintenance');
+  if (maint) {
+    maint.innerHTML = `<div class="src-card src-maint">
+      <h2 class="src-card-head">Maintenance</h2>
+      <div class="src-maint-row">
+        <div class="src-maint-title">Clean up duplicates</div>
+        <div class="src-maint-desc">If the same event was added to your calendar more than once, this finds the extra copies and removes them, keeping one of each. Events you created yourself and events from calendars you subscribe to are never touched.</div>
+        <button class="btn-secondary" onclick="cleanupDuplicates()">Clean up duplicates</button>
+      </div>
+      <div class="src-maint-row">
+        <div class="src-maint-title">Start fresh</div>
+        <div class="src-maint-desc">Removes every event Criba has added to your calendar and empties the review queue, putting your calendar back the way it was before you signed up. You\u2019ll see exactly what it found and be asked to confirm first.</div>
+        <button class="btn-danger-text" id="backfill-btn-reset" onclick="startFresh()">Start fresh</button>
+      </div>
+    </div>`;
   }
 }
 
@@ -5356,13 +5493,13 @@ function receiptStripHtml() {
   const shown = added.slice(0, 4);
   const more = n - shown.length;
   const chips = shown
-    .map(e => `<span class="r-chip">${escHtml(e.title || 'Untitled event')}</span>`)
+    .map(e => `<span class="src-chip">${escHtml(e.title || 'Untitled event')}</span>`)
     .join('')
-    + (more > 0 ? `<span class="r-chip r-more">+${more} more</span>` : '');
-  return `<div class="receipt" id="review-receipt">
-    <span class="r-lead">Criba added <b>${n}</b> event${n > 1 ? 's' : ''} to your Google Calendar</span>
-    <span class="r-chips">${chips}</span>
-    <span class="r-note">Remove any below to undo</span>
+    + (more > 0 ? `<span class="src-chip src-chip-more">+${more} more</span>` : '');
+  return `<div class="src-card src-recent" id="review-receipt">
+    <div class="src-recent-lead">Criba added <b>${n}</b> event${n > 1 ? 's' : ''} to your Google Calendar</div>
+    <div class="src-recent-chips">${chips}</div>
+    <div class="src-recent-note">Remove any to undo</div>
   </div>`;
 }
 

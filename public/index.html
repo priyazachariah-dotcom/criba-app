@@ -1,3 +1,26 @@
+async function evDismissProposal(id, ctx) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  try {
+    const res = await fetch('/api/events/dismiss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) {
+      if (row) row.style.opacity = '';
+      evActionError(id, ctx, 'Could not dismiss that.');
+      return;
+    }
+  } catch {
+    if (row) row.style.opacity = '';
+    evActionError(id, ctx, 'Could not reach Criba.');
+    return;
+  }
+  evRegistry.delete(id);
+  if (typeof pendingEvents !== 'undefined') pendingEvents = pendingEvents.filter(e => e.id !== id);
+  if (row) row.remove();
+}
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1176,6 +1199,8 @@
   /* A row that is not on the calendar. Quiet, but a word rather than a dot --
      the coloured dot already means "whose event is this", and two dot meanings
      on one row would collide. */
+  .ev-error { font-family: var(--font-body); font-size: 13px; color: var(--danger); margin-top: 6px; }
+
   .ev-tag {
     font-family: var(--font-body); font-size: 11px; font-weight: 600;
     color: var(--muted); border: 1px solid var(--line-strong); border-radius: var(--radius-pill);
@@ -4560,16 +4585,58 @@ function evEdit(id, ctx) {
 // A proposal is not on the calendar, so nothing here can destroy anything:
 // Add writes it, Dismiss forgets it. Delete deliberately does not appear.
 async function evAdd(id, ctx) {
+  const ev = evGet(id);
+  if (!ev) return;
   const row = document.getElementById(`ev-${ctx}-${id}`);
+  // The server rejects an approve with no date outright. evAdd used to send
+  // { id } alone, so every Add returned 400 "Date is required" -- and the error
+  // was swallowed, so the button simply did nothing.
+  const payload = {
+    id,
+    date: ev.date || '',
+    title: ev.title || '',
+    time: ev.is_all_day ? '' : (ev.time || ''),
+    endTime: ev.is_all_day ? '' : (ev.end_time || ''),
+    endDate: ev.end_date || '',
+    location: ev.location || '',
+    attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+    recurrenceRule: ev.recurrence_rule || null,
+  };
+  if (!payload.date) { evActionError(id, ctx, 'No date on this one — open Edit to set one.'); return; }
   if (row) row.style.opacity = '0.45';
   try {
-    await fetch('/api/events/approve', {
+    const res = await fetch('/api/events/approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
+      body: JSON.stringify(payload),
     });
-  } catch {}
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      if (row) row.style.opacity = '';
+      evActionError(id, ctx, err.error || 'Could not add that.');
+      return;
+    }
+  } catch {
+    if (row) row.style.opacity = '';
+    evActionError(id, ctx, 'Could not reach Criba.');
+    return;
+  }
   evRegistry.delete(id);
+  if (typeof pendingEvents !== 'undefined') pendingEvents = pendingEvents.filter(e => e.id !== id);
   if (ctx === 'today') loadToday(); else loadWhatsAhead();
+}
+
+// A failed action used to leave no trace at all. Whatever went wrong, it has to
+// say so on the row rather than fail silently.
+function evActionError(id, ctx, msg) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (!row) return;
+  let el = row.querySelector('.ev-error');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'ev-error';
+    (row.querySelector('.ev-main') || row).appendChild(el);
+  }
+  el.textContent = msg;
 }
 
 async function evDismissProposal(id, ctx) {

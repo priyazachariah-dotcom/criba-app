@@ -139,8 +139,13 @@
   /* Single-row header: logo left · tabs center · user right */
   header {
     background: var(--bg); border-bottom: 1px solid var(--line);
-    height: 72px; display: flex; align-items: center; padding: 0 32px;
-    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 100; gap: 24px;
+    height: 72px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 100;
+  }
+  /* The bar spans the window; its contents line up with the page column, so the
+     wordmark and nav no longer hug the window edges. */
+  .header-inner {
+    max-width: 1120px; margin: 0 auto; padding: 0 32px; height: 100%;
+    display: flex; align-items: center; gap: 40px;
   }
   .header-logo-section { flex: 0 0 auto; }
   .wordmark {
@@ -152,7 +157,7 @@
     width: 7px; height: 7px; border-radius: 50%;
     background: var(--apricot); margin-left: 3px; flex-shrink: 0;
   }
-  .header-nav-section { display: flex; align-items: center; gap: 24px; flex: 1 1 auto; min-width: 0; }
+  .header-nav-section { display: flex; align-items: center; gap: 28px; flex: 1 1 auto; min-width: 0; }
   .header-user-section { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; margin-left: auto; }
 
   .nav-btn {
@@ -164,9 +169,11 @@
   }
   .nav-btn.active { color: var(--primary); border-bottom-color: var(--apricot); }
   .nav-btn:hover:not(.active) { color: var(--primary); }
-  #review-count-label:not(:empty) {
-    background: var(--apricot); color: var(--on-apricot); border-radius: var(--radius-pill);
-    padding: 3px 9px; font-size: 12px; font-weight: 600; line-height: 1.2;
+  #review-count-label:not(:empty), .home-new, .nav-sheet-count {
+    background: var(--apricot); color: var(--on-apricot); border: none;
+    border-radius: var(--radius-pill); height: 24px; padding: 0 10px;
+    font-family: var(--font-body); font-size: 12px; font-weight: 600;
+    display: inline-flex; align-items: center; line-height: 1;
   }
 
   /* Account menu. Replaces the name text and the outlined Sign out box, which
@@ -224,10 +231,6 @@
     height: 56px; cursor: pointer; text-align: left; width: 100%;
   }
   .nav-sheet-link:first-child { border-top: 1px solid var(--line); }
-  .nav-sheet-count {
-    background: var(--apricot); color: var(--on-apricot); border-radius: var(--radius-pill);
-    padding: 3px 9px; font-size: 12px; font-weight: 600; font-family: var(--font-body);
-  }
   @media (max-width: 1100px) {
     .header-nav-section { display: none; }
     .menu-btn { display: inline-flex; align-items: center; }
@@ -964,18 +967,18 @@
     .ev-row { grid-template-columns: 56px 1fr 44px; column-gap: 12px; }
   }
 
-  /* Home. Mobile first. Rows are exactly 56px and touch each other, with the
-     hairline at the bottom of each and a border-top on the first, so the menu
-     reads as one group rather than four separate blocks. */
-  #page-home { max-width: 640px; margin: 0 auto; }
+  /* Home. Rows are exactly 56px and touch each other, hairline at the bottom
+     of each and a border-top on the first. */
+  #page-home { max-width: 640px; margin: 0 auto; padding-top: 48px; }
+  @media (min-width: 700px) { #page-home { padding-top: 96px; } }
   .home-date { font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted); }
   .home-headline {
     font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1.05;
-    color: var(--primary); margin: 16px 0 12px;
+    color: var(--primary); margin: 12px 0 16px;
   }
   .home-summary {
     font-family: var(--font-body); font-size: 16px; font-weight: 400; line-height: 1.6;
-    color: var(--text-2); margin: 0 0 40px; max-width: 60ch;
+    color: var(--text-2); margin: 0 0 48px; max-width: 60ch;
   }
   .home-go { font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 12px; }
   .home-menu { display: flex; flex-direction: column; }
@@ -987,15 +990,11 @@
   }
   .home-link:first-child { border-top: 1px solid var(--line); }
   .home-link:hover .home-label { text-decoration: underline; }
-  .home-label { font-family: var(--font-display); font-size: 26px; font-weight: 400; line-height: 1; }
+  .home-label { font-family: var(--font-display); font-size: 22px; font-weight: 400; line-height: 1; }
   .home-link-right { display: inline-flex; align-items: center; gap: 12px; flex-shrink: 0; }
   .home-arrow { color: var(--muted); display: block; }
-  .home-new {
-    background: var(--apricot); color: var(--on-apricot); border-radius: var(--radius-pill);
-    padding: 5px 12px; font-family: var(--font-body); font-size: 12px; font-weight: 600; line-height: 1.2;
-  }
   .home-new[hidden] { display: none; }
-  .home-foot { margin-top: 32px; }
+  .home-foot { margin-top: 40px; }
   .home-gcal { font-family: var(--font-body); font-size: 14px; color: var(--primary); text-decoration: none; }
   .home-gcal:hover { text-decoration: underline; }
 
@@ -1576,6 +1575,7 @@
 <!-- ── App shell ────────────────────────────────────────────────────────── -->
 <div id="app-screen">
   <header>
+    <div class="header-inner">
     <div class="header-logo-section">
       <a class="wordmark" href="#" onclick="homeGo('home');return false;" aria-label="Criba home">criba<span class="wordmark-dot"></span></a>
     </div>
@@ -1610,6 +1610,7 @@
         <span id="live-pill-text">Checking…</span>
         <span class="live-sub" id="live-pill-sub"></span>
       </span>
+    </div>
     </div>
   </header>
   <div class="nav-sheet" id="nav-sheet" hidden>

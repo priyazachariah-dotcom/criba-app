@@ -88,7 +88,7 @@
   .pac-container {
     background: #fff !important; border: 1px solid rgba(0,0,0,0.15) !important;
     border-radius: 8px !important; box-shadow: 0 6px 20px rgba(0,0,0,0.18) !important;
-    font-family: 'Inter', -apple-system, sans-serif !important;
+    font-family: var(--font-body) !important;
     /* Above the category editor and any overlay, or the list renders behind
        the panel and cannot be clicked. */
     z-index: 100000 !important; overflow: hidden !important;
@@ -119,6 +119,9 @@
 
   /* ── Auth ─────────────────────────────────────────────────────────── */
   #auth-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 2rem; }
+  /* One left edge for the whole column, matching every other screen. */
+  #auth-screen { align-items: center; }
+  #auth-screen > * { text-align: left; width: 100%; max-width: 460px; }
   .auth-logo {
     font-family: var(--font-display); font-size: 24px; font-weight: 500;
     color: var(--primary); margin-bottom: 24px; display: inline-flex; align-items: baseline;
@@ -262,8 +265,7 @@
   .user-name { font-size: 13.5px; color: var(--text2); }
   .logout-btn {
     font-size: 12px; color: var(--ink); background: none;
-    border: 1.5px solid var(--ink); cursor: pointer; padding: 6px 14px;
-    text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif;
+    border: 1px solid var(--line-strong); cursor: pointer; padding: 6px 14px; font-family: var(--font-body);
     font-weight: 500; transition: background 0.12s, color 0.12s;
   }
   .logout-btn:hover { background: var(--ink); color: var(--bg); }
@@ -282,14 +284,14 @@
     padding-bottom: 0; margin-bottom: 40px; border-bottom: none;
   }
   .page-headline {
-    font-family: 'Archivo Black', sans-serif;
+    font-family: var(--font-display);
     font-size: clamp(40px, 6vw, 84px);
-    line-height: 0.92; color: var(--ink); text-transform: uppercase;
+    line-height: 0.92; color: var(--ink);
   }
   .page-headline-sm {
-    font-family: 'Archivo Black', sans-serif;
+    font-family: var(--font-display);
     font-size: clamp(32px, 4.5vw, 56px);
-    line-height: 0.92; color: var(--ink); text-transform: uppercase;
+    line-height: 0.92; color: var(--ink);
   }
   .page-desc {
     max-width: 280px; font-size: 14.5px; font-style: italic;
@@ -331,18 +333,17 @@
   .btn-danger { border-color: var(--red); color: var(--red); }
   .btn-danger:hover { background: #fbeceb; color: var(--red); }
   /* Legacy approve/dismiss aliases */
-  .btn-approve { padding: 0.5rem 1.25rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
+  .btn-approve { padding: 0.5rem 1.25rem; background: var(--ink); color: var(--bg); border: 1px solid var(--line-strong); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
   .btn-approve:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-dismiss { padding: 0.5rem 1rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.875rem; cursor: pointer; }
+  .btn-dismiss { padding: 0.5rem 1rem; background: transparent; color: var(--ink); border: 1px solid var(--line-strong); font-size: 0.875rem; cursor: pointer; }
   .btn-dismiss:hover { background: var(--ink); color: var(--bg); }
-  .view-more-btn { width: 100%; padding: 0.75rem; background: transparent; border: 1.5px solid var(--ink); font-size: 0.875rem; color: var(--ink); cursor: pointer; margin-top: 0.5rem; }
+  .view-more-btn { width: 100%; padding: 0.75rem; background: transparent; border: 1px solid var(--line-strong); font-size: 0.875rem; color: var(--ink); cursor: pointer; margin-top: 0.5rem; }
   .view-more-btn:hover { background: var(--ink); color: var(--bg); }
 
   /* ── Pills ───────────────────────────────────────────────────────────── */
   .pill {
     display: inline-block; background: var(--pill); color: var(--ink);
-    font-size: 10.5px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.04em; padding: 3px 9px; vertical-align: middle; white-space: nowrap;
+    font-size: 10.5px; font-weight: 600; padding: 3px 9px; vertical-align: middle; white-space: nowrap;
   }
 
   /* Says the opposite of "Synced", so it must not look like the same badge
@@ -355,9 +356,9 @@
   .review-legend {
     display: flex; flex-wrap: wrap; align-items: center; gap: 9px 18px;
     padding: 12px 16px; margin: -12px 0 24px; background: var(--surface-2);
-    border: 1.5px solid var(--ink); font-size: 12px; color: var(--text2);
+    border: 1px solid var(--line-strong); font-size: 12px; color: var(--text2);
   }
-  .legend-lead { font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; font-size: 10.5px; color: var(--text3); }
+  .legend-lead { font-weight: 600; font-size: 10.5px; color: var(--text3); }
   .legend-item { display: inline-flex; align-items: center; gap: 7px; }
   .legend-rail { display: inline-block; width: 4px; height: 14px; }
   .legend-rail.cancel { background: #c5221f; }
@@ -372,11 +373,11 @@
      calendar. Removing any one is on its own card (Delete + undo toast). */
   .receipt {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
-    background: var(--surface-2); border: 1.5px solid var(--ink);
+    background: var(--surface-2); border: 1px solid var(--line-strong);
     padding: 12px 16px; margin: 0 0 12px;
   }
   .receipt .r-lead { font-size: 13px; color: var(--ink); }
-  .receipt .r-lead b { font-family: 'Archivo Black', sans-serif; font-weight: 400; }
+  .receipt .r-lead b { font-family: var(--font-display); font-weight: 400; }
   .r-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .r-chip {
     display: inline-flex; align-items: center; font-size: 11.5px;
@@ -390,15 +391,15 @@
   /* ── Stats row (Review page) ─────────────────────────────────────────── */
   .stats-row { display: flex; gap: 48px; margin-bottom: 2rem; }
   .stat-block { display: flex; flex-direction: column; }
-  .stat-number { font-family: 'Archivo Black', sans-serif; font-size: 26px; color: var(--ink); line-height: 1; }
-  .stat-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); margin-top: 4px; }
+  .stat-number { font-family: var(--font-display); font-size: 26px; color: var(--ink); line-height: 1; }
+  .stat-label { font-size: 11.5px; color: var(--text3); margin-top: 4px; }
 
   /* ── Scan control bar ───────────────────────────────────────────────── */
   .scan-bar {
     display: flex; align-items: center; justify-content: space-between;
-    border: 1.5px solid var(--ink); padding: 20px 26px; margin-bottom: 0;
+    border: 1px solid var(--line-strong); padding: 20px 26px; margin-bottom: 0;
   }
-  .scan-bar-label { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); }
+  .scan-bar-label { font-size: 13px; font-weight: 600; color: var(--text3); }
   .scan-bar-btns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
   /* The "N to review" row is a light action strip, not a second heavy box like
      Scan Gmail — one bordered bar per screen is plenty. */
@@ -407,7 +408,7 @@
   /* Recovery actions. These delete calendar events, so each one states what it
      does in a full sentence rather than relying on a two-word label: the moment
      someone reaches for these is the moment they are least willing to guess. */
-  .fixit-bar { border: 1.5px solid var(--ink); border-top: none; padding: 16px 26px; }
+  .fixit-bar { border: 1px solid var(--line-strong); border-top: none; padding: 16px 26px; }
   .fixit-row { display: flex; align-items: flex-start; gap: 0.75rem; }
   .fixit-row + .fixit-row { margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid var(--bg2); }
   .fixit-row .btn-outlined { flex: 0 0 auto; white-space: nowrap; }
@@ -417,7 +418,7 @@
   /* ── Review event rows ───────────────────────────────────────────────── */
   /* Cards are bordered boxes on the pink ground (not a hairline-divided list),
      so each event reads as one contained object with its own actions. */
-  .review-card { border: 1.5px solid var(--ink); background: var(--surface); margin-bottom: 12px; }
+  .review-card { border: 1px solid var(--line-strong); background: var(--surface); margin-bottom: 12px; }
   /* Cancel/reschedule keep the coloured rail, but as an inset shadow so the card
      edge stays aligned with every other card instead of shifting inward. */
   .review-card.cancel-card { box-shadow: inset 4px 0 0 #c5221f; padding-left: 0; }
@@ -447,14 +448,14 @@
   .trust-sender-btn:hover { color: var(--ink); border-bottom-color: var(--ink); }
   .trust-sender-done { font-style: normal; font-size: 12px; margin-left: 0.5rem; color: #1a7f37; }
   /* Badge styles */
-  .review-badge-gmail { display: inline-block; background: var(--pill); color: var(--ink); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; white-space: nowrap; }
-  .review-badge { background: var(--bg2); color: var(--ink); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; white-space: nowrap; }
-  .review-badge-cancel { background: #fce8e6; color: #c5221f; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-reschedule { background: #fef7e0; color: #b45309; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-deadline { background: #fce8e6; color: #c5221f; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-action { background: #fef7e0; color: #b06000; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-financial { background: var(--bg2); color: #137333; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-recurring { background: var(--bg2); color: var(--ink); font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .review-badge-gmail { display: inline-block; background: var(--pill); color: var(--ink); font-size: 10.5px; font-weight: 600; padding: 3px 9px; white-space: nowrap; }
+  .review-badge { background: var(--bg2); color: var(--ink); font-size: 10.5px; font-weight: 600; padding: 3px 9px; white-space: nowrap; }
+  .review-badge-cancel { background: #fce8e6; color: #c5221f; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-reschedule { background: #fef7e0; color: #b45309; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-deadline { background: #fce8e6; color: #c5221f; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-action { background: #fef7e0; color: #b06000; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-financial { background: var(--bg2); color: #137333; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-recurring { background: var(--bg2); color: var(--ink); font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
 
   /* ── Today (daily digest) ──────────────────────────────────────────────
      Reads as a list you scan once, not a queue you work through. Same ink
@@ -463,7 +464,7 @@
   .today-greeting { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
   .today-date { font-size: 13px; color: var(--text2); margin-top: 2px; }
   .today-section { margin-bottom: 26px; }
-  .today-section-head { font-size: 11.5px; letter-spacing: .09em; text-transform: uppercase;
+  .today-section-head { font-size: 11.5px;
                         color: var(--text2); border-bottom: 1px solid var(--line);
                         padding-bottom: 5px; margin-bottom: 8px; }
   .today-row { display: flex; gap: 12px; align-items: flex-start; }
@@ -496,8 +497,7 @@
      above it — these were deliberately NOT added to the calendar. */
   .today-nl-head { display: flex; width: 100%; justify-content: space-between; align-items: center;
                    background: none; border: none; border-bottom: 1px solid var(--line);
-                   padding: 6px 0; cursor: pointer; font: inherit; font-size: 11.5px;
-                   letter-spacing: .09em; text-transform: uppercase; color: var(--text2); }
+                   padding: 6px 0; cursor: pointer; font: inherit; font-size: 11.5px; color: var(--text2); }
   .today-nl-chev { font-size: 15px; line-height: 1; }
   .today-nl-note { font-size: 12px; color: var(--text2); margin: 8px 0 4px; }
   .today-nl-item { opacity: .92; }
@@ -509,7 +509,7 @@
 
   /* Clear-a-whole-sender block. Sits above the row list on the same tab: it is
      a shortcut for the list below it, not a separate place to go. */
-  .src-wrap { border: 1.5px solid var(--ink); padding: 14px 16px; margin: 0 0 18px; }
+  .src-wrap { border: 1px solid var(--line-strong); padding: 14px 16px; margin: 0 0 18px; }
   .src-head { font-weight: 700; font-size: 14px; letter-spacing: .02em; }
   .src-sub { font-size: 12.5px; color: var(--text2); margin: 4px 0 12px; max-width: 640px; }
   .src-row { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between;
@@ -524,14 +524,14 @@
 
   /* ── Recent event rows (Edit Calendar Events) ─────────────────────────
      Boxed cards, matching the Review queue, so the two lists read as one app. */
-  .recent-card { border: 1.5px solid var(--ink); background: var(--surface); margin-bottom: 8px; }
+  .recent-card { border: 1px solid var(--line-strong); background: var(--surface); margin-bottom: 8px; }
   .recent-card-header { display: flex; align-items: flex-start; padding: 14px 18px; gap: 1.25rem; }
-  .recent-row-day { font-family: 'Archivo Black', sans-serif; font-size: 13px; color: var(--ink); width: 44px; flex-shrink: 0; text-transform: uppercase; padding-top: 3px; }
+  .recent-row-day { font-family: var(--font-display); font-size: 13px; color: var(--ink); width: 44px; flex-shrink: 0; padding-top: 3px; }
   .recent-row-info { flex: 1; min-width: 0; }
   .recent-card-title { font-size: 16px; font-weight: 700; color: var(--ink); margin-bottom: 0.25rem; }
   .recent-card-meta { font-size: 13px; color: var(--text3); }
   .recent-card-right { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; padding-top: 2px; }
-  .btn-edit { font-size: 11px; color: var(--ink); background: none; border: 1.5px solid var(--ink); padding: 6px 12px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif; font-weight: 500; }
+  .btn-edit { font-size: 11px; color: var(--ink); background: none; border: 1px solid var(--line-strong); padding: 6px 12px; cursor: pointer; font-family: var(--font-body); font-weight: 500; }
   .btn-edit:hover { background: var(--ink); color: var(--bg); }
 
   /* ── Empty state ─────────────────────────────────────────────────────── */
@@ -548,25 +548,24 @@
   .dry-run-table tr:last-child td { border-bottom: none; }
   .dry-run-table tr.would-send td { background: rgba(217,169,166,0.12); }
   .dry-run-table tr.skipped td { background: transparent; color: var(--text2); }
-  .verdict-pill { display: inline-block; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+  .verdict-pill { display: inline-block; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; }
   .verdict-pill.send { background: var(--pill); color: var(--ink); }
   .verdict-pill.skip { background: var(--bg2); color: var(--text3); }
   .dry-run-summary { display: flex; gap: 1.5rem; margin-top: 0.6rem; font-size: 0.8rem; color: var(--text2); flex-wrap: wrap; }
 
   /* ── Calendars page ─────────────────────────────────────────────────── */
-  .cal-form { background: white; border: 1.5px solid var(--ink); padding: 1.5rem; margin-bottom: 2rem; }
+  .cal-form { background: white; border: 1px solid var(--line-strong); padding: 1.5rem; margin-bottom: 2rem; }
   .cal-form h3 { font-size: 1rem; font-weight: 600; margin-bottom: 1.25rem; }
   .form-group { margin-bottom: 1rem; }
   .form-group label { display: block; font-size: 0.8rem; color: var(--text2); margin-bottom: 5px; font-weight: 500; }
-  .form-group input { width: 100%; padding: 0.625rem 0.875rem; border: 1.5px solid var(--ink); font-size: 0.875rem; background: var(--bg); color: var(--ink); font-family: inherit; }
+  .form-group input { width: 100%; padding: 0.625rem 0.875rem; border: 1px solid var(--line-strong); font-size: 0.875rem; background: var(--bg); color: var(--ink); font-family: inherit; }
   .form-group input:focus { outline: none; background: white; }
   /* Reads as a quiet aside next to the label rather than a second label. */
   .label-optional { font-weight: 400; font-size: 0.75rem; color: var(--text2); text-transform: none; letter-spacing: 0; }
   /* An invitation is a question with two answers, so the card opens flat
      instead of hiding the buttons behind an accordion. */
   .invite-card { border-left: 3px solid var(--ink); }
-  .review-badge-invite { background: var(--ink); color: var(--bg); font-size: 0.68rem; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 8px; border-radius: 2px; }
+  .review-badge-invite { background: var(--ink); color: var(--bg); font-size: 0.68rem; font-weight: 700; padding: 3px 8px; border-radius: 2px; }
   .invite-panel { padding: 0 1rem 1rem; }
 
   /* One heading per day. The day column inside each card goes away when a
@@ -574,7 +573,7 @@
      ungrouped ones rather than jumping left. */
   /* No per-day count here: "Thursday, September 3" followed by a "9" read as
      "September 39". The events are directly below and countable by eye. */
-  .recent-date-head { font-family: 'Archivo Black', sans-serif; font-size: 0.95rem;
+  .recent-date-head { font-family: var(--font-display); font-size: 0.95rem;
     margin: 1.6rem 0 0; padding-bottom: 0.35rem; }
   /* Grouped cards drop the day column (the heading carries the date), so they
      just use the normal card padding — no need to indent to a missing column. */
@@ -591,13 +590,13 @@
 
   /* Section rules for the Approved page. Sits above the first card of each
      group rather than boxing it, so the list still reads as one column. */
-  .recent-section { margin: 2rem 0 0.25rem; padding-bottom: 0.4rem; border-bottom: 1.5px solid var(--ink); }
+  .recent-section { margin: 2rem 0 0.25rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--line); }
   .recent-section:first-child { margin-top: 0; }
-  .recent-section-head { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+  .recent-section-head { font-size: 0.75rem; font-weight: 700; }
   .recent-section-count { font-weight: 400; color: var(--text2); letter-spacing: 0; }
   .recent-section-note { font-size: 0.78rem; color: var(--text2); margin-top: 0.3rem; text-transform: none; letter-spacing: 0; font-weight: 400; }
   .source-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-  .source-tab { padding: 0.5rem 1rem; border: 1.5px solid var(--ink); font-size: 0.875rem; cursor: pointer; background: transparent; color: var(--ink); }
+  .source-tab { padding: 0.5rem 1rem; border: 1px solid var(--line-strong); font-size: 0.875rem; cursor: pointer; background: transparent; color: var(--ink); }
   .source-tab.active { background: var(--ink); color: var(--bg); }
   .drop-zone { border: 2px dashed var(--ink); padding: 2rem; text-align: center; cursor: pointer; color: var(--text2); font-size: 0.875rem; transition: all 0.15s; }
   .drop-zone:hover, .drop-zone.dragover { background: var(--bg2); }
@@ -614,10 +613,10 @@
   .cal-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; flex-shrink: 0; }
   .cal-section { margin-bottom: 40px; }
   .cal-section-head { margin-bottom: 4px; }
-  .cal-section-title { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .cal-section-title { font-size: 0.95rem; font-weight: 700; }
   .cal-section-sub { font-size: 0.8rem; color: var(--text2); margin-top: 4px; max-width: 60ch; }
   .cal-member-group { margin-top: 18px; }
-  .cal-member-name { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; }
+  .cal-member-name { font-size: 0.8rem; font-weight: 600; color: var(--text2); }
   .cal-feed-link { color: var(--text2); text-decoration: underline; }
   .cal-feed-link:hover { color: var(--ink); }
   .cal-sync-bad { color: #b3261e; font-weight: 600; }
@@ -634,7 +633,7 @@
   .cat-back-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; cursor: pointer; color: var(--text2); font-size: 0.875rem; padding: 0.25rem 0; margin-bottom: 1rem; }
   .cat-back-btn:hover { color: var(--ink); }
   .cat-back-btn .material-icons { font-size: 18px; }
-  .cat-card { border: 1.5px solid var(--ink); margin-bottom: 0.75rem; overflow: hidden; background: white; }
+  .cat-card { border: 1px solid var(--line-strong); margin-bottom: 0.75rem; overflow: hidden; background: white; }
   .cat-card-header { display: flex; align-items: center; padding: 0.875rem 1rem; gap: 0.75rem; }
   .cat-card-header:hover { background: var(--bg); }
   .cat-header-left { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; cursor: pointer; user-select: none; }
@@ -643,10 +642,10 @@
   .cat-name { font-size: 0.925rem; font-weight: 600; }
   .cat-header-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
   .cat-header-status { font-size: 0.8rem; white-space: nowrap; }
-  .btn-cat-add { padding: 0.35rem 0.875rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.8rem; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-cat-add { padding: 0.35rem 0.875rem; background: var(--ink); color: var(--bg); border: 1px solid var(--line-strong); font-size: 0.8rem; font-weight: 500; cursor: pointer; white-space: nowrap; }
   .btn-cat-add:hover { opacity: 0.82; }
   .btn-cat-add:disabled { opacity: 0.45; cursor: not-allowed; }
-  .btn-cat-dismiss { padding: 0.35rem 0.75rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
+  .btn-cat-dismiss { padding: 0.35rem 0.75rem; background: transparent; color: var(--ink); border: 1px solid var(--line-strong); font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
   .btn-cat-dismiss:hover { background: var(--ink); color: var(--bg); }
   .btn-cat-dismiss:disabled { opacity: 0.45; cursor: not-allowed; }
   .cat-card-body { border-top: 1px solid var(--ink); }
@@ -729,7 +728,7 @@
   .quick-newperson { display: inline-flex; align-items: center; gap: 6px; }
   .quick-newperson-input { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--ink); border-radius: 999px; background: #fff; color: var(--ink); width: 8.5rem; outline: none; }
   .qnp-field { position: relative; display: inline-block; }
-  .qnp-drop { position: absolute; top: calc(100% + 3px); left: 0; z-index: 60; min-width: 210px; max-height: 220px; overflow-y: auto; background: #fff; border: 1.5px solid var(--ink); }
+  .qnp-drop { position: absolute; top: calc(100% + 3px); left: 0; z-index: 60; min-width: 210px; max-height: 220px; overflow-y: auto; background: #fff; border: 1px solid var(--line-strong); }
   .qnp-drop .contact-option:not(:last-child) { border-bottom: 1px solid rgba(0,0,0,0.08); }
   .qnp-drop .contact-option:hover { background: var(--bg); }
   .quick-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
@@ -751,7 +750,7 @@
   .btn-update:disabled { opacity: 0.5; cursor: not-allowed; }
 
   /* ── Confidence pills ────────────────────────────────────────────── */
-  .confidence-pill { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 2px 8px; margin-left: 6px; vertical-align: middle; text-transform: uppercase; letter-spacing: 0.02em; }
+  .confidence-pill { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 2px 8px; margin-left: 6px; vertical-align: middle; letter-spacing: 0.02em; }
   .confidence-high   { background: var(--pill); color: var(--ink); }
   .confidence-medium { background: var(--pill); color: var(--ink); opacity: 0.8; }
   .confidence-low    { background: #fce8e6; color: #9b1c1c; }
@@ -778,7 +777,7 @@
 
   /* ── Reminders section ───────────────────────────────────────────── */
   .reminders-section { margin-bottom: 2rem; }
-  .reminders-section-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text3); margin-bottom: 0.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--ink); }
+  .reminders-section-label { font-size: 0.72rem; font-weight: 700; color: var(--text3); margin-bottom: 0.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--ink); }
   .reminder-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 0; border-bottom: 1px solid rgba(17,17,17,0.1); }
   .reminder-card:last-child { border-bottom: none; }
   .reminder-headline { font-size: 0.925rem; font-weight: 600; color: var(--ink); }
@@ -788,22 +787,22 @@
 
   /* ── Custom Recurrence Modal ─────────────────────────────────────── */
   .custom-recur-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 1rem; }
-  .custom-recur-modal { background: white; border: 1.5px solid var(--ink); padding: 1.5rem; width: 100%; max-width: 400px; }
-  .custom-recur-title { font-size: 1rem; font-weight: 700; margin-bottom: 1.25rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .custom-recur-modal { background: white; border: 1px solid var(--line-strong); padding: 1.5rem; width: 100%; max-width: 400px; }
+  .custom-recur-title { font-size: 1rem; font-weight: 700; margin-bottom: 1.25rem; }
   .custom-recur-row { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 1rem; flex-wrap: wrap; }
   .custom-recur-label { font-size: 0.875rem; color: var(--ink); white-space: nowrap; }
-  .custom-recur-num { width: 60px; padding: 0.4rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); text-align: center; }
+  .custom-recur-num { width: 60px; padding: 0.4rem 0.5rem; border: 1px solid var(--line-strong); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); text-align: center; }
   .custom-recur-num:focus { outline: none; background: white; }
-  .custom-recur-select { padding: 0.4rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
+  .custom-recur-select { padding: 0.4rem 0.5rem; border: 1px solid var(--line-strong); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
   .custom-recur-select:focus { outline: none; background: white; }
   .weekday-row { display: flex; gap: 6px; flex-wrap: wrap; }
-  .weekday-btn { width: 34px; height: 34px; border: 1.5px solid var(--ink); background: transparent; font-size: 0.8rem; font-weight: 600; cursor: pointer; font-family: inherit; color: var(--ink); transition: background 0.1s, color 0.1s; }
+  .weekday-btn { width: 34px; height: 34px; border: 1px solid var(--line-strong); background: transparent; font-size: 0.8rem; font-weight: 600; cursor: pointer; font-family: inherit; color: var(--ink); transition: background 0.1s, color 0.1s; }
   .weekday-btn.active { background: var(--ink); color: white; }
   .ends-section { margin-bottom: 1rem; }
-  .ends-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.625rem; }
+  .ends-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); margin-bottom: 0.625rem; }
   .ends-radio-row { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 0.5rem; font-size: 0.875rem; }
   .ends-radio-row input[type=radio] { accent-color: var(--ink); }
-  .ends-date-input { padding: 0.35rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
+  .ends-date-input { padding: 0.35rem 0.5rem; border: 1px solid var(--line-strong); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
   .ends-date-input:focus { outline: none; background: white; }
   .custom-recur-actions { display: flex; gap: 0.75rem; justify-content: flex-end; border-top: 1px solid rgba(17,17,17,0.15); padding-top: 1.25rem; margin-top: 0.25rem; }
   #weekday-row-wrap { margin-bottom: 1rem; }
@@ -833,7 +832,7 @@
 
   /* ── Settings page ───────────────────────────────────────────────── */
   .settings-section { margin-bottom: 2rem; }
-  .settings-section-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.875rem; }
+  .settings-section-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); margin-bottom: 0.875rem; }
   /* Collapsed by default, because this list is consulted rarely and read
      anxiously — it is where someone goes to ask "what is being hidden from me".
      The count sits in the summary so that question is answered without opening
@@ -864,7 +863,7 @@
 .cal-section-count { font-weight: 400; color: var(--text2); }
 .cal-section-hint { font-style: normal; color: var(--text2); }
   .excl-count { font-size: 0.8rem; color: var(--text2); font-weight: 400; text-transform: none; letter-spacing: 0; }
-  .member-row { display: flex; align-items: center; gap: 0.75rem; background: white; border: 1.5px solid var(--ink); padding: 0.75rem 1rem; margin-bottom: 0.5rem; }
+  .member-row { display: flex; align-items: center; gap: 0.75rem; background: white; border: 1px solid var(--line-strong); padding: 0.75rem 1rem; margin-bottom: 0.5rem; }
   .member-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
   .member-name { flex: 1; font-size: 0.9rem; font-weight: 500; }
   .member-cal-badge { font-size: 0.75rem; color: var(--text2); background: var(--bg); border: 1px solid var(--ink); padding: 2px 7px; }
@@ -872,10 +871,10 @@
   .member-grade:focus { outline: none; background: white; }
   .member-circle { font-family: inherit; font-size: 0.78rem; padding: 3px 5px; border: 1px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
   .member-circle:focus { outline: none; background: white; }
-  .circle-heading { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text2); margin: 0.75rem 0 0.35rem; }
+  .circle-heading { font-size: 0.72rem; font-weight: 600; color: var(--text2); margin: 0.75rem 0 0.35rem; }
   .circle-heading:first-child { margin-top: 0; }
   /* The circle a suggested event is heading for, shown on the review card. */
-  .circle-tag { display: inline-block; font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); background: var(--bg); border: 1px solid var(--text2); border-radius: 3px; padding: 1px 5px; margin-left: 6px; }
+  .circle-tag { display: inline-block; font-size: 0.68rem; font-weight: 600; color: var(--text2); background: var(--bg); border: 1px solid var(--text2); border-radius: 3px; padding: 1px 5px; margin-left: 6px; }
 
   /* ── Review calendar view ───────────────────────────────────────────
      Reuses the existing palette only: pink --bg, ink borders, white cards,
@@ -1234,17 +1233,17 @@
 
 
   .rv-view-toggle { display: flex; gap: 0; margin: 0.75rem 0 0; }
-  .rv-view-toggle button { font-family: inherit; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.5rem 1.1rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
+  .rv-view-toggle button { font-family: inherit; font-size: 12.5px; padding: 0.5rem 1.1rem; border: 1px solid var(--line-strong); background: var(--bg); color: var(--ink); cursor: pointer; }
   .rv-view-toggle button.on { background: var(--ink); color: var(--bg); }
   .rv-view-toggle button + button { border-left: none; }
-  .rv-cal { border: 1.5px solid var(--ink); background: white; margin-top: 1rem; }
-  .rv-cal-head { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.9rem; border-bottom: 1.5px solid var(--ink); }
-  .rv-cal-month { font-family: 'Archivo Black', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; }
+  .rv-cal { border: 1px solid var(--line-strong); background: white; margin-top: 1rem; }
+  .rv-cal-head { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line); }
+  .rv-cal-month { font-family: var(--font-display); font-size: 15px; letter-spacing: 0.02em; }
   .rv-cal-nav { display: flex; gap: 6px; }
-  .rv-cal-nav button { font-family: inherit; font-size: 14px; width: 30px; height: 30px; border: 1.5px solid var(--ink); background: var(--bg); cursor: pointer; color: var(--ink); line-height: 1; }
+  .rv-cal-nav button { font-family: inherit; font-size: 14px; width: 30px; height: 30px; border: 1px solid var(--line-strong); background: var(--bg); cursor: pointer; color: var(--ink); line-height: 1; }
   .rv-cal-nav button:hover { background: var(--bg2); }
   .rv-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
-  .rv-cal-dow { font-size: 0.64rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); text-align: center; padding: 6px 0; border-bottom: 1px solid var(--ink); }
+  .rv-cal-dow { font-size: 0.64rem; font-weight: 600; color: var(--text2); text-align: center; padding: 6px 0; border-bottom: 1px solid var(--ink); }
   .rv-cal-cell { min-height: 88px; border-right: 1px solid var(--bg2); border-bottom: 1px solid var(--bg2); padding: 4px 4px 6px; overflow: hidden; }
   .rv-cal-cell:nth-child(7n) { border-right: none; }
   .rv-cal-cell.other-month { background: var(--bg); }
@@ -1257,27 +1256,27 @@
   .rv-cal-ev.already { background: var(--bg2); color: var(--text2); opacity: 0.9; }
   .rv-cal-ev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .rv-cal-more { font-size: 0.64rem; color: var(--text2); margin-top: 2px; cursor: pointer; }
-  .rv-cal-legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 0.6rem 0.9rem; border-top: 1.5px solid var(--ink); font-size: 0.7rem; color: var(--text2); align-items: center; }
+  .rv-cal-legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 0.6rem 0.9rem; border-top: 1px solid var(--line); font-size: 0.7rem; color: var(--text2); align-items: center; }
   .rv-cal-legend span { display: inline-flex; align-items: center; gap: 6px; }
   .rv-cal-legend i { width: 16px; border-top: 1.5px dashed var(--ink); display: inline-block; }
   .rv-cal-legend i.solid { border-top-style: solid; }
   .rv-cal-detail { margin-top: 1.25rem; }
-  .rv-cal-detail-head { font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 0.5rem; }
+  .rv-cal-detail-head { font-family: var(--font-display); font-size: 13px; letter-spacing: 0.02em; margin-bottom: 0.5rem; }
   .rv-cal-hint { font-size: 0.8rem; color: var(--text2); margin-top: 1rem; text-align: center; }
 
   /* Agenda view — the review workspace. */
   .rv-agenda { margin-top: 1rem; }
   .rv-agenda-day { margin-bottom: 1.75rem; }
-  .rv-agenda-daylabel { font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink); padding-bottom: 0.5rem; margin-bottom: 0.75rem; border-bottom: 1.5px solid var(--ink); }
+  .rv-agenda-daylabel { font-family: var(--font-display); font-size: 13px; color: var(--ink); padding-bottom: 0.5rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--line); }
   .rv-agenda-daylabel.is-today { color: var(--blue); border-bottom-color: var(--blue); }
 
   /* Themed confirm/alert modal — replaces the browser's native cribaAlert()/confirm(). */
   .criba-modal-overlay { position: fixed; inset: 0; background: rgba(17,17,17,0.5); display: flex; align-items: center; justify-content: center; z-index: 10000; padding: 20px; }
-  .criba-modal { background: #fff; border: 1.5px solid var(--ink); max-width: 420px; width: 100%; padding: 22px 22px 18px; }
-  .criba-modal-title { font-family: 'Archivo Black', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 10px; color: var(--ink); }
+  .criba-modal { background: #fff; border: 1px solid var(--line-strong); max-width: 420px; width: 100%; padding: 22px 22px 18px; }
+  .criba-modal-title { font-family: var(--font-display); font-size: 15px; letter-spacing: 0.02em; margin-bottom: 10px; color: var(--ink); }
   .criba-modal-msg { font-size: 0.9rem; line-height: 1.55; color: var(--ink); }
   .criba-modal-btns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-  .criba-modal-btns button { font-family: inherit; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500; padding: 8px 16px; border: 1.5px solid var(--ink); cursor: pointer; }
+  .criba-modal-btns button { font-family: inherit; font-size: 13px; font-weight: 500; padding: 8px 16px; border: 1px solid var(--line-strong); cursor: pointer; }
   .criba-modal-cancel { background: var(--bg); color: var(--ink); }
   .criba-modal-cancel:hover { background: var(--bg2); }
   .criba-modal-ok { background: var(--ink); color: var(--bg); }
@@ -1363,10 +1362,10 @@
   .act-in { text-align: left; padding-left: 5px; }
   .act-in-wide { width: 6.5rem; }
   /* Senders read as addresses, not activities — monospace keeps them distinct. */
-  .act-chip-sender { font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem; }
+  .act-chip-sender { font-family: var(--font-body); font-size: 0.68rem; }
   .member-delete { background: none; border: none; cursor: pointer; color: var(--text2); padding: 4px 6px; font-size: 0.875rem; }
   .member-delete:hover { color: var(--red); }
-  .add-member-form { background: white; border: 1.5px solid var(--ink); padding: 1rem; margin-top: 0.5rem; }
+  .add-member-form { background: white; border: 1px solid var(--line-strong); padding: 1rem; margin-top: 0.5rem; }
   .add-member-form input[type=text] { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--ink); font-size: 0.875rem; background: var(--bg); font-family: inherit; margin-bottom: 0.75rem; }
   .add-member-form input[type=text]:focus { outline: none; background: white; }
   .color-swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 0.875rem; }
@@ -1377,16 +1376,16 @@
 
   /* ── Member picker modal ─────────────────────────────────────────── */
   .picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 1rem; }
-  .picker-modal { background: white; border: 1.5px solid var(--ink); padding: 1.5rem; width: 100%; max-width: 380px; }
+  .picker-modal { background: white; border: 1px solid var(--line-strong); padding: 1.5rem; width: 100%; max-width: 380px; }
   .picker-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.375rem; }
   .picker-sub { font-size: 0.85rem; color: var(--text2); margin-bottom: 1.25rem; }
   .picker-members { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
-  .picker-member-btn { display: flex; align-items: center; gap: 0.75rem; padding: 0.7rem 1rem; border: 1.5px solid var(--ink); background: white; cursor: pointer; text-align: left; font-size: 0.9rem; font-weight: 500; transition: background 0.12s; font-family: inherit; width: 100%; }
+  .picker-member-btn { display: flex; align-items: center; gap: 0.75rem; padding: 0.7rem 1rem; border: 1px solid var(--line-strong); background: white; cursor: pointer; text-align: left; font-size: 0.9rem; font-weight: 500; transition: background 0.12s; font-family: inherit; width: 100%; }
   .picker-member-btn:hover { background: var(--bg); }
   .picker-member-dot { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; }
   .picker-add-btn { width: 100%; padding: 0.6rem 1rem; border: 1.5px dashed var(--ink); background: transparent; cursor: pointer; font-size: 0.875rem; color: var(--text2); font-family: inherit; margin-bottom: 1rem; transition: all 0.12s; }
   .picker-add-btn:hover { color: var(--ink); background: var(--bg); }
-  .picker-inline-form { border: 1.5px solid var(--ink); padding: 1rem; margin-bottom: 1rem; }
+  .picker-inline-form { border: 1px solid var(--line-strong); padding: 1rem; margin-bottom: 1rem; }
   .picker-inline-form input[type=text] { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--ink); font-size: 0.875rem; background: var(--bg); font-family: inherit; margin-bottom: 0.75rem; }
   .picker-inline-form input[type=text]:focus { outline: none; background: white; }
   .picker-cancel { width: 100%; padding: 0.5rem; border: none; background: none; color: var(--text2); font-size: 0.875rem; cursor: pointer; font-family: inherit; }
@@ -1451,21 +1450,21 @@
   /* Empty state reads as an intentional card, not a void: same bordered box as
      the event cards, on the muted surface so it's clearly "nothing here" rather
      than "something failed to load". */
-  .empty-state { border: 1.5px solid var(--ink); background: var(--surface-2); padding: 56px 24px; text-align: center; }
+  .empty-state { border: 1px solid var(--line-strong); background: var(--surface-2); padding: 56px 24px; text-align: center; }
   .empty-icon { font-size: 2.25rem; margin-bottom: 0.75rem; opacity: 0.5; }
-  .empty-state h3 { font-family: 'Archivo Black', sans-serif; font-size: 15px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink); margin-bottom: 0.5rem; }
+  .empty-state h3 { font-family: var(--font-display); font-size: 15px; font-weight: 400; color: var(--ink); margin-bottom: 0.5rem; }
   .empty-state p { font-size: 14px; line-height: 1.6; color: var(--text2); max-width: 44ch; margin: 0 auto; }
-  .backfill-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--surface); border: 1.5px solid var(--ink); margin-bottom: 1rem; }
+  .backfill-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--surface); border: 1px solid var(--line-strong); margin-bottom: 1rem; }
   .backfill-bar .material-icons { color: var(--gcal-icon); font-size: 18px !important; }
   .backfill-bar-text { flex: 1; font-size: 0.85rem; color: var(--text2); }
-  .btn-backfill { padding: 0.4rem 0.9rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity 0.15s; }
+  .btn-backfill { padding: 0.4rem 0.9rem; background: var(--ink); color: var(--bg); border: 1px solid var(--line-strong); font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity 0.15s; }
   .btn-backfill:hover { opacity: 0.82; }
   .btn-backfill:disabled { opacity: 0.5; cursor: default; }
-  .btn-backfill-secondary { padding: 0.4rem 0.9rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.82rem; cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s; }
+  .btn-backfill-secondary { padding: 0.4rem 0.9rem; background: transparent; color: var(--ink); border: 1px solid var(--line-strong); font-size: 0.82rem; cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s; }
   .btn-backfill-secondary:hover { background: var(--ink); color: var(--bg); }
   .btn-backfill-secondary:disabled { opacity: 0.5; cursor: default; }
   #backfill-result { font-size: 0.8rem; color: var(--text2); margin-top: 0.5rem; text-align: center; }
-  .dry-run-table-wrap { margin-top: 0.75rem; overflow-x: auto; border: 1.5px solid var(--ink); }
+  .dry-run-table-wrap { margin-top: 0.75rem; overflow-x: auto; border: 1px solid var(--line-strong); }
   .dry-run-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
   .dry-run-table th { background: var(--bg2); color: var(--text2); font-weight: 600; padding: 0.45rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border); }
   .dry-run-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -1479,7 +1478,7 @@
   .dry-run-summary strong { color: var(--text1); }
 
   /* ── Review queue (Gmail / iMessage / WhatsApp — future stages) ───── */
-  .event-card { background: var(--surface); border: 1.5px solid var(--ink); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
+  .event-card { background: var(--surface); border: 1px solid var(--line-strong); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
   .event-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1rem; }
   .event-title-input { font-size: 1rem; font-weight: 500; border: none; background: transparent; width: 100%; padding: 0; color: var(--text); font-family: inherit; }
   .event-title-input:focus { outline: none; border-bottom: 1px solid var(--border); }
@@ -1588,7 +1587,7 @@
 
   /* Live status pill — tells the user Criba is watching Gmail in the
      background, so they know they do not need to press Scan. */
-  .live-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1.5px solid var(--ink); font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+  .live-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1px solid var(--line-strong); font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
   /* display:inline-flex on the element beats the browser's [hidden] rule, so
      the pill stayed visible in the header despite the attribute. It is kept in
      the DOM only because updateLiveStatus() writes to it and renderSources()
@@ -1607,9 +1606,9 @@
   #new-events-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(140%); background: var(--ink); color: #fff; padding: 12px 20px; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 14px; z-index: 900; transition: transform 0.28s ease; }
   #new-events-toast.show { transform: translateX(-50%) translateY(0); }
   #new-events-toast button { background: none; border: 1px solid rgba(255,255,255,0.5); color: #fff; padding: 4px 10px; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
-  .test-mode-panel { border: 1.5px solid var(--ink); padding: 20px 24px; margin-bottom: 28px; }
+  .test-mode-panel { border: 1px solid var(--line-strong); padding: 20px 24px; margin-bottom: 28px; }
   .test-mode-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; }
-  .test-mode-panel-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+  .test-mode-panel-title { font-size: 12px; font-weight: 700; }
   .test-mode-toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
   .test-mode-toggle input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); cursor: pointer; }
   .test-mode-toggle-label { font-size: 13px; font-weight: 500; }
@@ -1617,7 +1616,7 @@
   .test-mode-body.open { display: block; }
   .test-mode-desc { font-size: 13px; color: var(--text2); font-style: italic; margin-bottom: 14px; line-height: 1.55; }
   .test-mode-field { display: flex; gap: 10px; align-items: center; }
-  .test-mode-field input { flex: 1; padding: 8px 12px; border: 1.5px solid var(--ink); font-size: 13px; background: var(--bg); font-family: inherit; color: var(--ink); }
+  .test-mode-field input { flex: 1; padding: 8px 12px; border: 1px solid var(--line-strong); font-size: 13px; background: var(--bg); font-family: inherit; color: var(--ink); }
   .test-mode-field input:focus { outline: none; background: white; }
   .test-mode-field input::placeholder { color: #aaa; font-style: italic; }
 
@@ -1632,7 +1631,7 @@
   #undo-toast.visible { display: flex; }
   .undo-toast-msg { flex: 1; }
   .undo-toast-bar { position: absolute; bottom: 0; left: 0; height: 3px; background: var(--pill); transition: width linear; }
-  .undo-toast-btn { background: none; border: 1.5px solid var(--bg); color: var(--bg); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif; flex-shrink: 0; }
+  .undo-toast-btn { background: none; border: 1.5px solid var(--bg); color: var(--bg); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: var(--font-body); flex-shrink: 0; }
   .undo-toast-btn:hover { background: var(--bg); color: var(--ink); }
 
   /* ── Inline delete countdown ─────────────────────────────────────────────
@@ -1643,14 +1642,13 @@
   .card-dismissing > *:not(.card-dismiss-overlay) { opacity: 0.25; pointer-events: none; filter: grayscale(0.25); }
   .card-dismiss-overlay {
     position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; gap: 14px;
-    padding: 0 18px; background: var(--surface); border: 1.5px solid var(--ink);
+    padding: 0 18px; background: var(--surface); border: 1px solid var(--line-strong);
   }
   .cd-msg { flex: 1; font-size: 13.5px; color: var(--ink); min-width: 0; }
   .cd-msg strong { font-weight: 600; }
   .cd-undo {
-    background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink);
-    padding: 7px 15px; font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.04em; cursor: pointer; font-family: 'Inter', sans-serif; flex-shrink: 0;
+    background: var(--ink); color: var(--bg); border: 1px solid var(--line-strong);
+    padding: 7px 15px; font-size: 11px; font-weight: 600; cursor: pointer; font-family: var(--font-body); flex-shrink: 0;
   }
   .cd-undo:hover { background: transparent; color: var(--ink); }
   .card-dismiss-bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: var(--ink); }
@@ -1676,7 +1674,7 @@
     display: none; position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
     background: var(--bg); color: var(--ink); padding: 12px 16px;
     z-index: 9998; flex-direction: column; gap: 8px; max-width: min(560px, 92vw);
-    font-size: 13px; border: 1.5px solid var(--ink); box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+    font-size: 13px; border: 1px solid var(--line-strong); box-shadow: 0 4px 20px rgba(0,0,0,0.18);
   }
   #dismiss-reason.visible { display: flex; }
   .dr-head { display: flex; align-items: baseline; gap: 10px; }
@@ -1703,16 +1701,16 @@
   .ahead-refresh { margin-left: auto; }
   .ahead-meta { color: var(--text2); font-size: 12px; margin-bottom: 14px; }
   .ahead-week { margin-bottom: 6px; }
-  .ahead-week-head { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--text2); border-bottom: 1px solid var(--line); padding-bottom: 5px; margin: 18px 0 4px; }
+  .ahead-week-head { font-size: 11.5px; color: var(--text2); border-bottom: 1px solid var(--line); padding-bottom: 5px; margin: 18px 0 4px; }
   .ahead-group { margin-bottom: 30px; }
-  .ahead-group-head { display: flex; align-items: center; gap: 9px; font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--ink); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); }
-  .ahead-group-count { margin-left: auto; color: var(--text2); font-family: 'Inter', sans-serif; font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; }
+  .ahead-group-head { display: flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: 13px; letter-spacing: 0.02em; color: var(--ink); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .ahead-group-count { margin-left: auto; color: var(--text2); font-family: var(--font-body); font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; }
   .ahead-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 2px; border-bottom: 1px solid rgba(0,0,0,0.09); }
   .ahead-row:last-child { border-bottom: none; }
   .ahead-row.is-clash { background: #fffbeb; margin: 0 -8px; padding-left: 10px; padding-right: 10px; }
   .ahead-row-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
   .ahead-when { flex-shrink: 0; width: 118px; color: var(--ink); font-weight: 500; font-size: 12.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
-  .ahead-when .awd { display: block; color: var(--text2); font-weight: 400; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .ahead-when .awd { display: block; color: var(--text2); font-weight: 400; font-size: 11.5px; }
   .ahead-content { flex: 1; min-width: 0; }
   .ahead-title { font-size: 0.9rem; line-height: 1.35; color: var(--ink); }
   .ahead-where { display: block; color: var(--text2); font-size: 12px; margin-top: 3px; }
@@ -1723,7 +1721,7 @@
   .ahead-more { background: none; border: none; padding: 0; margin-top: 3px; font: inherit; font-size: 11.5px; color: var(--ink); text-decoration: underline; cursor: pointer; }
   .ahead-source { display: block; color: var(--text2); font-size: 11.5px; margin-top: 4px; }
   .ahead-source a { color: inherit; }
-  .ahead-summary { border: 1.5px solid var(--ink); padding: 12px 14px; margin: 10px 0 14px; background: var(--surface-2); }
+  .ahead-summary { border: 1px solid var(--line-strong); padding: 12px 14px; margin: 10px 0 14px; background: var(--surface-2); }
   .asum-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .asum-title { font-size: 12.5px; font-weight: 600; letter-spacing: .02em; }
   .asum-btn { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; font: inherit; font-size: 11.5px; cursor: pointer; }
@@ -1731,7 +1729,7 @@
   .asum-body { font-size: 13px; line-height: 1.6; white-space: pre-wrap; margin-top: 8px; }
   .asum-body:empty { display: none; }
   .asum-note { display: block; color: var(--text2); font-size: 11.5px; margin-top: 8px; }
-  .ahead-clash { display: inline-block; margin-top: 5px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .ahead-clash { display: inline-block; margin-top: 5px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; }
   .ahead-empty { color: var(--text2); font-size: 0.875rem; padding: 1.5rem 0; }
   .ahead-conflict-band { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; margin-bottom: 18px; font-size: 0.875rem; }
   .ahead-conflict-band .acb-title { color: #92400e; font-weight: 600; margin-bottom: 6px; }
@@ -1921,7 +1919,7 @@
           <button class="ob-btn-add" onclick="obAddSchool()">Add</button>
         </div>
         <div class="ob-people" id="ob-schools"></div>
-        <div class="ob-err" id="ob-school-err" style="display:none;color:#b3261e;font-size:0.82rem;margin-top:0.5rem"></div>
+        <div class="ob-err" id="ob-school-err" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem"></div>
         <p class="ob-sub" style="font-size:0.8rem;opacity:0.75;margin-top:0.75rem">Don't know it? Skip — Criba learns senders as their mail arrives, and you can mark any sender "always read" from the review queue.</p>
         <div class="ob-actions">
           <button class="ob-btn-ghost" onclick="obFinish()">Skip for now</button>
@@ -2118,7 +2116,7 @@
         <input type="text" id="recipient-email-input" placeholder="them@example.com" />
         <button class="btn-filled btn-sm" onclick="addRecipient()">Add</button>
       </div>
-      <div id="recipient-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
+      <div id="recipient-status" style="font-size:12px;margin-top:10px;color:var(--text-2)"></div>
     </div>
   </div>
 
@@ -2137,7 +2135,7 @@
         </select>
       </div>
       <div id="weekday-row-wrap">
-        <div class="custom-recur-label" style="margin-bottom:0.5rem;font-size:0.8rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.05em">Repeat on</div>
+        <div class="custom-recur-label" style="margin-bottom:0.5rem;font-size:0.8rem;font-weight:600;color:var(--text-2)">Repeat on</div>
         <div class="weekday-row">
           <button class="weekday-btn" data-day="SU" onclick="toggleWeekday(this)">S</button>
           <button class="weekday-btn" data-day="MO" onclick="toggleWeekday(this)">M</button>
@@ -2529,7 +2527,7 @@ function displayName(name) {
 function renderSettingsPage() {
   const el = document.getElementById('settings-members-list');
   if (!familyMembers.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">No people yet — add someone below.</div>';
+    el.innerHTML = '<div style="color:var(--text-2);font-size:0.875rem;padding:0.5rem 0">No people yet — add someone below.</div>';
     return;
   }
   // The colour was settable only while adding someone, so the sole way to
@@ -2638,7 +2636,7 @@ function renderExclusions() {
       : `${active} active${off ? `, ${off} no longer ${off === 1 ? 'applies' : 'apply'}` : ''}`;
   }
   if (!exclusionRules.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">Nothing is being held back. Rules appear here when you dismiss an event and tell Criba why.</div>';
+    el.innerHTML = '<div style="color:var(--text-2);font-size:0.875rem;padding:0.5rem 0">Nothing is being held back. Rules appear here when you dismiss an event and tell Criba why.</div>';
     return;
   }
   el.innerHTML = exclusionRules.map(r => `
@@ -2947,7 +2945,7 @@ function cancelMemberPicker() {
 function renderMemberPickerList() {
   const el = document.getElementById('picker-members-list');
   if (!familyMembers.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.8rem;padding:0.25rem 0 0.75rem">No people yet — add someone below.</div>';
+    el.innerHTML = '<div style="color:var(--text-2);font-size:0.8rem;padding:0.25rem 0 0.75rem">No people yet — add someone below.</div>';
     return;
   }
   el.innerHTML = familyMembers.map(m => `
@@ -3146,7 +3144,7 @@ function maybeShowHouseholdInvite() {
     <div class="criba-modal">
       <div class="criba-modal-title">Join a household?</div>
       <div class="criba-modal-msg">Someone invited you to share a household on Criba. Members can see each other's schedules so Criba can flag clashes and coverage gaps.</div>
-      <p id="household-invite-error" class="error-msg" style="margin:8px 0 0;display:none;"></p>
+      <p id="household-invite-error" class="error-msg" style="margin:8px 0 0;display:none"></p>
       <div class="criba-modal-btns">
         <button type="button" id="household-invite-decline" class="criba-modal-cancel">Not now</button>
         <button type="button" id="household-invite-join" class="criba-modal-ok">Join</button>
@@ -3215,7 +3213,7 @@ function renderRecipients() {
         <span><strong>${escHtml(r.name)}</strong> · ${escHtml(r.email)}</span>
         <button class="btn-outlined btn-sm btn-danger" onclick="removeRecipient('${escHtml(r.email)}')">Remove</button>
       </div>`).join('')
-    : `<div style="font-size:12px;color:var(--text2);font-style:italic">Nobody saved yet.</div>`;
+    : `<div style="font-size:12px;color:var(--text-2)">Nobody saved yet.</div>`;
 }
 
 async function addRecipient() {
@@ -5079,7 +5077,7 @@ function wireBackfillBar() {}
 async function startFresh() {
   const out = document.getElementById('backfill-result');
   const say = html => { if (out) out.innerHTML = html; };
-  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Checking your calendar…</div>');
+  say('<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">Checking your calendar…</div>');
   let plan;
   try {
     const res = await fetch('/api/calendar/reset', {
@@ -5106,7 +5104,7 @@ async function startFresh() {
       say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">
         Couldn't finish checking — ${errs.length} of your calendar${errs.length === 1 ? '' : 's'} couldn't be read,
         so Criba can't tell you whether there's anything to remove. Nothing was changed. Try again in a few minutes.
-        <div style="margin-top:4px;font-size:11px;color:var(--text2)">${errs.map(e => escHtml(e.calendar + (DEBUG_TOOLS ? ' — ' + e.error : ''))).join('; ')}</div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-2)">${errs.map(e => escHtml(e.calendar + (DEBUG_TOOLS ? ' — ' + e.error : ''))).join('; ')}</div>
       </div>`);
       return;
     }
@@ -5114,7 +5112,7 @@ async function startFresh() {
     // The window bounds, event counts and description fragments are how a
     // failed match gets diagnosed — kept, but behind the debug flag. A parent
     // reading "read 412 events, sample: desc: …" thinks something broke.
-    say(`<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">
+    say(`<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">
       Nothing to remove — Criba hasn't added anything to your calendar yet.
       ${DEBUG_TOOLS ? `<div style="margin-top:4px;font-size:11px">
         Looked at ${scanned.length} calendar${scanned.length === 1 ? '' : 's'}
@@ -5139,7 +5137,7 @@ async function startFresh() {
   );
   if (!ok) { say(''); return; }
 
-  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Removing…</div>');
+  say('<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">Removing…</div>');
   try {
     const res = await fetch('/api/calendar/reset', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -5164,7 +5162,7 @@ async function startFresh() {
 async function cleanupDuplicates() {
   const out = document.getElementById('backfill-result');
   const say = html => { if (out) out.innerHTML = html; };
-  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Scanning your calendar for duplicates…</div>');
+  say('<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">Scanning your calendar for duplicates…</div>');
   let plan;
   try {
     const res = await fetch('/api/calendar/cleanup-duplicates', {
@@ -5183,7 +5181,7 @@ async function cleanupDuplicates() {
     : '';
 
   if (!plan.wouldDelete) {
-    say(`<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">No duplicate copies found — your calendar is clean.${skippedNote}</div>`);
+    say(`<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">No duplicate copies found — your calendar is clean.${skippedNote}</div>`);
     return;
   }
 
@@ -5198,7 +5196,7 @@ async function cleanupDuplicates() {
   );
   if (!ok) { say(''); return; }
 
-  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Removing duplicates…</div>');
+  say('<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">Removing duplicates…</div>');
   try {
     const res = await fetch('/api/calendar/cleanup-duplicates', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -5238,7 +5236,7 @@ function renderPostWriteReviewCard(ev) {
   // on — the card is a notice, and OK just clears it.
   const isDup = ev.status === 'duplicate';
   const sourceTag = ev.source === 'gmail' ? `<span class="pill" style="font-size:9.5px">Gmail</span>` : ev.source ? `<span class="pill" style="font-size:9.5px">${escHtml(ev.source)}</span>` : '';
-  const dupTag = isDup ? `<span class="pill" style="font-size:9.5px;border-color:#c5221f;color:#c5221f">Already on calendar</span>` : '';
+  const dupTag = isDup ? `<span class="pill" style="font-size:9.5px;border-color:var(--danger);color:var(--danger)">Already on calendar</span>` : '';
   // The queue mixes events Criba actually wrote with ones it only drafted, and
   // used to give both the identical card — same Delete button, same "remove
   // from your Google Calendar" tooltip. That made the list impossible to
@@ -5253,7 +5251,7 @@ function renderPostWriteReviewCard(ev) {
     ? `<span class="pill state-pill state-draft">Not added yet</span>`
     : `<span class="pill state-pill state-added">On your calendar</span>`;
   const dot = eventDotHtml(ev);
-  const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem;font-style:italic">${linkify(ev.notes)}</div>` : '';
+  const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem">${linkify(ev.notes)}</div>` : '';
   return `
   <div class="review-card" id="rcard-${id}" style="transition:opacity 0.3s">
     <div class="review-card-row" id="rrow-${id}">
@@ -5331,7 +5329,7 @@ function reminderHeadline(ev) {
   const titleLower = title.toLowerCase();
   if (dateStr && !titleLower.includes(dateStr.toLowerCase())) {
     // Append "on Aug 7th" only if the date isn't already in the title
-    return `${escHtml(title)} <span style="font-weight:400;color:var(--text2)">on ${escHtml(dateStr)}</span>`;
+    return `${escHtml(title)} <span style="font-weight:400;color:var(--text-2)">on ${escHtml(dateStr)}</span>`;
   }
   return escHtml(title);
 }
@@ -5766,15 +5764,15 @@ function renderDryRunTable(result, accumulated, queryStr) {
 
     const subjectText = m.subject
       ? escHtml(m.subject.slice(0, 60)) + (m.subject.length > 60 ? '…' : '')
-      : `<em style="color:#999">(no subject · ${m.messageId})</em>`;
+      : `<em style="color:var(--muted)">(no subject · ${m.messageId})</em>`;
     const snippetLine = m.snippetPreview
-      ? `<br><span style="font-size:0.68rem;color:#94a3b8">${escHtml(m.snippetPreview)}…</span>`
+      ? `<br><span style="font-size:0.68rem;color:var(--muted)">${escHtml(m.snippetPreview)}…</span>`
       : '';
 
     const tokens = m.estTokens ? `~${m.estTokens.toLocaleString()}` : '—';
     const images = m.imageCount != null ? m.imageCount : '—';
     const skipLabel = DRY_RUN_SKIP_LABELS[m.reason] || m.reason || '';
-    const skipDetail = m.detail ? ` <span style="font-size:0.68rem;color:#94a3b8">(${escHtml(m.detail)})</span>` : '';
+    const skipDetail = m.detail ? ` <span style="font-size:0.68rem;color:var(--muted)">(${escHtml(m.detail)})</span>` : '';
     const skipReason = !isWould ? `${skipLabel}${skipDetail}` : '';
 
     return `<tr class="${isWould ? 'would-send' : 'skipped'}">
@@ -5799,14 +5797,14 @@ function renderDryRunTable(result, accumulated, queryStr) {
       <span>Skipped: ${skippedDedup} already&nbsp;processed · ${skippedPreFilter} no&nbsp;date&nbsp;signal</span>
       ${totalEst ? `<span>${totalEst}</span>` : ''}
     </div>
-    ${queryStr ? `<div style="font-size:0.72rem;color:#94a3b8;margin-top:0.3rem;font-family:monospace">${escHtml(queryStr)}</div>` : ''}
+    ${queryStr ? `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.3rem;font-family:monospace">${escHtml(queryStr)}</div>` : ''}
     <div class="dry-run-table-wrap">
       <table class="dry-run-table">
         <thead><tr>
           <th>Verdict</th><th>Subject / snippet</th><th>Pattern matched</th>
           <th style="text-align:center">Images</th><th style="text-align:right">Est. tokens</th><th>Skip reason</th>
         </tr></thead>
-        <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1rem">No Primary-tab emails in this window</td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:1rem">No Primary-tab emails in this window</td></tr>'}</tbody>
       </table>
     </div>`;
 }
@@ -5900,11 +5898,11 @@ async function showScanTrace() {
                     e.stage === 'SKIP-BODY'  ? ` bodyLen=${e.bodyLen}` :
                     e.stage === 'ERROR'      ? ` ${escHtml(e.error||'')}` : '';
       return `<tr>
-        <td style="color:var(--text3);font-size:0.7rem;white-space:nowrap">${time}</td>
+        <td style="color:var(--muted);font-size:0.7rem;white-space:nowrap">${time}</td>
         <td><span style="font-size:0.7rem;font-weight:700;color:${color}">${e.stage}</span></td>
         <td style="font-size:0.75rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${subject}</td>
-        <td style="font-size:0.72rem;color:var(--text3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${from}</td>
-        <td style="font-size:0.72rem;color:var(--text2)">${extra}</td>
+        <td style="font-size:0.72rem;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${from}</td>
+        <td style="font-size:0.72rem;color:var(--text-2)">${extra}</td>
       </tr>`;
     }).join('');
 
@@ -5913,13 +5911,13 @@ async function showScanTrace() {
     const summary = Object.entries(counts).map(([s,n]) => `${s}: ${n}`).join(' · ');
 
     result.innerHTML = `
-      <div style="font-size:0.75rem;color:var(--text2);margin-bottom:0.5rem">${entries.length} entries · ${summary}
+      <div style="font-size:0.75rem;color:var(--text-2);margin-bottom:0.5rem">${entries.length} entries · ${summary}
         <button onclick="fetch('/api/scan/trace',{method:'DELETE'}).then(()=>document.getElementById('backfill-result').textContent='Trace cleared')"
-          style="margin-left:1rem;font-size:0.7rem;background:none;border:1px solid var(--ink);padding:2px 8px;cursor:pointer">Clear trace</button>
+          style="margin-left:1rem;font-size:0.7rem;background:none;border:1px solid var(--primary);padding:2px 8px;cursor:pointer">Clear trace</button>
       </div>
       <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
         <table style="width:100%;border-collapse:collapse;font-family:inherit">
-          <thead><tr style="font-size:0.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em">
+          <thead><tr style="font-size:0.7rem;color:var(--muted)">
             <th style="text-align:left;padding:3px 8px 3px 0">Time</th>
             <th style="text-align:left;padding:3px 8px">Stage</th>
             <th style="text-align:left;padding:3px 8px">Subject</th>
@@ -5975,8 +5973,8 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
       // neither can dedup against the other. That is how the same practice
       // landed on the calendar twice in two different children's colours.
       result.innerHTML = fetchErr.name === 'AbortError'
-        ? '<span style="color:#6b7280">Still processing in the background — check back in a minute.</span>'
-        : '<span style="color:#ef4444">Network error — check your connection, then reload.</span>';
+        ? '<span style="color:var(--muted)">Still processing in the background — check back in a minute.</span>'
+        : '<span style="color:var(--danger)">Network error — check your connection, then reload.</span>';
       return;
     }
 
@@ -5984,7 +5982,7 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
       // 409 (already running) and 429 (cooldown) are not failures and must not
       // read like one — a "try again" here is what produced the duplicates.
       const calm = res.status === 409 || res.status === 429;
-      result.innerHTML = `<span style="color:${calm ? '#6b7280' : '#ef4444'}">${escHtml(data?.error || 'Scan failed — reload and try once more.')}</span>`;
+      result.innerHTML = `<span style="color:${calm ? 'var(--muted)' : 'var(--danger)'}">${escHtml(data?.error || 'Scan failed — reload and try once more.')}</span>`;
       return;
     }
 
@@ -6259,7 +6257,7 @@ function renderRescheduleCard(ev) {
           ? `<div class="cancel-panel-title">Update "${escHtml(ev.matched_event_title || ev.title)}" in your calendar?${pill}</div>
              <div class="reschedule-arrow">
                <span class="reschedule-old">${[oldDateStr, oldTimeStr].filter(Boolean).join(' · ') || 'previous date'}</span>
-               <span class="material-icons" style="font-size:1rem;color:var(--text2)">arrow_forward</span>
+               <span class="material-icons" style="font-size:1rem;color:var(--text-2)">arrow_forward</span>
                <span class="reschedule-new">${[newDateStr, newTimeStr].filter(Boolean).join(' · ')}</span>
              </div>`
           : `<div class="cancel-panel-title">Reschedule notice — no matching event found</div>
@@ -7144,7 +7142,7 @@ async function saveEdit(id) {
   const status = document.getElementById(`rv-status-${id}`);
   const btn = document.getElementById(`rv-addbtn-${id}`);
   if (btn) btn.disabled = true;
-  if (status) status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Saving…</span>';
+  if (status) status.innerHTML = '<span style="font-size:0.8rem;color:var(--text-2)">Saving…</span>';
   const allDay = document.getElementById(`rv-allday-${id}`)?.checked;
   const payload = {
     id,
@@ -7685,7 +7683,7 @@ async function loadCategoryGroups(calendarId, calName, totalEvents, memberId, re
   document.getElementById('cat-page-title').textContent = groupsState.calName;
   const member = memberId && familyMembers.find(m => m.id === memberId);
   const memberBadge = member
-    ? ` <span style="display:inline-flex;align-items:center;gap:5px;font-size:0.8rem;background:white;border:1px solid var(--border);border-radius:20px;padding:2px 9px;vertical-align:middle"><span style="width:9px;height:9px;border-radius:50%;background:${memberColor(member.color)};display:inline-block"></span>${member.name}</span>`
+    ? ` <span style="display:inline-flex;align-items:center;gap:5px;font-size:0.8rem;background:white;border:1px solid var(--line);border-radius:20px;padding:2px 9px;vertical-align:middle"><span style="width:9px;height:9px;border-radius:50%;background:${memberColor(member.color)};display:inline-block"></span>${member.name}</span>`
     : '';
   const removalCount = base.removals.reduce((n, r) => n + (r.dates ? r.dates.length : 0), 0);
   const parts = [];
@@ -8165,7 +8163,7 @@ async function catAddAll(ci) {
   const disBtn    = document.getElementById(`cat-dis-btn-${ci}`);
   if (addBtn) addBtn.disabled = true;
   if (disBtn) disBtn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text2)">Adding…</span>';
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-2)">Adding…</span>';
   try {
     const res = await fetch('/api/calendars/group-approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -8307,7 +8305,7 @@ async function cedApprove(evId, key, ci, ei) {
   const addBtn  = document.getElementById(`ced-add-${key}`);
   const statusEl = document.getElementById(`ced-status-${key}`);
   if (addBtn) addBtn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text2)">Adding…</span>';
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-2)">Adding…</span>';
 
   // Only send fields whose inputs are actually rendered. The end-date box only
   // exists for breaks, so sending endDate:'' unconditionally now reads as

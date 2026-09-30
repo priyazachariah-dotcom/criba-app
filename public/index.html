@@ -8,7 +8,10 @@
      Criba mark: an ink tile with a pink "C", matching the brutalist theme. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%23111111'/%3E%3Ctext%20x='16'%20y='24'%20font-family='Arial%20Black,Arial,sans-serif'%20font-size='23'%20font-weight='900'%20text-anchor='middle'%20fill='%23F0DAD8'%3EC%3C/text%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20fill='%23111111'/%3E%3Ctext%20x='16'%20y='24'%20font-family='Arial%20Black,Arial,sans-serif'%20font-size='23'%20font-weight='900'%20text-anchor='middle'%20fill='%23F0DAD8'%3EC%3C/text%3E%3C/svg%3E">
-<meta name="theme-color" content="#F0DAD8">
+<meta name="theme-color" content="#F4EEE4">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..600&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 <!-- Font set kept in sync with the criba.app marketing site: Archivo Black
      (display), Marcellus (editorial serif), Inter (body). -->
@@ -16,29 +19,63 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #F0DAD8;          /* matte dusty pink — page background */
-    --bg2: #E6CECA;          /* slightly deeper for hover/wells */
-    --ink: #111111;          /* primary text + borders */
-    --text: #111111;
-    --text2: #555555;
-    --text3: #666666;
-    --border: #111111;
-    --accent: #111111;
-    --pill: #D9A9A6;
-    --surface: #FFFFFF;      /* card face on the pink ground */
-    --surface-2: #FCFAF7;    /* muted/secondary card face */
-    --hair: rgba(17,17,17,0.13); /* light internal divider */
-    --line: #111111;         /* structural border (alias of ink; some CSS copied
-                                from the mock referenced --line before it existed,
-                                which made those borders silently not render) */
-    --red: #c1392b;
-    --blue: #1a73e8;
-    --blue-dark: #1557b0;
-    --gcal-icon: #5f6368;
-    --green: #2d6a4f;
-    --radius: 0px;
+    /* Surfaces */
+    --bg: #F4EEE4;            /* warm oat, the page background everywhere */
+    --surface: #FAF6EF;       /* cards */
+    --tint: #DCE6E4;          /* pale teal: status pills */
+    --apricot-tint: #F6DCC6;  /* pale apricot: anything Criba generated or added */
+
+    /* Primary ink: deep teal */
+    --primary: #2F5257;
+    --text: #1C2E31;
+    --text-2: #3E5357;
+    --muted: #5A6A6B;
+    --done: #929B9A;
+    --placeholder: #85908F;
+
+    /* Apricot: Criba's signature */
+    --apricot: #E8B38A;
+    --apricot-hover: #DFA072;
+    --apricot-edge: #D39A6E;
+    --on-apricot: #1C2E31;
+
+    /* Lines */
+    --line: #DCD4C6;
+    --line-strong: #BDB5A6;
+    --danger: #A1453A;
+
+    /* Shape */
+    --radius: 12px;
+    --radius-card: 16px;
+    --radius-pill: 999px;
+
+    /* Type */
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-body: 'Figtree', system-ui, sans-serif;
+
+    /* ── Compatibility aliases ────────────────────────────────────────────
+       101KB of CSS in this file references the old names. Repointing them at
+       the new palette here means the whole app moves in one step, and the
+       per-screen work that follows can delete each alias as it rewrites the
+       rules that use it. Doing it the other way round -- renaming 88 colours
+       across 7,700 lines first -- would be one unreviewable change with
+       nothing working in between. */
+    --bg2: #EDE5D8;           /* hover/wells: oat, one step deeper */
+    --ink: #2F5257;           /* was pure black; now the teal it should have been */
+    --text2: #3E5357;
+    --text3: #5A6A6B;
+    --border: #DCD4C6;
+    --accent: #2F5257;
+    --pill: #DCE6E4;
+    --surface-2: #FAF6EF;
+    --hair: rgba(47,82,87,0.13);
+    --red: #A1453A;
+    --blue: #2F5257;          /* the Google-blue editor accent, brought into palette */
+    --blue-dark: #24403F;
+    --gcal-icon: #5A6A6B;
+    --green: #2F5257;
   }
-  body { background: var(--bg); color: var(--ink); font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-body); min-height: 100vh; }
 
   /* Google appends .pac-container to <body>, outside every container in this
      file, so it inherited none of the app's layout and rendered as a collapsed
@@ -1135,10 +1172,9 @@
   /* ── Test mode ──────────────────────────────────────────────────────────── */
   #test-mode-banner {
     display: none; position: sticky; top: 88px; z-index: 99;
-    background: #111; color: #F0DAD8;
-    padding: 10px 48px; font-size: 12.5px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    border-bottom: 1px solid #F0DAD8;
+    background: var(--primary); color: var(--bg);
+    padding: 10px 48px; font-size: 13px; font-weight: 600;
+    border-bottom: 1px solid var(--line);
     display: none; align-items: center; gap: 12px;
   }
   #test-mode-banner.active { display: flex; }

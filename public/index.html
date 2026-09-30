@@ -1160,6 +1160,15 @@
     .ev-row { grid-template-columns: 56px 1fr 44px; column-gap: 12px; }
   }
 
+  .today-proposed {
+    font-family: var(--font-body); font-size: 15px; line-height: 1.6; color: var(--text);
+    margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(47,82,87,0.14);
+  }
+  .today-proposed-link {
+    font-family: var(--font-body); font-size: 15px; font-weight: 500; color: var(--primary);
+    background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline;
+  }
+
   /* A row that is not on the calendar. Quiet, but a word rather than a dot --
      the coloured dot already means "whose event is this", and two dot meanings
      on one row would collide. */
@@ -4604,6 +4613,7 @@ function renderToday() {
   if (!todayData) { host.innerHTML = `<div class="empty-state">Loading today\u2026</div>`; return; }
 
   const d = todayData;
+  const unreviewed = todayUnreviewed(d.date, d.date);
   const head = `<div class="today-head">
       <h1 class="today-title">Today</h1>
       <div class="today-date">${escHtml(todayDateLine(d.date))}</div>
@@ -4611,6 +4621,7 @@ function renderToday() {
     <div class="today-summary" id="today-summary">
       <div class="today-summary-text" id="today-summary-text">${
         todaySummary ? escHtml(todaySummary.text) : 'Reading your day\u2026'}</div>
+      ${todayProposedLine(unreviewed.length)}
       <div class="today-summary-foot">
         <button class="today-rewrite" onclick="loadTodaySummary(true)">Rewrite</button>
       </div>
@@ -4638,7 +4649,6 @@ function renderToday() {
 
   // Called out only because the date is today. Collapsed by default: this is a
   // question to open when there is room for it, not a queue to face on arrival.
-  const unreviewed = todayUnreviewed(d.date, d.date);
   sections.push(todayNotReviewedHtml(unreviewed,
     'Criba found these and hasn\u2019t added them. Nothing here is on your calendar.'));
 
@@ -4654,6 +4664,24 @@ function todayUnreviewed(from, to) {
   const proposed = ((todayData && todayData.newsletters) || []).filter(inRange);
   return [...queue, ...proposed].sort((a, b) =>
     String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))));
+}
+
+// Appended after the written summary rather than asked of the model. A count
+// is a fact, and a model asked for one will eventually invent it -- and this
+// number has to agree exactly with the section below, which is built from the
+// same list.
+function todayProposedLine(n) {
+  if (!n) return '';
+  const what = n === 1 ? '1 proposed item that is not' : `${n} proposed items that are not`;
+  return `<div class="today-proposed">You have ${what} yet on your calendar.
+    <button class="today-proposed-link" onclick="openNotReviewed()">View ${n === 1 ? 'it' : 'them'}</button></div>`;
+}
+
+// Opens the section and moves to it, so the sentence leads somewhere.
+function openNotReviewed() {
+  if (!notReviewedOpen) toggleNotReviewed();
+  const el = document.getElementById('nr-head');
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 let notReviewedOpen = false;

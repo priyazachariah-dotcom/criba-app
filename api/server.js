@@ -7166,21 +7166,47 @@ function todaySummaryKey(email, fingerprint) {
   return `todaySummary:${email}:${new Date().toISOString().slice(0, 10)}:${fingerprint}`;
 }
 
-// Changes whenever the day's shape changes: what is on it, when, and whether
-// it is still waiting. Nothing about the text of the summary is in here.
-function todayFingerprint(payload) {
-  const parts = [...(payload.events || []), ...(payload.reminders || [])]
-    .map(e => `${e.id}|${e.time || ''}|${e.title || ''}`)
+// Changes whenever the day's shape changes on the CALENDAR: what is on it and
+// when. Nothing about the text of the summary is in here.
+function todayFingerprint(items) {
+  const parts = (items || [])
+    .map(e => `${e.id || ''}|${e.time || ''}|${e.title || ''}`)
     .sort();
   return crypto.createHash('sha1').update(parts.join('\n')).digest('hex').slice(0, 12);
 }
 
+// The calendar is the truth: it is what the user approved and what they see.
+// This used to read Criba's own store, so the summary described events that
+// were not on the calendar and stayed silent about ones that were -- a soccer
+// practice on a subscribed feed was missing while a social hour Criba had
+// merely proposed was described as part of the day.
+async function todayCalendarItems(user) {
+  const tz = await getUserTimezone(user.email);
+  const date = isoDateInZone(new Date(), tz);
+  const view = await buildAheadView(user, 2);
+  const onDate = (view.events || []).filter(e => e.date === date);
+  // Criba's rows carry the notes -- gear lists, RSVP deadlines -- that the
+  // calendar read does not, so they are joined in where one exists.
+  let stored = [];
+  try { stored = await getUserEvents(user.email).values(); } catch {}
+  const byCalId = new Map(stored.filter(e => e.calEventId).map(e => [e.calEventId, e]));
+  const items = onDate.map(e => {
+    const own = e.id ? byCalId.get(e.id) : null;
+    return {
+      id: e.id,
+      title: e.title,
+      time: e.is_all_day ? 'all day' : e.time,
+      end: e.end_time || null,
+      where: e.location || null,
+      notes: own && own.notes ? String(own.notes).slice(0, 300) : null,
+      kind: (own && own.source_type) || 'event',
+    };
+  });
+  return { date, timezone: tz, items };
+}
+
 async function buildTodaySummary(user, payload) {
-  const items = [...(payload.events || []), ...(payload.reminders || [])].map(e => ({
-    title: e.title, time: e.is_all_day ? 'all day' : e.time, end: e.end_time || null,
-    where: e.location || null, notes: e.notes ? String(e.notes).slice(0, 300) : null,
-    kind: e.source_type || 'event',
-  }));
+  const items = payload.items || [];
   if (!items.length) {
     return { text: 'Nothing on today.', items: 0, generatedAt: new Date().toISOString() };
   }
@@ -7213,8 +7239,8 @@ Never repeat a URL, a meeting ID, a passcode, a password, a dial-in number or a 
 
 app.get('/api/today/summary', requireAuth, async (req, res) => {
   try {
-    const payload = await buildTodayPayload(req.user);
-    const fp = todayFingerprint(payload);
+    const payload = await todayCalendarItems(req.user);
+    const fp = todayFingerprint(payload.items);
     const key = todaySummaryKey(req.user.email, fp);
     if (req.query.force !== '1') {
       const cached = await redis.get(key);

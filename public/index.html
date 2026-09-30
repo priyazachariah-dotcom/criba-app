@@ -138,41 +138,101 @@
 
   /* Single-row header: logo left · tabs center · user right */
   header {
-    background: var(--bg); border-bottom: 1.5px solid var(--ink);
-    height: 88px; display: flex; align-items: center; padding: 0 48px;
-    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 100; gap: 0;
+    background: var(--bg); border-bottom: 1px solid var(--line);
+    height: 72px; display: flex; align-items: center; padding: 0 32px;
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 100; gap: 24px;
   }
-  /* Both side sections must be allowed to shrink (min-width: 0 defeats the
-     default min-width:auto), or their nowrap contents overflow the flex box
-     and paint over the nav — which is how the Gmail pill came to sit on top
-     of the Family link. The nav itself never shrinks: a navigation link that
-     is covered is indistinguishable from a feature that was never built. */
-  .header-logo-section { flex: 1 1 0; min-width: 0; }
-  .logo {
-    font-family: 'Archivo Black', sans-serif; font-size: 24px;
-    color: var(--ink); text-transform: uppercase; letter-spacing: 0.04em; line-height: 1;
+  .header-logo-section { flex: 0 0 auto; }
+  .wordmark {
+    font-family: var(--font-display); font-style: italic; font-size: 24px;
+    color: var(--primary); line-height: 1; text-decoration: none;
+    display: inline-flex; align-items: baseline;
   }
-  /* The nav was fixed-width and could not shrink, so each added tab pushed it
-     into the status pill -- at seven tabs they sat 3px apart and would have
-     overlapped on a narrower laptop. It may shrink and scroll now, and the
-     user section keeps a hard gap so the two can never touch. */
-  .header-nav-section { display: flex; align-items: center; gap: 26px; flex: 0 1 auto;
-    min-width: 0; overflow-x: auto; scrollbar-width: none; }
-  .header-nav-section::-webkit-scrollbar { display: none; }
-  .header-user-section { flex: 0 1 auto; margin-left: 24px; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; overflow: hidden; }
-  .header-user-section .user-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wordmark-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--apricot); margin-left: 3px; flex-shrink: 0;
+  }
+  .header-nav-section { display: flex; align-items: center; gap: 24px; flex: 1 1 auto; min-width: 0; }
+  .header-user-section { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; margin-left: auto; }
 
-  nav { display: flex; align-items: center; gap: 36px; }
   .nav-btn {
     background: none; border: none; border-bottom: 2px solid transparent;
-    padding: 4px 0; cursor: pointer; font-family: 'Inter', sans-serif;
-    font-size: 13px; font-weight: 500; color: var(--ink);
-    text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
-    transition: border-color 0.15s;
+    padding: 4px 0 6px; cursor: pointer; font-family: var(--font-body);
+    font-size: 14px; font-weight: 500; color: var(--muted);
+    white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+    transition: color 0.15s, border-color 0.15s;
   }
-  .nav-btn.active { border-bottom-color: var(--ink); font-weight: 600; }
-  .nav-btn:hover:not(.active) { border-bottom-color: rgba(17,17,17,0.3); }
-  #review-count-label { font-size: 11px; opacity: 0.55; }
+  .nav-btn.active { color: var(--primary); border-bottom-color: var(--apricot); }
+  .nav-btn:hover:not(.active) { color: var(--primary); }
+  #review-count-label:not(:empty) {
+    background: var(--apricot); color: var(--on-apricot); border-radius: var(--radius-pill);
+    padding: 3px 9px; font-size: 12px; font-weight: 600; line-height: 1.2;
+  }
+
+  /* Account menu. Replaces the name text and the outlined Sign out box, which
+     put three competing controls in the top right. */
+  .acct-wrap { position: relative; }
+  .acct-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--tint); color: var(--primary);
+    font-family: var(--font-body); font-size: 14px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center; position: relative;
+  }
+  /* The only status left in the header: a dot, with the detail on Sources. */
+  .acct-live {
+    position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--primary); border: 1.5px solid var(--bg); display: none;
+  }
+  .acct-live.on { display: block; }
+  .acct-live.off { display: block; background: var(--danger); }
+  .acct-menu {
+    position: absolute; right: 0; top: 46px; min-width: 210px; z-index: 300;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    box-shadow: 0 1px 2px rgba(36,48,42,.06); padding: 8px; display: flex; flex-direction: column;
+  }
+  .acct-menu[hidden] { display: none; }
+  .acct-name { font-size: 13px; font-weight: 600; color: var(--muted); padding: 8px 12px 12px; }
+  .acct-item {
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; color: var(--primary);
+    background: none; border: none; text-align: left; text-decoration: none;
+    padding: 12px; border-radius: var(--radius); cursor: pointer; min-height: 44px;
+    display: flex; align-items: center;
+  }
+  .acct-item:hover { background: var(--bg2); }
+
+  /* Below 1100px the nav becomes a sheet rather than shrinking the type. */
+  .menu-btn {
+    display: none; font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    color: var(--primary); background: none; border: 1px solid var(--line-strong);
+    border-radius: var(--radius); min-height: 44px; padding: 0 16px; cursor: pointer;
+  }
+  .nav-sheet {
+    position: fixed; inset: 0; z-index: 400; background: var(--bg);
+    padding: 24px 32px; overflow-y: auto;
+  }
+  .nav-sheet[hidden] { display: none; }
+  .nav-sheet-close {
+    background: none; border: none; font-size: 28px; line-height: 1; color: var(--primary);
+    cursor: pointer; min-height: 44px; min-width: 44px; margin-bottom: 16px;
+  }
+  .nav-sheet-list { display: flex; flex-direction: column; }
+  .nav-sheet-link {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    font-family: var(--font-display); font-size: 26px; font-weight: 400; color: var(--primary);
+    background: none; border: none; border-bottom: 1px solid var(--line);
+    height: 56px; cursor: pointer; text-align: left; width: 100%;
+  }
+  .nav-sheet-link:first-child { border-top: 1px solid var(--line); }
+  .nav-sheet-count {
+    background: var(--apricot); color: var(--on-apricot); border-radius: var(--radius-pill);
+    padding: 3px 9px; font-size: 12px; font-weight: 600; font-family: var(--font-body);
+  }
+  @media (max-width: 1100px) {
+    .header-nav-section { display: none; }
+    .menu-btn { display: inline-flex; align-items: center; }
+  }
+
+  :focus-visible { outline: 2px solid var(--apricot-edge); outline-offset: 2px; }
 
   .user-name { font-size: 13.5px; color: var(--text2); }
   .logout-btn {
@@ -1401,27 +1461,44 @@
 <div id="app-screen">
   <header>
     <div class="header-logo-section">
-      <div class="logo">CRIBA</div>
+      <a class="wordmark" href="#" onclick="homeGo('home');return false;" aria-label="Criba home">criba<span class="wordmark-dot"></span></a>
     </div>
-    <nav class="header-nav-section">
+    <nav class="header-nav-section" id="header-nav">
       <button class="nav-btn active" id="nav-home-btn" onclick="showPage('home', this)">Home</button>
-      <button class="nav-btn" id="nav-review-btn" onclick="showPage('review', this)">What’s Ahead<span id="review-count-label"></span></button>
+      <button class="nav-btn" id="nav-review-btn" onclick="showPage('review', this)">What’s ahead<span id="review-count-label"></span></button>
       <button class="nav-btn" id="nav-today-btn" onclick="showPage('today', this)">Today</button>
       <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Sources</button>
       <!-- The Family page was built but never linked, so members could never be
            added — which silently disabled every colour feature downstream. -->
-      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">People &amp; Rules</button>
+      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">People &amp; rules</button>
     </nav>
     <div class="header-user-section">
-      <span class="live-pill" id="live-pill" title="Checking…">
+      <button class="menu-btn" id="menu-btn" onclick="toggleNavSheet()" aria-expanded="false">Menu</button>
+      <div class="acct-wrap">
+        <button class="acct-btn" id="acct-btn" onclick="toggleAcctMenu()" aria-haspopup="menu" aria-expanded="false" aria-label="Account">
+          <span id="acct-initial">&nbsp;</span>
+          <span class="acct-live" id="acct-live" title="Checking…"></span>
+        </button>
+        <div class="acct-menu" id="acct-menu" role="menu" hidden>
+          <div class="acct-name" id="user-name"></div>
+          <a class="acct-item" role="menuitem" href="https://calendar.google.com" target="_blank" rel="noopener noreferrer">Open Google Calendar</a>
+          <button class="acct-item" role="menuitem" onclick="logout()">Sign out</button>
+        </div>
+      </div>
+      <!-- The Gmail watch status lives on Sources now. These stay in the DOM,
+           hidden, because updateLiveStatus() writes into them on a timer and
+           renderSources() reads them to decide what to show. -->
+      <span class="live-pill" id="live-pill" title="Checking…" hidden>
         <span class="live-dot"></span>
         <span id="live-pill-text">Checking…</span>
         <span class="live-sub" id="live-pill-sub"></span>
       </span>
-      <span class="user-name" id="user-name"></span>
-      <button class="logout-btn" onclick="logout()">Sign out</button>
     </div>
   </header>
+  <div class="nav-sheet" id="nav-sheet" hidden>
+    <button class="nav-sheet-close" onclick="toggleNavSheet()" aria-label="Close menu">&times;</button>
+    <nav class="nav-sheet-list" id="nav-sheet-list"></nav>
+  </div>
 
   <!-- New-events toast — raised by the background poller -->
   <div id="new-events-toast">
@@ -2637,6 +2714,8 @@ function showApp() {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app-screen').style.display = 'block';
   document.getElementById('user-name').textContent = user.name || user.email;
+  const initial = document.getElementById('acct-initial');
+  if (initial) initial.textContent = String(user.name || user.email || '?').trim().charAt(0).toUpperCase();
   loadPlacesScript();
   loadData();
   checkGmailStatus();
@@ -3318,6 +3397,13 @@ async function updateLiveStatus() {
     const live = d.registered && !d.expiredAlready && d.hasRefreshToken && !d.disconnectedAt;
     pill.classList.toggle('is-off', !live);
     text.textContent = live ? 'Watching Gmail' : 'Not watching';
+    // The header keeps only a dot now; the sentence lives on Sources.
+    const dot = document.getElementById('acct-live');
+    if (dot) {
+      dot.classList.toggle('on', live);
+      dot.classList.toggle('off', !live);
+      dot.title = live ? 'Watching Gmail' : 'Not watching Gmail';
+    }
     if (sub) {
       sub.textContent = live && d.expiresAt
         ? `renews ${new Date(d.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
@@ -3707,6 +3793,60 @@ async function loadWhatsAhead() {
 // The summary line is built from Today's own counts rather than counting
 // again here. Two definitions of "how much is on today" would eventually
 // disagree, and the one on the landing screen is the one people would trust.
+// The account menu and the sub-1100px nav sheet. Both are presentation only:
+// every item calls the same function the old header button called.
+function toggleAcctMenu(force) {
+  const m = document.getElementById('acct-menu');
+  const b = document.getElementById('acct-btn');
+  if (!m) return;
+  const open = force === undefined ? m.hidden : force;
+  m.hidden = !open;
+  if (b) b.setAttribute('aria-expanded', String(open));
+}
+
+function toggleNavSheet() {
+  const sheet = document.getElementById('nav-sheet');
+  const btn = document.getElementById('menu-btn');
+  if (!sheet) return;
+  const open = sheet.hidden;
+  if (open) {
+    const list = document.getElementById('nav-sheet-list');
+    // Built from the real nav buttons, so the sheet can never drift out of
+    // step with what the nav actually offers.
+    if (list) {
+      list.innerHTML = [...document.querySelectorAll('#header-nav .nav-btn')].map(b => {
+        const count = (b.querySelector('#review-count-label') || {}).textContent || '';
+        const label = b.textContent.replace(count, '').trim();
+        return `<button class="nav-sheet-link" data-target="${b.id}">
+          <span>${escHtml(label)}</span>
+          <span style="display:inline-flex;align-items:center;gap:10px">
+            ${count ? `<span class="nav-sheet-count">${escHtml(count.trim())}</span>` : ''}
+            <span aria-hidden="true">&rarr;</span></span></button>`;
+      }).join('');
+      list.querySelectorAll('.nav-sheet-link').forEach(el => {
+        el.onclick = () => {
+          const target = document.getElementById(el.dataset.target);
+          if (target) target.click();
+          toggleNavSheet();
+        };
+      });
+    }
+  }
+  sheet.hidden = !open;
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+}
+
+document.addEventListener('click', (e) => {
+  const wrap = document.querySelector('.acct-wrap');
+  if (wrap && !wrap.contains(e.target)) toggleAcctMenu(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  toggleAcctMenu(false);
+  const sheet = document.getElementById('nav-sheet');
+  if (sheet && !sheet.hidden) toggleNavSheet();
+});
+
 function homeGo(page) {
   const btn = document.getElementById(`nav-${page}-btn`);
   showPage(page, btn || null);

@@ -963,6 +963,58 @@
     .src-card-row .btn-apricot { width: 100%; margin-top: 16px; }
   }
 
+  /* People and rules, per 6d. One card per person, everything for that person
+     inside it -- the chips used to float outside the row they belonged to. */
+  .person-group {
+    font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted);
+    margin: 8px 0 12px;
+  }
+  .person-card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    padding: 16px 20px; margin-bottom: 12px;
+  }
+  .person-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .person-dot { width: 10px; height: 10px; border-radius: 50%; border: none; flex-shrink: 0; cursor: pointer; }
+  .person-name { font-family: var(--font-body); font-size: 16px; font-weight: 500; color: var(--text); }
+  .person-controls { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+  .person-select, .person-grade {
+    height: 36px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    font-family: var(--font-body); font-size: 14px; color: var(--text); padding: 0 10px;
+  }
+  .person-grade { width: 64px; }
+  .person-remove {
+    width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--muted); cursor: pointer; border-radius: var(--radius);
+  }
+  .person-remove:hover { color: var(--danger); background: var(--bg2); }
+  .member-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+  /* Chips are teal-tint pills, and domains are not monospace. */
+  .act-chip {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px;
+    background: var(--tint); color: var(--primary); border: none; border-radius: var(--radius-pill);
+    font-family: var(--font-body); font-size: 13px;
+  }
+  .act-chip-detail { color: var(--muted); font-family: var(--font-body); }
+  .act-chip-guess { opacity: 0.75; }
+  .act-chip-x {
+    width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--primary); cursor: pointer; font-size: 12px; padding: 0;
+  }
+  .act-add {
+    background: none; border: none; color: var(--primary); cursor: pointer;
+    font-family: var(--font-body); font-size: 13px; font-weight: 500; padding: 0;
+  }
+  .act-add:hover { text-decoration: underline; }
+  .pr-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+  .pr-count {
+    background: var(--tint); color: var(--primary); border-radius: var(--radius-pill);
+    height: 24px; padding: 0 10px; display: inline-flex; align-items: center;
+    font-family: var(--font-body); font-size: 12px; font-weight: 600;
+  }
+  .pr-showall { color: var(--primary); text-decoration: underline; }
+  #page-settings .settings-section { margin-bottom: 48px; }
+  #page-settings .page-desc, #page-settings .src-lead { font-style: normal; }
+
   /* Today, per 6a. */
   #page-today { max-width: 720px; margin: 0 auto; }
   .today-title {
@@ -1966,10 +2018,10 @@
          you cannot see is indistinguishable from a bug, so every rule is listed
          in the words it was agreed to and removed with one click. -->
     <details class="settings-section">
-      <summary style="flex-wrap:wrap">
+      <summary class="pr-summary">
         <span class="src-block-head">Rules</span>
-        <span class="excl-count" id="exclusion-count"></span>
-        <div class="page-desc" style="margin:0.6rem 0 0;flex-basis:100%;max-width:none;order:3"><span style="display:block;max-width:680px">Criba learned these from what you’ve dismissed — each rule was created when you answered “yes” to a question after dismissing an event, and is written here in the words you agreed to. If Criba got one wrong, remove it with one click. Nothing is ever deleted by a rule: matching events still reach Review with the reason attached, one click from being added. <span style="font-style:normal;color:var(--text2)">(Expand to view the rules.)</span></span></div>
+        <span class="pr-count" id="exclusion-count"></span>
+        <div class="page-desc" style="margin:0.6rem 0 0;flex-basis:100%;max-width:none;order:3"><span style="display:block;max-width:680px">Criba learned these from what you’ve dismissed — each rule was created when you answered “yes” to a question after dismissing an event, and is written here in the words you agreed to. If Criba got one wrong, remove it with one click. Nothing is ever deleted by a rule: matching events still reach Review with the reason attached, one click from being added. <span class="pr-showall">Show all rules</span></span></div>
       </summary>
       <div id="exclusion-list"></div>
     </details>
@@ -2395,6 +2447,15 @@ async function apiDeleteMember(id) {
 
 // ── Settings page ─────────────────────────────────────────────────────────
 
+// Names are shown as the person typed them, except when that was SHOUTING.
+// One member is stored as "PRIYA ZACHARIAH" from a Google profile, and a name
+// in caps reads as a label rather than a person.
+function displayName(name) {
+  const n = String(name || '').trim();
+  if (!n || n !== n.toUpperCase()) return n;      // leave mixed case alone
+  return n.toLowerCase().replace(/(^|[\s'\-])([a-z])/g, (_, p, c) => p + c.toUpperCase());
+}
+
 function renderSettingsPage() {
   const el = document.getElementById('settings-members-list');
   if (!familyMembers.length) {
@@ -2405,23 +2466,29 @@ function renderSettingsPage() {
   // correct it was to delete the person and recreate them. The dot is now the
   // control that changes it.
   const memberRow = m => `
-    <div class="member-row">
-      <span class="member-dot member-dot-btn" style="background:${memberColor(m.color)}"
-            title="Change ${escHtml(m.name)}'s colour" onclick="toggleMemberColors('${m.id}')"></span>
-      <span class="member-name">${escHtml(m.name)}</span>
-      <select class="member-circle" title="Which circle ${escHtml(m.name)} belongs to"
-              onchange="setMemberCircle('${m.id}', this.value)">
-        ${CIRCLE_ORDER.map(c => `<option value="${c}"${memberCircle(m) === c ? ' selected' : ''}>${circleLabel(c)}</option>`).join('')}
-      </select>
-      <input class="member-grade" id="member-grade-${m.id}" value="${escHtml(m.grade || '')}"
-             placeholder="grade" maxlength="4" autocomplete="off"
-             title="School grade — TK, K, or a number. Used to skip newsletter events for grades nobody is in."
-             onchange="setMemberGrade('${m.id}', this.value)" />
-      ${m.googleCalendarId ? '<span class="member-cal-badge">Calendar created</span>' : ''}
-      <button class="member-delete" title="Remove" onclick="deleteMember('${m.id}')">✕</button>
+    <div class="person-card">
+      <div class="person-top">
+        <span class="person-dot" title="Change ${escHtml(displayName(m.name))}\u2019s colour"
+              style="background:${memberColor(m.color)}" onclick="toggleMemberColors('${m.id}')"></span>
+        <span class="person-name">${escHtml(displayName(m.name))}</span>
+        <span class="person-controls">
+          <select class="person-select" title="Which circle ${escHtml(displayName(m.name))} belongs to"
+                  onchange="setMemberCircle('${m.id}', this.value)">
+            ${CIRCLE_ORDER.map(c => `<option value="${c}"${memberCircle(m) === c ? ' selected' : ''}>${circleLabel(c)}</option>`).join('')}
+          </select>
+          <input class="person-grade" id="member-grade-${m.id}" value="${escHtml(m.grade || '')}"
+                 placeholder="Grade" maxlength="4" autocomplete="off"
+                 title="School grade — TK, K, or a number. Used to skip newsletter events for grades nobody is in."
+                 onchange="setMemberGrade('${m.id}', this.value)" />
+          <button class="person-remove" aria-label="Remove ${escHtml(displayName(m.name))}"
+                  onclick="deleteMember('${m.id}')">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+        </span>
+      </div>
+      <div class="member-colors" id="member-colors-${m.id}" style="display:none"></div>
+      ${renderMemberActivities(m)}
     </div>
-    <div class="member-colors" id="member-colors-${m.id}" style="display:none"></div>
-    ${renderMemberActivities(m)}
   `;
   // Members are grouped by circle so the household, the friend group and work
   // read as distinct lists rather than one undifferentiated column. A circle
@@ -2430,7 +2497,7 @@ function renderSettingsPage() {
     .map(c => {
       const inCircle = familyMembers.filter(m => memberCircle(m) === c);
       if (!inCircle.length) return '';
-      return `<div class="circle-heading">${circleLabel(c)}</div>${inCircle.map(memberRow).join('')}`;
+      return `<div class="person-group">${circleLabel(c)}</div>${inCircle.map(memberRow).join('')}`;
     })
     .join('');
 }
@@ -2463,7 +2530,7 @@ function renderMemberActivities(m) {
   }).join('');
   return `<div class="member-acts">
     ${chips}${senders}
-    <button class="act-add" onclick="toggleActivityForm('${m.id}')">+ activity</button>
+    <button class="act-add" onclick="toggleActivityForm('${m.id}')">+ Add activity</button>
     <div class="act-form" id="act-form-${m.id}" style="display:none">
       <input class="member-grade act-in" id="act-type-${m.id}" placeholder="sport or activity" title="Activity or sport" />
       <input class="member-grade act-in" id="act-tier-${m.id}" placeholder="team level" title="Team tier — frosh, JV or varsity. Left blank, any tier matches." />

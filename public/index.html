@@ -1160,6 +1160,31 @@
     .ev-row { grid-template-columns: 56px 1fr 44px; column-gap: 12px; }
   }
 
+  /* A row that is not on the calendar. Quiet, but a word rather than a dot --
+     the coloured dot already means "whose event is this", and two dot meanings
+     on one row would collide. */
+  .ev-tag {
+    font-family: var(--font-body); font-size: 11px; font-weight: 600;
+    color: var(--muted); border: 1px solid var(--line-strong); border-radius: var(--radius-pill);
+    padding: 1px 8px; margin-right: 8px; white-space: nowrap;
+  }
+  .ev-row.ev-waiting .ev-title { color: var(--text-2); }
+
+  /* "Not reviewed" collapsible. Closed by default: a question to open when
+     there is room for it, not a queue to face on arrival. */
+  .nr { border-top: 1px solid var(--line); margin-top: 8px; }
+  .nr-inline { margin-top: 16px; }
+  .nr-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    width: 100%; min-height: 56px; padding: 0; background: none; border: none;
+    cursor: pointer; text-align: left; color: var(--primary);
+  }
+  .nr-title { font-family: var(--font-display); font-size: 21px; font-weight: 400; }
+  .nr-chev { font-size: 18px; color: var(--muted); line-height: 1; }
+  .nr-body { padding-bottom: 8px; }
+  .nr-body[hidden] { display: none; }
+  .nr-note { font-family: var(--font-body); font-size: 14px; color: var(--muted); margin-bottom: 12px; }
+
   /* Home. Rows are exactly 56px and touch each other, hairline at the bottom
      of each and a border-top on the first. */
   #page-home { max-width: 640px; margin: 0 auto; padding-top: 48px; }
@@ -4166,26 +4191,77 @@ function renderWhatsAhead() {
     if (e.calEventId) storedById.set(e.calEventId, e);
   }
 
-  host.innerHTML = waWindow().map(date => {
+  // Criba's rows that never reached the calendar. They live on the date they
+  // are for, from the moment Criba finds them -- there is no separate queue.
+  // On days three to seven they sit inline with everything else; on tomorrow
+  // they are pulled out and asked about.
+  const waitingByDate = new Map();
+  const seen = new Set();
+  const cribaRows = (typeof pendingEvents !== 'undefined' && Array.isArray(pendingEvents) ? pendingEvents : [])
+    .filter(e => (e.status === 'pending' || e.status === 'draft') && e.date && !e.calEventId);
+  for (const r of cribaRows) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    if (!waitingByDate.has(r.date)) waitingByDate.set(r.date, []);
+    waitingByDate.get(r.date).push(r);
+  }
+
+  const byTime = (a, b) => {
+    if (!!a.is_all_day !== !!b.is_all_day) return a.is_all_day ? -1 : 1;
+    return String(a.time || '').localeCompare(String(b.time || ''));
+  };
+  const win = waWindow();
+  const tomorrow = win[0];
+
+  host.innerHTML = win.map(date => {
     const day = events.filter(e => e.date === date);
+    const waiting = waitingByDate.get(date) || [];
     const clashes = conflicts.filter(c => c.date === date).length;
     const open = !!waOpen[date];
-    const body = !day.length
-      ? '<div class="wa-empty">Nothing on this day.</div>'
-      : day.map(e => {
-          // Join to Criba's row so the actions act on something Criba owns.
-          const mine = e.id && storedById.get(e.id);
-          const row = mine ? { ...mine, ...e, id: mine.id } : e;
-          return renderEventRow(row, 'ahead');
-        }).join('');
     const label = waDayLabel(date);
+
+    const calRows = day.slice().sort(byTime).map(e => {
+      const mine = e.id && storedById.get(e.id);
+      return renderEventRow(mine ? { ...mine, ...e, id: mine.id } : { ...e, readOnly: true }, 'ahead');
+    });
+
+    let body;
+    if (date === tomorrow) {
+      // Tomorrow is called out, exactly like Today.
+      body = (calRows.length ? calRows.join('') : '<div class="wa-empty">Nothing on this day.</div>')
+        + `<div class="nr nr-inline">
+            <button class="nr-head" onclick="waToggleNr('${date}')" aria-expanded="${!!waNrOpen[date]}">
+              <span class="nr-title">Not reviewed \u2014 should these be on your calendar?</span>
+              <span class="nr-chev" aria-hidden="true">${waNrOpen[date] ? '\u2212' : '+'}</span>
+            </button>
+            <div class="nr-body" ${waNrOpen[date] ? '' : 'hidden'}>
+              <div class="nr-note">Criba found these and hasn\u2019t added them.</div>
+              ${waiting.length
+                ? waiting.slice().sort(byTime).map(r => renderEventRow({ ...r, notOnCalendar: true }, 'ahead')).join('')
+                : '<div class="today-none">Nothing waiting.</div>'}
+            </div>
+          </div>`;
+    } else {
+      // Days three to seven: everything inline, in time order, not called out.
+      const all = [...day.map(e => ({ e, waiting: false })), ...waiting.map(e => ({ e, waiting: true }))]
+        .sort((x, y) => byTime(x.e, y.e));
+      body = all.length
+        ? all.map(({ e, waiting: w }) => {
+            if (w) return renderEventRow({ ...e, notOnCalendar: true }, 'ahead');
+            const mine = e.id && storedById.get(e.id);
+            return renderEventRow(mine ? { ...mine, ...e, id: mine.id } : { ...e, readOnly: true }, 'ahead');
+          }).join('')
+        : '<div class="wa-empty">Nothing on this day.</div>';
+    }
+
+    // Collapsed row carries the date, an overlap marker if there is one, and
+    // the +. No counts anywhere the user can see.
     return `<div class="wa-day">
       <button class="wa-dayhead" onclick="waToggle('${date}')" aria-expanded="${open}"
         aria-label="${open ? 'Collapse' : 'Expand'} ${escHtml(label)}">
         <span class="wa-dayname">
           <span class="wa-dayname-text">${escHtml(label)}</span>
-          ${day.length ? `<span class="wa-count">${day.length} event${day.length === 1 ? '' : 's'}</span>` : ''}
-          ${clashes ? `<span class="wa-clash">${clashes} overlap</span>` : ''}
+          ${clashes ? `<span class="wa-clash">overlap</span>` : ''}
         </span>
         <span class="wa-chev" aria-hidden="true">
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -4196,6 +4272,12 @@ function renderWhatsAhead() {
       <div class="wa-daybody" ${open ? '' : 'hidden'}>${body}</div>
     </div>`;
   }).join('');
+}
+
+let waNrOpen = {};
+function waToggleNr(date) {
+  waNrOpen[date] = !waNrOpen[date];
+  renderWhatsAhead();
 }
 
 let _waLoading = false;
@@ -4214,6 +4296,12 @@ async function loadWhatsAhead() {
   } finally {
     _waLoading = false;
     renderWhatsAhead();
+  }
+  if (!pendingEvents.length) {
+    try {
+      const r = await fetch('/api/events/pending');
+      if (r.ok) { const rows = await r.json(); if (Array.isArray(rows)) { pendingEvents = rows; renderWhatsAhead(); } }
+    } catch {}
   }
 }
 
@@ -4248,7 +4336,6 @@ function toggleNavSheet() {
         return `<button class="nav-sheet-link" data-target="${b.id}">
           <span>${escHtml(label)}</span>
           <span style="display:inline-flex;align-items:center;gap:10px">
-            ${count ? `<span class="nav-sheet-count">${escHtml(count.trim())}</span>` : ''}
             <span aria-hidden="true">&rarr;</span></span></button>`;
       }).join('');
       list.querySelectorAll('.nav-sheet-link').forEach(el => {
@@ -4310,10 +4397,7 @@ function renderHome() {
   const sum = document.getElementById('home-summary');
   if (sum) sum.textContent = homeSummaryText(todayData, newCount);
   const badge = document.getElementById('home-new-count');
-  if (badge) {
-    badge.textContent = `${newCount} new`;
-    badge.hidden = !newCount;
-  }
+  if (badge) badge.hidden = true;
 }
 
 // Today's payload drives the summary, so Home needs it even when Today has not
@@ -4329,30 +4413,38 @@ function renderEventRow(ev, ctx = 'today') {
   evRemember(ev);
   const id = ev.id;
   const rid = `ev-${ctx}-${id}`;
-  // Venue and person only. A full street address, a Zoom URL or a meeting ID
-  // turns a scannable list into a wall of text, and none of it is what anyone
-  // reads a schedule for -- it belongs in the event itself.
   const who = evPersonName(ev);
   const meta = [ev.location ? evShortPlace(ev.location) : null, who].filter(Boolean).join(' \u00b7 ');
   const past = evIsPast(ev) ? ' ev-past' : '';
-  const fromEmail = ev.source === 'gmail' || ev.sender_email ? '<span class="ev-origin" title="Criba added this from your email"></span>' : '';
+  // Three states, and the row has to be honest about which it is:
+  //  - on the calendar, Criba's own row  -> Edit / Keep / Delete
+  //  - not on the calendar (a proposal)  -> Add / Edit / Dismiss
+  //  - on the calendar, not Criba's      -> no menu; nothing to act on
+  const waiting = !!ev.notOnCalendar;
+  const readOnly = !!ev.readOnly;
+  const fromEmail = !waiting && (ev.source === 'gmail' || ev.sender_email)
+    ? '<span class="ev-origin" title="Criba added this from your email"></span>' : '';
   return `
-  <div class="ev-row${past}" id="${rid}">
+  <div class="ev-row${past}${waiting ? ' ev-waiting' : ''}" id="${rid}">
     <div class="ev-time">${evTimeCell(ev)}</div>
     <div class="ev-main">
-      <div class="ev-title">${fromEmail}${escHtml(ev.title || '(untitled)')}</div>
+      <div class="ev-title">${fromEmail}${waiting ? '<span class="ev-tag">Not added</span>' : ''}${escHtml(ev.title || '(untitled)')}</div>
       ${meta && !past ? `<div class="ev-meta">${meta}</div>` : ''}
     </div>
-    <div class="ev-actions">
-      ${ev.readOnly ? '' : `
+    <div class="ev-actions">${readOnly ? '' : `
       <button class="ev-more" id="${rid}-more" aria-label="More actions" aria-haspopup="menu"
         aria-expanded="false" onclick="evMenu('${escHtml(id)}','${ctx}')">
         <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="4" r="1.4" fill="currentColor"/><circle cx="9" cy="9" r="1.4" fill="currentColor"/><circle cx="9" cy="14" r="1.4" fill="currentColor"/></svg>
       </button>
       <div class="ev-menu" id="${rid}-menu" role="menu" hidden>
+        ${waiting ? `
+        <button class="ev-menu-item" role="menuitem" onclick="evAdd('${escHtml(id)}','${ctx}')">Add</button>
+        <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
+        <button class="ev-menu-item" role="menuitem" onclick="evDismissProposal('${escHtml(id)}','${ctx}')">Dismiss</button>`
+        : `
         <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
         <button class="ev-menu-item" role="menuitem" onclick="evKeep('${escHtml(id)}','${ctx}')">Keep</button>
-        <button class="ev-menu-item ev-menu-danger" role="menuitem" onclick="evDelete('${escHtml(id)}','${ctx}')">Remove from calendar</button>
+        <button class="ev-menu-item ev-menu-danger" role="menuitem" onclick="evDelete('${escHtml(id)}','${ctx}')">Delete</button>`}
       </div>`}
     </div>
     <div class="ev-editor" id="${rid}-editor" hidden></div>
@@ -4445,6 +4537,34 @@ function evEdit(id, ctx) {
 // mark-reviewed is the action the label describes, and it already existed --
 // the old Review screen used it, labelled "OK". Collapsing the buttons into
 // this menu in step 4 is where it got dropped.
+// A proposal is not on the calendar, so nothing here can destroy anything:
+// Add writes it, Dismiss forgets it. Delete deliberately does not appear.
+async function evAdd(id, ctx) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  try {
+    await fetch('/api/events/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+  } catch {}
+  evRegistry.delete(id);
+  if (ctx === 'today') loadToday(); else loadWhatsAhead();
+}
+
+async function evDismissProposal(id, ctx) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  try {
+    await fetch('/api/events/dismiss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+  } catch {}
+  evRegistry.delete(id);
+  if (row) row.remove();
+}
+
 async function evKeep(id, ctx) {
   const row = document.getElementById(`ev-${ctx}-${id}`);
   if (row) row.style.opacity = '0.45';
@@ -4498,77 +4618,68 @@ function renderToday() {
 
   const sections = [];
 
-  // The schedule is read from Google Calendar, not from Criba's own rows.
-  // Reading its own store meant Today showed only what Criba had put there --
-  // missing a soccer practice on a subscribed feed while listing items that had
-  // never been approved, so the day's plan and the day's admin were mixed
-  // together in one list.
-  const calendarToday = ((waData && waData.events) || []).filter(e => e.date === d.date);
+  // Events by time: the calendar, joined to Criba's rows where it owns one.
+  const schedule = ((waData && waData.events) || [])
+    .filter(e => e.date === d.date)
+    .sort((a, b) => {
+      if (!!a.is_all_day !== !!b.is_all_day) return a.is_all_day ? -1 : 1;
+      return String(a.time || '').localeCompare(String(b.time || ''));
+    });
   const mine = new Map();
   for (const e of (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])) {
     if (e.calEventId) mine.set(e.calEventId, e);
   }
-  const schedule = calendarToday.slice().sort((a, b) => {
-    if (!!a.is_all_day !== !!b.is_all_day) return a.is_all_day ? -1 : 1;
-    return String(a.time || '').localeCompare(String(b.time || ''));
-  });
-  if (schedule.length) {
-    sections.push(`<div class="today-section">
-      <div class="today-section-label">Schedule</div>
-      ${schedule.map(e => {
-        // Joined to Criba's row where one exists, so Edit / Keep / Remove act
-        // on something Criba owns. An event Criba never created is shown
-        // without them rather than offering buttons that cannot work.
+  sections.push(schedule.length
+    ? `<div class="today-section">${schedule.map(e => {
         const own = e.id && mine.get(e.id);
         return renderEventRow(own ? { ...own, ...e, id: own.id } : { ...e, readOnly: true }, 'today');
-      }).join('')}
-    </div>`);
-  } else {
-    sections.push('<div class="today-clear">Nothing on your calendar today.</div>');
-  }
+      }).join('')}</div>`
+    : '<div class="today-clear">Nothing on your calendar today.</div>');
 
-  // Everything Criba found and has not been told what to do with: queue items
-  // that were never approved, and the suggestions it deliberately held back.
-  // These are questions, not today's plan, so they sit below it under a heading
-  // that asks the question.
-  // Dated today only. Filtering on status alone put 50 items here, none of
-  // them today's -- they ran from tomorrow to July 2027, so Today was showing
-  // next year's school calendar under a heading about today.
-  const queue = (typeof pendingEvents !== 'undefined' && Array.isArray(pendingEvents) ? pendingEvents : [])
-    .filter(e => (e.status === 'pending' || e.status === 'draft') && e.date === d.date);
-  const proposed = (d.newsletters || []).filter(e => e.date === d.date);
-  const unreviewed = [...queue, ...proposed];
-  sections.push(`<div class="today-section today-maybe">
-    <h2 class="today-section-head">Not reviewed \u2014 should these be on your calendar?</h2>
-    <div class="today-maybe-note">Criba found these and hasn\u2019t added them. Nothing here is on your calendar.</div>
-    ${unreviewed.length ? unreviewed.map(it => `<div class="ev-row" id="maybe-${escHtml(it.id)}">
-        <div class="ev-time">${escHtml(it.is_all_day || !it.time ? 'All day' : it.time)}${
-          it.date && it.date !== d.date ? `<span class="ev-time-end">${escHtml(formatDate(it.date))}</span>` : ''}</div>
-        <div class="ev-main">
-          <div class="ev-title">${escHtml(it.title || '(untitled)')}</div>
-          <div class="ev-meta">${escHtml([it.location, it.sender_name || it.sender_email].filter(Boolean).join(' \u00b7 '))}</div>
-          <div class="ev-actions-inline">
-            <button class="ev-act ev-act-primary" onclick="todayAddToCalendar('${escHtml(it.id)}')">Add</button>
-            <button class="ev-act" onclick="todayDismissOne('${escHtml(it.id)}')">Not this</button>
-          </div>
-        </div>
-      </div>`).join('')
-    : '<div class="today-none">Nothing waiting.</div>'}
-  </div>`);
-
-  // The last 24 hours of things Criba put on the calendar, with a way back.
-  const added = (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])
-    .filter(e => e.user_action_at && (Date.now() - Date.parse(e.user_action_at)) < 86400000 && e.calEventId);
-  if (added.length) {
-    sections.push(`<div class="today-section">
-      <h2 class="today-section-head">Just added</h2>
-      ${added.slice(0, 6).map(e => `<div class="today-peek" id="justadded-${escHtml(e.id)}">
-        <span>${escHtml(e.title || '')}${e.date ? ` \u00b7 ${escHtml(formatDate(e.date))}` : ''}</span>
-        <button class="ev-act" onclick="evDelete('${escHtml(e.id)}','today')">Undo</button></div>`).join('')}
-    </div>`);
-  }
+  // Called out only because the date is today. Collapsed by default: this is a
+  // question to open when there is room for it, not a queue to face on arrival.
+  const unreviewed = todayUnreviewed(d.date, d.date);
+  sections.push(todayNotReviewedHtml(unreviewed,
+    'Criba found these and hasn\u2019t added them. Nothing here is on your calendar.'));
 
   host.innerHTML = head + sections.join('');
+}
+
+// Everything for a date that Criba has found and not added: queue rows it never
+// wrote, and the suggestions it deliberately held back.
+function todayUnreviewed(from, to) {
+  const inRange = e => e.date && e.date >= from && e.date <= to;
+  const queue = (typeof pendingEvents !== 'undefined' && Array.isArray(pendingEvents) ? pendingEvents : [])
+    .filter(e => (e.status === 'pending' || e.status === 'draft') && inRange(e));
+  const proposed = ((todayData && todayData.newsletters) || []).filter(inRange);
+  return [...queue, ...proposed].sort((a, b) =>
+    String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))));
+}
+
+let notReviewedOpen = false;
+function toggleNotReviewed() {
+  notReviewedOpen = !notReviewedOpen;
+  const body = document.getElementById('nr-body');
+  const btn = document.getElementById('nr-head');
+  if (body) body.hidden = !notReviewedOpen;
+  if (btn) btn.setAttribute('aria-expanded', String(notReviewedOpen));
+  const chev = document.getElementById('nr-chev');
+  if (chev) chev.textContent = notReviewedOpen ? '\u2212' : '+';
+}
+
+function todayNotReviewedHtml(items, note) {
+  return `<div class="today-section nr">
+    <button class="nr-head" id="nr-head" onclick="toggleNotReviewed()" aria-expanded="${notReviewedOpen}">
+      <span class="nr-title">Not reviewed \u2014 should these be on your calendar?</span>
+      <span class="nr-chev" id="nr-chev" aria-hidden="true">${notReviewedOpen ? '\u2212' : '+'}</span>
+    </button>
+    <div class="nr-body" id="nr-body" ${notReviewedOpen ? '' : 'hidden'}>
+      <div class="nr-note">${note}</div>
+      ${items.length
+        ? items.map(it => renderEventRow({ ...it, notOnCalendar: true }, 'today')).join('')
+        : '<div class="today-none">Nothing waiting.</div>'}
+    </div>
+  </div>`;
 }
 
 function todayPlusOne(iso) {
@@ -5040,9 +5151,11 @@ let lastScanDays = null; // set after a successful backfill so the header reflec
 
 function updateReviewCount(n) {
   const label = document.getElementById('review-count-label');
-  // The pill supplies its own shape, so the parentheses that used to separate
-  // this from the nav label now read as part of the number.
-  if (label) label.textContent = n > 0 ? String(n) : '';
+  // Deliberately blank. Beta testers said they never review, and a badge
+  // counting an unbounded backlog -- it read 119 and only ever grew -- is a
+  // debt notice rather than information. The count stays queryable from the
+  // API; it is not put in front of the user.
+  if (label) label.textContent = '';
 }
 
 function updateReviewHeader(days) {

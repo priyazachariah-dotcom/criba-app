@@ -847,43 +847,109 @@
   .src-block-head { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.6rem; }
   @media (min-width: 700px) { .src-title { font-size: 2.6rem; } }
 
-  /* Today */
-  .today-date { font-size: 2.1rem; font-weight: 400; line-height: 1.05; margin-bottom: 0.9rem; }
-  .today-summary { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between;
-    border-left: 2px solid var(--ink); padding: 0.5rem 0 0.5rem 0.9rem; margin-bottom: 1.8rem; }
-  .today-summary-text { font-size: 0.95rem; line-height: 1.55; color: var(--ink); }
-  .today-rewrite { font-family: inherit; font-size: 0.75rem; background: none; border: none;
-    color: var(--text2); text-decoration: underline; cursor: pointer; flex-shrink: 0; padding: 0; }
-  .today-section { margin-bottom: 2rem; }
-  .today-section-head { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem; }
-  .today-maybe-note { font-size: 0.85rem; color: var(--text2); margin-bottom: 0.7rem; }
-  .today-none { font-size: 0.9rem; color: var(--text2); }
-  .today-peek { display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    font-size: 0.92rem; padding: 0.45rem 0; border-bottom: 1px solid var(--bg2); }
-  .today-peek:last-child { border-bottom: none; }
-  .today-peek-time { color: var(--text2); font-size: 0.82rem; margin-right: 10px; }
-  .today-clear { font-size: 0.95rem; color: var(--text2); margin-bottom: 2rem; }
-  @media (min-width: 700px) { .today-date { font-size: 2.6rem; } }
+  /* Today, per 6a. */
+  #page-today { max-width: 720px; margin: 0 auto; }
+  .today-title {
+    font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1.05;
+    color: var(--primary); margin: 0;
+  }
+  .today-date {
+    font-family: var(--font-display); font-size: 19px; font-weight: 400;
+    color: var(--text-2); margin: 12px 0 0;
+  }
+  .today-head { margin-bottom: 32px; }
+  /* No left rule and no floating link: the summary is a card, and Rewrite sits
+     under the text where it reads as a footnote to it. */
+  .today-summary {
+    background: var(--apricot-tint); border-radius: var(--radius-card);
+    padding: 20px 24px; margin-bottom: 40px;
+  }
+  .today-summary-text {
+    font-family: var(--font-body); font-size: 15px; line-height: 1.6; color: var(--text);
+    max-width: 60ch;
+  }
+  .today-summary-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
+  .today-rewrite {
+    font-family: var(--font-body); font-size: 13px; font-weight: 500; color: var(--primary);
+    background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline;
+  }
+  .today-section { margin-bottom: 48px; }
+  .today-section-label {
+    font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted);
+    margin-bottom: 12px;
+  }
+  .today-section-head {
+    font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary);
+    margin: 0 0 12px;
+  }
+  .today-maybe-note { font-size: 14px; color: var(--muted); margin-bottom: 12px; }
+  .today-none { font-size: 15px; color: var(--muted); }
+  .today-peek {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    font-size: 15px; color: var(--text); min-height: 46px; padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .today-peek:first-of-type { border-top: 1px solid var(--line); }
+  .today-peek-time { color: var(--muted); font-size: 13px; margin-right: 12px; font-variant-numeric: tabular-nums; }
+  .today-clear { font-size: 15px; color: var(--muted); margin-bottom: 48px; }
+  @media (max-width: 480px) {
+    .today-summary { padding: 16px 18px; }
+  }
 
-  /* What's Ahead. The whole screen is a list of dates; a day opens only when
-     it is asked for. The previous version put 116 rows on screen at once, each
-     with buttons demanding a decision, and there was no way to look at the week
-     without the entire backlog looking back. */
-  .wa-title { font-size: 2.1rem; font-weight: 400; margin: 0 0 0.35rem; line-height: 1.05; }
-  .wa-sub { font-size: 0.92rem; color: var(--text2); margin: 0 0 1.6rem; }
-  .wa-day { border-bottom: 1px solid var(--bg2); }
-  .wa-dayhead { display: flex; align-items: center; justify-content: space-between; width: 100%;
-    font-family: inherit; font-size: 1.05rem; color: var(--ink); text-align: left;
-    background: none; border: none; padding: 0.85rem 0.1rem; cursor: pointer; }
-  .wa-dayhead:hover { background: var(--bg2); }
-  .wa-dayname { display: inline-flex; align-items: center; gap: 10px; }
-  .wa-count { font-size: 0.82rem; color: var(--text2); }
-  .wa-clash { font-size: 0.78rem; color: #b06a00; }
-  .wa-plus { font-size: 1.15rem; color: var(--text2); line-height: 1; }
-  .wa-daybody { padding: 0 0 0.6rem; }
-  .wa-daybody[hidden] { display: none; }
-  .wa-empty { font-size: 0.9rem; color: var(--text2); padding: 0.6rem 0.1rem; }
-  @media (min-width: 700px) { .wa-title { font-size: 2.6rem; } }
+  /* Shared event row (Today + What's ahead), per the Today spec.
+     A three-column grid: time | content | one More menu. The previous version
+     stacked Edit, Dismiss and Delete under every single event, which put three
+     buttons and a red outline on every line of the day. */
+  .ev-row {
+    display: grid; grid-template-columns: 96px 1fr 44px; column-gap: 16px;
+    align-items: start; padding: 14px 0; border-bottom: 1px solid var(--line);
+  }
+  .ev-row:first-child { border-top: 1px solid var(--line); }
+  .ev-time {
+    font-family: var(--font-body); font-size: 13px; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+    display: flex; flex-direction: column; gap: 2px; padding-top: 2px;
+  }
+  .ev-time-end { color: var(--done); }
+  .ev-title {
+    font-family: var(--font-body); font-size: 16px; font-weight: 500; color: var(--text);
+    line-height: 1.4; display: flex; align-items: baseline; gap: 8px;
+  }
+  .ev-origin {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--apricot);
+    flex-shrink: 0; align-self: center;
+  }
+  .ev-meta {
+    font-family: var(--font-body); font-size: 13px; color: var(--muted); margin-top: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ev-row.ev-past .ev-title { color: var(--done); text-decoration: line-through; }
+  .ev-row.ev-past .ev-time { color: var(--done); }
+  .ev-actions { position: relative; justify-self: end; }
+  .ev-more {
+    width: 44px; height: 44px; margin-top: -8px; display: inline-flex;
+    align-items: center; justify-content: center; background: none; border: none;
+    color: var(--muted); cursor: pointer; border-radius: var(--radius);
+  }
+  .ev-more:hover { color: var(--primary); background: var(--bg2); }
+  .ev-menu {
+    position: absolute; right: 0; top: 40px; z-index: 200; min-width: 160px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    box-shadow: 0 1px 2px rgba(36,48,42,.06); padding: 6px; display: flex; flex-direction: column;
+  }
+  .ev-menu[hidden] { display: none; }
+  .ev-menu-item {
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; color: var(--primary);
+    background: none; border: none; text-align: left; padding: 10px 12px;
+    border-radius: var(--radius); cursor: pointer; min-height: 44px; display: flex; align-items: center;
+  }
+  .ev-menu-item:hover { background: var(--bg2); }
+  .ev-menu-danger { color: var(--danger); }
+  .ev-editor { grid-column: 1 / -1; margin-top: 12px; }
+  .ev-editor[hidden] { display: none; }
+  @media (max-width: 480px) {
+    .ev-row { grid-template-columns: 56px 1fr 44px; column-gap: 12px; }
+  }
 
   /* Home. Mobile first. Rows are exactly 56px and touch each other, with the
      hairline at the bottom of each and a border-top on the first, so the menu
@@ -3974,26 +4040,78 @@ function renderEventRow(ev, ctx = 'today') {
   evRemember(ev);
   const id = ev.id;
   const rid = `ev-${ctx}-${id}`;
-  const meta = [
-    ev.location ? escHtml(ev.location) : null,
-    ev.sender_name || ev.sender_email ? escHtml(ev.sender_name || ev.sender_email) : null,
-  ].filter(Boolean).join(' · ');
+  // Venue and person only. A full street address, a Zoom URL or a meeting ID
+  // turns a scannable list into a wall of text, and none of it is what anyone
+  // reads a schedule for -- it belongs in the event itself.
+  const who = evPersonName(ev);
+  const meta = [ev.location ? evShortPlace(ev.location) : null, who].filter(Boolean).join(' \u00b7 ');
   const past = evIsPast(ev) ? ' ev-past' : '';
+  const fromEmail = ev.source === 'gmail' || ev.sender_email ? '<span class="ev-origin" title="Criba added this from your email"></span>' : '';
   return `
   <div class="ev-row${past}" id="${rid}">
-    <div class="ev-time">${escHtml(evTimeLabel(ev))}</div>
+    <div class="ev-time">${evTimeCell(ev)}</div>
     <div class="ev-main">
-      <div class="ev-title">${eventDotHtml(ev)}${escHtml(ev.title || '(untitled)')}</div>
-      ${meta ? `<div class="ev-meta">${meta}</div>` : ''}
-      <div class="ev-actions">
-        <button class="ev-act" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
-        <button class="ev-act" onclick="evDismiss('${escHtml(id)}','${ctx}')">Dismiss</button>
-        <button class="ev-act ev-act-danger" onclick="evDelete('${escHtml(id)}','${ctx}')">Delete</button>
+      <div class="ev-title">${fromEmail}${escHtml(ev.title || '(untitled)')}</div>
+      ${meta && !past ? `<div class="ev-meta">${meta}</div>` : ''}
+    </div>
+    <div class="ev-actions">
+      <button class="ev-more" id="${rid}-more" aria-label="More actions" aria-haspopup="menu"
+        aria-expanded="false" onclick="evMenu('${escHtml(id)}','${ctx}')">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="4" r="1.4" fill="currentColor"/><circle cx="9" cy="9" r="1.4" fill="currentColor"/><circle cx="9" cy="14" r="1.4" fill="currentColor"/></svg>
+      </button>
+      <div class="ev-menu" id="${rid}-menu" role="menu" hidden>
+        <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
+        <button class="ev-menu-item" role="menuitem" onclick="evDismiss('${escHtml(id)}','${ctx}')">Dismiss</button>
+        <button class="ev-menu-item ev-menu-danger" role="menuitem" onclick="evDelete('${escHtml(id)}','${ctx}')">Delete</button>
       </div>
     </div>
     <div class="ev-editor" id="${rid}-editor" hidden></div>
   </div>`;
 }
+
+// A time range on one line collides with the title at 96px, so the two halves
+// stack.
+function evTimeCell(ev) {
+  if (ev.is_all_day || !ev.time) return 'All day';
+  return ev.end_time
+    ? `<span>${escHtml(ev.time)}</span><span class="ev-time-end">${escHtml(ev.end_time)}</span>`
+    : escHtml(ev.time);
+}
+
+function evPersonName(ev) {
+  const id = ev.member_id || ev.memberId;
+  const m = id && typeof familyMembers !== 'undefined'
+    ? familyMembers.find(x => x.id === id) : null;
+  return m ? m.name : (ev.sender_name || null);
+}
+
+// "625 Oak Grove Ave, Menlo Park, CA 94025, USA" is a venue plus noise. Keep
+// the part a person would say out loud.
+function evShortPlace(loc) {
+  const first = String(loc).split(',')[0].trim();
+  if (/^\d+\s/.test(first) && String(loc).includes(',')) {
+    const second = String(loc).split(',')[1];
+    if (second) return escHtml(second.trim());
+  }
+  return escHtml(first);
+}
+
+function evMenu(id, ctx) {
+  const menu = document.getElementById(`ev-${ctx}-${id}-menu`);
+  const btn = document.getElementById(`ev-${ctx}-${id}-more`);
+  if (!menu) return;
+  const open = menu.hidden;
+  document.querySelectorAll('.ev-menu').forEach(m => { m.hidden = true; });
+  document.querySelectorAll('.ev-more').forEach(b => b.setAttribute('aria-expanded', 'false'));
+  menu.hidden = !open;
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('.ev-actions')) return;
+  document.querySelectorAll('.ev-menu').forEach(m => { m.hidden = true; });
+  document.querySelectorAll('.ev-more').forEach(b => b.setAttribute('aria-expanded', 'false'));
+});
 
 // Opens the SAME editor the review queue uses. A second editor over a thinner
 // payload is how two screens end up disagreeing about what an event is.
@@ -4032,6 +4150,10 @@ function evDismiss(id, ctx) {
 
 function evDelete(id, ctx) {
   const ev = evGet(id);
+  // Deleting removes the event from Google Calendar. The 8-second undo strip
+  // still runs underneath, but a destructive action inside a menu needs to be
+  // asked for twice -- the menu item sits where "Dismiss" was a moment ago.
+  if (!confirm(`Delete \u201c${(ev && ev.title) || 'this event'}\u201d from your Google Calendar?`)) return;
   beginCardDelete(`ev-${ctx}-${id}`, {
     title: ev && ev.title, durationMs: 8000,
     commit: async () => {
@@ -4053,12 +4175,15 @@ function renderToday() {
 
   const d = todayData;
   const head = `<div class="today-head">
+      <h1 class="today-title">Today</h1>
       <div class="today-date">${escHtml(todayDateLine(d.date))}</div>
     </div>
     <div class="today-summary" id="today-summary">
       <div class="today-summary-text" id="today-summary-text">${
         todaySummary ? escHtml(todaySummary.text) : 'Reading your day\u2026'}</div>
-      <button class="today-rewrite" onclick="loadTodaySummary(true)">Rewrite</button>
+      <div class="today-summary-foot">
+        <button class="today-rewrite" onclick="loadTodaySummary(true)">Rewrite</button>
+      </div>
     </div>`;
 
   const sections = [];
@@ -4072,6 +4197,7 @@ function renderToday() {
   });
   if (main.length) {
     sections.push(`<div class="today-section">
+      <div class="today-section-label">Schedule</div>
       ${main.map(it => renderEventRow(it, 'today')).join('')}
     </div>`);
   } else {
@@ -4083,7 +4209,7 @@ function renderToday() {
   // easily missed -- Criba found them and deliberately did not add them.
   const nl = (d.newsletters || []).filter(it => it.date === d.date || it.date === todayPlusOne(d.date));
   sections.push(`<div class="today-section today-maybe">
-    <div class="today-section-head">Want it on your calendar?</div>
+    <h2 class="today-section-head">Want it on your calendar?</h2>
     <div class="today-maybe-note">Criba found these in your email but wasn\u2019t sure you\u2019d want them.</div>
     ${nl.length ? nl.map(it => `<div class="ev-row" id="maybe-${escHtml(it.id)}">
         <div class="ev-time">${escHtml(it.is_all_day || !it.time ? 'All day' : it.time)}</div>
@@ -4104,7 +4230,7 @@ function renderToday() {
   const tom = (waData && waData.events || []).filter(e => e.date === todayPlusOne(d.date));
   if (tom.length) {
     sections.push(`<div class="today-section">
-      <div class="today-section-head">Tomorrow</div>
+      <h2 class="today-section-head">Tomorrow</h2>
       ${tom.slice(0, 6).map(e => `<div class="today-peek">
         <span class="today-peek-time">${escHtml(e.is_all_day || !e.time ? 'All day' : e.time)}</span>
         <span>${escHtml(e.title || '')}</span></div>`).join('')}
@@ -4116,7 +4242,7 @@ function renderToday() {
     .filter(e => e.user_action_at && (Date.now() - Date.parse(e.user_action_at)) < 86400000 && e.calEventId);
   if (added.length) {
     sections.push(`<div class="today-section">
-      <div class="today-section-head">Just added</div>
+      <h2 class="today-section-head">Just added</h2>
       ${added.slice(0, 6).map(e => `<div class="today-peek" id="justadded-${escHtml(e.id)}">
         <span>${escHtml(e.title || '')}${e.date ? ` \u00b7 ${escHtml(formatDate(e.date))}` : ''}</span>
         <button class="ev-act" onclick="evDelete('${escHtml(e.id)}','today')">Undo</button></div>`).join('')}

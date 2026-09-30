@@ -2054,11 +2054,6 @@ async function evDismissProposal(id, ctx) {
   <div class="page" id="page-calendars">
     <h1 class="src-title">Sources</h1>
     <p class="src-lead">Where Criba looks, and the tools for fixing what it found.</p>
-    <!-- Moved here from the top bar and from the old queue: this is the page
-         about where events come from, which is where the controls over them
-         belong. -->
-    <div id="sources-tools"></div>
-    <div id="sources-receipt"></div>
     <!-- Always open. Adding a calendar is the entire purpose of this page, so
          hiding it behind a "+ Add calendar" button made the first thing a new
          user needs the one thing they had to go looking for. -->
@@ -2116,6 +2111,13 @@ async function evDismissProposal(id, ctx) {
     <h2 class="src-section">Calendars you’re subscribed to</h2>
     <div id="cal-list"></div>
     <div id="sources-cancelled"></div>
+    <!-- Maintenance is everything you do to a calendar that already exists:
+         scanning for more, seeing what Criba put there, and undoing it. Adding
+         a calendar is the reason you came to this page, so it goes first and
+         these sit underneath. -->
+    <h2 class="src-section">Maintenance</h2>
+    <div id="sources-tools"></div>
+    <div id="sources-receipt"></div>
     <div id="sources-maintenance"></div>
   </div>
 
@@ -4180,7 +4182,6 @@ function renderSources() {
   const maint = document.getElementById('sources-maintenance');
   if (maint) {
     maint.innerHTML = `<div class="src-card src-maint">
-      <h2 class="src-card-head">Maintenance</h2>
       <div class="src-maint-row">
         <div class="src-maint-title">Clean up duplicates</div>
         <div class="src-maint-desc">If the same event was added to your calendar more than once, this finds the extra copies and removes them, keeping one of each. Events you created yourself and events from calendars you subscribe to are never touched.</div>

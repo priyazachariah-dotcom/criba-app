@@ -4531,9 +4531,12 @@ function renderToday() {
   // that were never approved, and the suggestions it deliberately held back.
   // These are questions, not today's plan, so they sit below it under a heading
   // that asks the question.
+  // Dated today only. Filtering on status alone put 50 items here, none of
+  // them today's -- they ran from tomorrow to July 2027, so Today was showing
+  // next year's school calendar under a heading about today.
   const queue = (typeof pendingEvents !== 'undefined' && Array.isArray(pendingEvents) ? pendingEvents : [])
-    .filter(e => e.status === 'pending' || e.status === 'draft');
-  const proposed = (d.newsletters || []);
+    .filter(e => (e.status === 'pending' || e.status === 'draft') && e.date === d.date);
+  const proposed = (d.newsletters || []).filter(e => e.date === d.date);
   const unreviewed = [...queue, ...proposed];
   sections.push(`<div class="today-section today-maybe">
     <h2 class="today-section-head">Not reviewed \u2014 should these be on your calendar?</h2>

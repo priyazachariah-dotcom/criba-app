@@ -191,7 +191,8 @@
     box-shadow: 0 1px 2px rgba(36,48,42,.06); padding: 8px; display: flex; flex-direction: column;
   }
   .acct-menu[hidden] { display: none; }
-  .acct-name { font-size: 13px; font-weight: 600; color: var(--muted); padding: 8px 12px 12px; }
+  .acct-status { font-size: 13px; font-weight: 500; color: var(--text-2); padding: 10px 12px 6px; }
+  .acct-name { font-size: 13px; font-weight: 600; color: var(--muted); padding: 0 12px 12px; }
   .acct-item {
     font-family: var(--font-body); font-size: 14px; font-weight: 500; color: var(--primary);
     background: none; border: none; text-align: left; text-decoration: none;
@@ -1536,9 +1537,10 @@
       <div class="acct-wrap">
         <button class="acct-btn" id="acct-btn" onclick="toggleAcctMenu()" aria-haspopup="menu" aria-expanded="false" aria-label="Account">
           <span id="acct-initial">&nbsp;</span>
-          <span class="acct-live" id="acct-live" title="Checking…"></span>
+          <span class="acct-live" id="acct-live" role="img" title="Checking…" aria-label="Checking Gmail connection"></span>
         </button>
         <div class="acct-menu" id="acct-menu" role="menu" hidden>
+          <div class="acct-status" id="acct-status">Checking…</div>
           <div class="acct-name" id="user-name"></div>
           <a class="acct-item" role="menuitem" href="https://calendar.google.com" target="_blank" rel="noopener noreferrer">Open Google Calendar</a>
           <button class="acct-item" role="menuitem" onclick="logout()">Sign out</button>
@@ -3459,12 +3461,22 @@ async function updateLiveStatus() {
     pill.classList.toggle('is-off', !live);
     text.textContent = live ? 'Watching Gmail' : 'Not watching';
     // The header keeps only a dot now; the sentence lives on Sources.
+    // One sentence, three places: the dot's tooltip, its accessible name, and
+    // the first line of the account menu. A coloured dot on its own tells
+    // nobody what it is reporting.
+    const renews = live && d.expiresAt
+      ? ` \u00b7 renews ${new Date(d.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+      : '';
+    const statusLine = live ? `Watching Gmail${renews}` : 'Not watching Gmail';
     const dot = document.getElementById('acct-live');
     if (dot) {
       dot.classList.toggle('on', live);
       dot.classList.toggle('off', !live);
-      dot.title = live ? 'Watching Gmail' : 'Not watching Gmail';
+      dot.title = statusLine;
+      dot.setAttribute('aria-label', statusLine);
     }
+    const acctStatus = document.getElementById('acct-status');
+    if (acctStatus) acctStatus.textContent = statusLine;
     if (sub) {
       sub.textContent = live && d.expiresAt
         ? `renews ${new Date(d.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
@@ -4583,7 +4595,9 @@ let lastScanDays = null; // set after a successful backfill so the header reflec
 
 function updateReviewCount(n) {
   const label = document.getElementById('review-count-label');
-  if (label) label.textContent = n > 0 ? ` (${n})` : '';
+  // The pill supplies its own shape, so the parentheses that used to separate
+  // this from the nav label now read as part of the number.
+  if (label) label.textContent = n > 0 ? String(n) : '';
 }
 
 function updateReviewHeader(days) {

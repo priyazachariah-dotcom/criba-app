@@ -1244,8 +1244,13 @@
   /* Live status pill — tells the user Criba is watching Gmail in the
      background, so they know they do not need to press Scan. */
   .live-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1.5px solid var(--ink); font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
-  .live-pill.is-off { border-color: #c5221f; color: #c5221f; }
-  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #1e8e3e; flex-shrink: 0; animation: blink 2.2s infinite; }
+  /* display:inline-flex on the element beats the browser's [hidden] rule, so
+     the pill stayed visible in the header despite the attribute. It is kept in
+     the DOM only because updateLiveStatus() writes to it and renderSources()
+     reads it. */
+  .live-pill[hidden] { display: none; }
+  .live-pill.is-off { border-color: var(--danger); color: var(--danger); }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex-shrink: 0; animation: blink 2.2s infinite; }
   .live-pill.is-off .live-dot { background: #c5221f; animation: none; }
   .live-sub { font-size: 0.72rem; font-weight: 400; opacity: 0.6; }
   /* The renewal date is the least load-bearing thing in the header, so it is

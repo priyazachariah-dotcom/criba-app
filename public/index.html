@@ -8,7 +8,10 @@
      Criba mark: an ink tile with a pink "C", matching the brutalist theme. -->
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='6'%20fill='%23111111'/%3E%3Ctext%20x='16'%20y='24'%20font-family='Arial%20Black,Arial,sans-serif'%20font-size='23'%20font-weight='900'%20text-anchor='middle'%20fill='%23F0DAD8'%3EC%3C/text%3E%3C/svg%3E">
 <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20fill='%23111111'/%3E%3Ctext%20x='16'%20y='24'%20font-family='Arial%20Black,Arial,sans-serif'%20font-size='23'%20font-weight='900'%20text-anchor='middle'%20fill='%23F0DAD8'%3EC%3C/text%3E%3C/svg%3E">
-<meta name="theme-color" content="#F0DAD8">
+<meta name="theme-color" content="#F4EEE4">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..600&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
 <!-- Font set kept in sync with the criba.app marketing site: Archivo Black
      (display), Marcellus (editorial serif), Inter (body). -->
@@ -16,29 +19,63 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #F0DAD8;          /* matte dusty pink — page background */
-    --bg2: #E6CECA;          /* slightly deeper for hover/wells */
-    --ink: #111111;          /* primary text + borders */
-    --text: #111111;
-    --text2: #555555;
-    --text3: #666666;
-    --border: #111111;
-    --accent: #111111;
-    --pill: #D9A9A6;
-    --surface: #FFFFFF;      /* card face on the pink ground */
-    --surface-2: #FCFAF7;    /* muted/secondary card face */
-    --hair: rgba(17,17,17,0.13); /* light internal divider */
-    --line: #111111;         /* structural border (alias of ink; some CSS copied
-                                from the mock referenced --line before it existed,
-                                which made those borders silently not render) */
-    --red: #c1392b;
-    --blue: #1a73e8;
-    --blue-dark: #1557b0;
-    --gcal-icon: #5f6368;
-    --green: #2d6a4f;
-    --radius: 0px;
+    /* Surfaces */
+    --bg: #F4EEE4;            /* warm oat, the page background everywhere */
+    --surface: #FAF6EF;       /* cards */
+    --tint: #DCE6E4;          /* pale teal: status pills */
+    --apricot-tint: #F6DCC6;  /* pale apricot: anything Criba generated or added */
+
+    /* Primary ink: deep teal */
+    --primary: #2F5257;
+    --text: #1C2E31;
+    --text-2: #3E5357;
+    --muted: #5A6A6B;
+    --done: #929B9A;
+    --placeholder: #85908F;
+
+    /* Apricot: Criba's signature */
+    --apricot: #E8B38A;
+    --apricot-hover: #DFA072;
+    --apricot-edge: #D39A6E;
+    --on-apricot: #1C2E31;
+
+    /* Lines */
+    --line: #DCD4C6;
+    --line-strong: #BDB5A6;
+    --danger: #A1453A;
+
+    /* Shape */
+    --radius: 12px;
+    --radius-card: 16px;
+    --radius-pill: 999px;
+
+    /* Type */
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-body: 'Figtree', system-ui, sans-serif;
+
+    /* ── Compatibility aliases ────────────────────────────────────────────
+       101KB of CSS in this file references the old names. Repointing them at
+       the new palette here means the whole app moves in one step, and the
+       per-screen work that follows can delete each alias as it rewrites the
+       rules that use it. Doing it the other way round -- renaming 88 colours
+       across 7,700 lines first -- would be one unreviewable change with
+       nothing working in between. */
+    --bg2: #EDE5D8;           /* hover/wells: oat, one step deeper */
+    --ink: #2F5257;           /* was pure black; now the teal it should have been */
+    --text2: #3E5357;
+    --text3: #5A6A6B;
+    --border: #DCD4C6;
+    --accent: #2F5257;
+    --pill: #DCE6E4;
+    --surface-2: #FAF6EF;
+    --hair: rgba(47,82,87,0.13);
+    --red: #A1453A;
+    --blue: #2F5257;          /* the Google-blue editor accent, brought into palette */
+    --blue-dark: #24403F;
+    --gcal-icon: #5A6A6B;
+    --green: #2F5257;
   }
-  body { background: var(--bg); color: var(--ink); font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-body); min-height: 100vh; }
 
   /* Google appends .pac-container to <body>, outside every container in this
      file, so it inherited none of the app's layout and rendered as a collapsed
@@ -51,7 +88,7 @@
   .pac-container {
     background: #fff !important; border: 1px solid rgba(0,0,0,0.15) !important;
     border-radius: 8px !important; box-shadow: 0 6px 20px rgba(0,0,0,0.18) !important;
-    font-family: 'Inter', -apple-system, sans-serif !important;
+    font-family: var(--font-body) !important;
     /* Above the category editor and any overlay, or the list renders behind
        the panel and cannot be clicked. */
     z-index: 100000 !important; overflow: hidden !important;
@@ -82,88 +119,179 @@
 
   /* ── Auth ─────────────────────────────────────────────────────────── */
   #auth-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 2rem; }
-  .auth-logo { font-family: 'Archivo Black', sans-serif; font-size: 2.5rem; color: var(--ink); letter-spacing: 0.02em; margin-bottom: 0.375rem; text-transform: uppercase; }
-  .auth-tagline { color: var(--text2); font-family: 'Marcellus', Georgia, serif; font-size: 1.1rem; margin-bottom: 3rem; letter-spacing: 0.06em; }
-  .auth-card { background: white; border: 1.5px solid var(--ink); padding: 2.5rem; width: 100%; max-width: 400px; text-align: center; }
-  .auth-card h2 { font-size: 1.2rem; font-weight: 600; margin-bottom: 0.5rem; }
-  .auth-card p { color: var(--text2); font-size: 0.9rem; margin-bottom: 2rem; line-height: 1.6; }
-  .google-btn { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; padding: 0.9rem 1.5rem; background: white; border: 1.5px solid var(--ink); font-size: 0.95rem; font-weight: 500; cursor: pointer; color: var(--ink); text-decoration: none; transition: all 0.15s; }
-  .google-btn:hover { background: var(--bg); }
+  /* One left edge for the whole column, matching every other screen. */
+  #auth-screen { align-items: center; }
+  #auth-screen > * { text-align: left; width: 100%; max-width: 460px; }
+  .auth-logo {
+    font-family: var(--font-display); font-size: 24px; font-weight: 500;
+    color: var(--primary); margin-bottom: 24px; display: inline-flex; align-items: baseline;
+  }
+  .auth-tagline {
+    font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1.05;
+    color: var(--primary); margin: 0 0 32px;
+  }
+  .auth-card {
+    background: transparent; border: none; padding: 0; width: 100%; max-width: 460px; text-align: left;
+  }
+  .auth-card h2 {
+    font-family: var(--font-display); font-size: 21px; font-weight: 400;
+    color: var(--primary); margin: 0 0 12px;
+  }
+  .auth-card p {
+    color: var(--text-2); font-family: var(--font-body); font-size: 16px;
+    margin-bottom: 32px; line-height: 1.6; max-width: 60ch;
+  }
+  /* The primary action of the whole product. Apricot, like every other. */
+  .google-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 12px;
+    width: 100%; min-height: 44px; padding: 0 20px;
+    background: var(--apricot); border: 1px solid var(--apricot); border-radius: var(--radius);
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; cursor: pointer;
+    color: var(--on-apricot); text-decoration: none; transition: background 0.12s;
+  }
+  .google-btn:hover { background: var(--apricot-hover); border-color: var(--apricot-hover); }
   .google-btn svg { width: 20px; height: 20px; flex-shrink: 0; }
   .auth-privacy { margin-top: 1.5rem; font-size: 0.75rem; color: var(--text2); line-height: 1.5; }
   /* A soft vignette gives the sign-in screen a little depth — lighter in the
      centre behind the card, deepening gently toward the edges. Subtle on
      purpose; the flat pink theme is unchanged everywhere else. */
-  #auth-screen { background: radial-gradient(ellipse 90% 80% at 50% 42%, #F6E4E2 0%, var(--bg) 48%, #E4CBC7 100%); }
+  #auth-screen { background: var(--bg); }
 
   /* ── Shell ───────────────────────────────────────────────────────────── */
   #app-screen { display: none; min-height: 100vh; }
 
   /* Single-row header: logo left · tabs center · user right */
   header {
-    background: var(--bg); border-bottom: 1.5px solid var(--ink);
-    height: 88px; display: flex; align-items: center; padding: 0 48px;
-    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 100; gap: 0;
+    background: var(--bg); border-bottom: 1px solid var(--line);
+    height: 72px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 100;
   }
-  /* Both side sections must be allowed to shrink (min-width: 0 defeats the
-     default min-width:auto), or their nowrap contents overflow the flex box
-     and paint over the nav — which is how the Gmail pill came to sit on top
-     of the Family link. The nav itself never shrinks: a navigation link that
-     is covered is indistinguishable from a feature that was never built. */
-  .header-logo-section { flex: 1 1 0; min-width: 0; }
-  .logo {
-    font-family: 'Archivo Black', sans-serif; font-size: 24px;
-    color: var(--ink); text-transform: uppercase; letter-spacing: 0.04em; line-height: 1;
+  /* The bar spans the window; its contents line up with the page column, so the
+     wordmark and nav no longer hug the window edges. */
+  .header-inner {
+    max-width: 1120px; margin: 0 auto; padding: 0 32px; height: 100%;
+    display: flex; align-items: center; gap: 40px;
   }
-  /* The nav was fixed-width and could not shrink, so each added tab pushed it
-     into the status pill -- at seven tabs they sat 3px apart and would have
-     overlapped on a narrower laptop. It may shrink and scroll now, and the
-     user section keeps a hard gap so the two can never touch. */
-  .header-nav-section { display: flex; align-items: center; gap: 26px; flex: 0 1 auto;
-    min-width: 0; overflow-x: auto; scrollbar-width: none; }
-  .header-nav-section::-webkit-scrollbar { display: none; }
-  .header-user-section { flex: 0 1 auto; margin-left: 24px; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 16px; overflow: hidden; }
-  .header-user-section .user-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .header-logo-section { flex: 0 0 auto; }
+  .wordmark {
+    font-family: var(--font-display); font-style: normal; font-weight: 500; font-size: 24px;
+    color: var(--primary); line-height: 1; text-decoration: none;
+    display: inline-flex; align-items: baseline;
+  }
+  .wordmark-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--apricot); margin-left: 3px; flex-shrink: 0;
+  }
+  .header-nav-section { display: flex; align-items: center; gap: 28px; flex: 1 1 auto; min-width: 0; }
+  .header-user-section { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; margin-left: auto; }
 
-  nav { display: flex; align-items: center; gap: 36px; }
   .nav-btn {
     background: none; border: none; border-bottom: 2px solid transparent;
-    padding: 4px 0; cursor: pointer; font-family: 'Inter', sans-serif;
-    font-size: 13px; font-weight: 500; color: var(--ink);
-    text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
-    transition: border-color 0.15s;
+    padding: 4px 0 6px; cursor: pointer; font-family: var(--font-body);
+    font-size: 14px; font-weight: 500; color: var(--muted);
+    white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+    transition: color 0.15s, border-color 0.15s;
   }
-  .nav-btn.active { border-bottom-color: var(--ink); font-weight: 600; }
-  .nav-btn:hover:not(.active) { border-bottom-color: rgba(17,17,17,0.3); }
-  #review-count-label { font-size: 11px; opacity: 0.55; }
+  .nav-btn.active { color: var(--primary); border-bottom-color: var(--apricot); }
+  .nav-btn:hover:not(.active) { color: var(--primary); }
+  #review-count-label:not(:empty), .home-new, .nav-sheet-count {
+    background: var(--apricot); color: var(--on-apricot); border: none;
+    border-radius: var(--radius-pill); height: 24px; padding: 0 10px;
+    font-family: var(--font-body); font-size: 12px; font-weight: 600;
+    display: inline-flex; align-items: center; line-height: 1;
+  }
+
+  /* Account menu. Replaces the name text and the outlined Sign out box, which
+     put three competing controls in the top right. */
+  .acct-wrap { position: relative; }
+  .acct-btn {
+    width: 36px; height: 36px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--tint); color: var(--primary);
+    font-family: var(--font-body); font-size: 14px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center; position: relative;
+  }
+  /* The only status left in the header: a dot, with the detail on Sources. */
+  .acct-live {
+    position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--primary); border: 1.5px solid var(--bg); display: none;
+  }
+  .acct-live.on { display: block; }
+  .acct-live.off { display: block; background: var(--danger); }
+  .acct-menu {
+    position: absolute; right: 0; top: 46px; min-width: 210px; z-index: 300;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    box-shadow: 0 1px 2px rgba(36,48,42,.06); padding: 8px; display: flex; flex-direction: column;
+  }
+  .acct-menu[hidden] { display: none; }
+  .acct-status { font-size: 13px; font-weight: 500; color: var(--text-2); padding: 10px 12px 6px; }
+  .acct-name { font-size: 13px; font-weight: 600; color: var(--muted); padding: 0 12px 12px; }
+  .acct-item {
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; color: var(--primary);
+    background: none; border: none; text-align: left; text-decoration: none;
+    padding: 12px; border-radius: var(--radius); cursor: pointer; min-height: 44px;
+    display: flex; align-items: center;
+  }
+  .acct-item:hover { background: var(--bg2); }
+
+  /* Below 1100px the nav becomes a sheet rather than shrinking the type. */
+  .menu-btn {
+    display: none; font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    color: var(--primary); background: none; border: 1px solid var(--line-strong);
+    border-radius: var(--radius); min-height: 44px; padding: 0 16px; cursor: pointer;
+  }
+  .nav-sheet {
+    position: fixed; inset: 0; z-index: 400; background: var(--bg);
+    padding: 24px 32px; overflow-y: auto;
+  }
+  .nav-sheet[hidden] { display: none; }
+  .nav-sheet-close {
+    background: none; border: none; font-size: 28px; line-height: 1; color: var(--primary);
+    cursor: pointer; min-height: 44px; min-width: 44px; margin-bottom: 16px;
+  }
+  .nav-sheet-list { display: flex; flex-direction: column; }
+  .nav-sheet-link {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    font-family: var(--font-display); font-size: 26px; font-weight: 400; color: var(--primary);
+    background: none; border: none; border-bottom: 1px solid var(--line);
+    height: 56px; cursor: pointer; text-align: left; width: 100%;
+  }
+  .nav-sheet-link:first-child { border-top: 1px solid var(--line); }
+  @media (max-width: 1100px) {
+    .header-nav-section { display: none; }
+    .menu-btn { display: inline-flex; align-items: center; }
+  }
+
+  :focus-visible { outline: 2px solid var(--apricot-edge); outline-offset: 2px; }
 
   .user-name { font-size: 13.5px; color: var(--text2); }
   .logout-btn {
     font-size: 12px; color: var(--ink); background: none;
-    border: 1.5px solid var(--ink); cursor: pointer; padding: 6px 14px;
-    text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif;
+    border: 1px solid var(--line-strong); cursor: pointer; padding: 6px 14px; font-family: var(--font-body);
     font-weight: 500; transition: background 0.12s, color 0.12s;
   }
   .logout-btn:hover { background: var(--ink); color: var(--bg); }
 
   /* ── Page layout ─────────────────────────────────────────────────────── */
-  .page { display: none; padding: 56px 48px 72px; max-width: 1240px; margin: 0 auto; }
+  .page { display: none; padding: 48px 32px 72px; max-width: 1240px; margin: 0 auto; }
+  @media (min-width: 700px) { .page { padding-top: 64px; } }
   .page.active { display: block; }
 
   /* Page title block: big headline left, italic description right, rule below */
+  /* The 1.5px black rule under every page title is gone; spacing separates the
+     header from the body now. Used by People and rules and by the upload
+     review page -- the other screens that had one were rebuilt earlier. */
   .page-title-block {
     display: flex; justify-content: space-between; align-items: flex-end;
-    padding-bottom: 36px; margin-bottom: 44px; border-bottom: 1.5px solid var(--ink);
+    padding-bottom: 0; margin-bottom: 40px; border-bottom: none;
   }
   .page-headline {
-    font-family: 'Archivo Black', sans-serif;
+    font-family: var(--font-display);
     font-size: clamp(40px, 6vw, 84px);
-    line-height: 0.92; color: var(--ink); text-transform: uppercase;
+    line-height: 0.92; color: var(--ink);
   }
   .page-headline-sm {
-    font-family: 'Archivo Black', sans-serif;
+    font-family: var(--font-display);
     font-size: clamp(32px, 4.5vw, 56px);
-    line-height: 0.92; color: var(--ink); text-transform: uppercase;
+    line-height: 0.92; color: var(--ink);
   }
   .page-desc {
     max-width: 280px; font-size: 14.5px; font-style: italic;
@@ -171,41 +299,51 @@
   }
 
   /* ── Buttons ─────────────────────────────────────────────────────────── */
-  .btn-outlined {
-    background: transparent; border: 1.5px solid var(--ink); color: var(--ink);
-    padding: 0.5rem 1.1rem; font-family: 'Inter', sans-serif; font-size: 12.5px;
-    font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em;
-    cursor: pointer; white-space: nowrap; transition: background 0.1s, color 0.1s;
+  /* One button system, per section 5. .btn-filled and .btn-outlined predate
+     .btn-primary / .btn-secondary and are used more (26 places against 20), so
+     all four are defined together here rather than leaving two visual systems
+     on the same screen. */
+  .btn-outlined, .btn-secondary {
+    background: transparent; border: 1px solid var(--line-strong); color: var(--primary);
+    border-radius: var(--radius); min-height: 44px; padding: 0 16px;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    cursor: pointer; white-space: nowrap; transition: border-color 0.12s;
+    display: inline-flex; align-items: center; justify-content: center;
   }
-  .btn-outlined:hover { background: var(--ink); color: var(--bg); }
-  .btn-outlined:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-filled {
-    background: var(--ink); border: 1.5px solid var(--ink); color: var(--bg);
-    padding: 0.5rem 1.1rem; font-family: 'Inter', sans-serif; font-size: 12.5px;
-    font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em;
-    cursor: pointer; white-space: nowrap; transition: opacity 0.1s;
+  .btn-outlined:hover, .btn-secondary:hover { border-color: var(--primary); background: transparent; color: var(--primary); }
+  .btn-outlined:disabled, .btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-filled, .btn-primary {
+    background: var(--apricot); border: 1px solid var(--apricot); color: var(--on-apricot);
+    border-radius: var(--radius); min-height: 44px; padding: 0 20px;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    cursor: pointer; white-space: nowrap; transition: background 0.12s;
+    display: inline-flex; align-items: center; justify-content: center;
   }
-  .btn-filled:hover { opacity: 0.8; }
-  .btn-filled:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-sm { padding: 9px 14px; font-size: 11px; }
+  .btn-filled:hover, .btn-primary:hover { background: var(--apricot-hover); border-color: var(--apricot-hover); opacity: 1; }
+  .btn-filled:disabled, .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Destructive is text in --danger, never a filled or outlined red button. */
+  .btn-danger, .btn-outlined.btn-danger {
+    background: transparent; border-color: transparent; color: var(--danger); padding: 0 8px;
+  }
+  .btn-danger:hover, .btn-outlined.btn-danger:hover { border-color: transparent; color: var(--danger); text-decoration: underline; background: transparent; }
+  .btn-sm { min-height: 36px; padding: 0 12px; font-size: 13px; }
   /* Colour modifier for destructive actions — compose with .btn-outlined (+ .btn-sm)
      so Delete/Remove keep the outline button's size and shape but read as danger,
      never like Edit. Replaces the ad-hoc inline red styles that were copied around. */
   .btn-danger { border-color: var(--red); color: var(--red); }
   .btn-danger:hover { background: #fbeceb; color: var(--red); }
   /* Legacy approve/dismiss aliases */
-  .btn-approve { padding: 0.5rem 1.25rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
+  .btn-approve { padding: 0.5rem 1.25rem; background: var(--ink); color: var(--bg); border: 1px solid var(--line-strong); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
   .btn-approve:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-dismiss { padding: 0.5rem 1rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.875rem; cursor: pointer; }
+  .btn-dismiss { padding: 0.5rem 1rem; background: transparent; color: var(--ink); border: 1px solid var(--line-strong); font-size: 0.875rem; cursor: pointer; }
   .btn-dismiss:hover { background: var(--ink); color: var(--bg); }
-  .view-more-btn { width: 100%; padding: 0.75rem; background: transparent; border: 1.5px solid var(--ink); font-size: 0.875rem; color: var(--ink); cursor: pointer; margin-top: 0.5rem; }
+  .view-more-btn { width: 100%; padding: 0.75rem; background: transparent; border: 1px solid var(--line-strong); font-size: 0.875rem; color: var(--ink); cursor: pointer; margin-top: 0.5rem; }
   .view-more-btn:hover { background: var(--ink); color: var(--bg); }
 
   /* ── Pills ───────────────────────────────────────────────────────────── */
   .pill {
     display: inline-block; background: var(--pill); color: var(--ink);
-    font-size: 10.5px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.04em; padding: 3px 9px; vertical-align: middle; white-space: nowrap;
+    font-size: 10.5px; font-weight: 600; padding: 3px 9px; vertical-align: middle; white-space: nowrap;
   }
 
   /* Says the opposite of "Synced", so it must not look like the same badge
@@ -218,9 +356,9 @@
   .review-legend {
     display: flex; flex-wrap: wrap; align-items: center; gap: 9px 18px;
     padding: 12px 16px; margin: -12px 0 24px; background: var(--surface-2);
-    border: 1.5px solid var(--ink); font-size: 12px; color: var(--text2);
+    border: 1px solid var(--line-strong); font-size: 12px; color: var(--text2);
   }
-  .legend-lead { font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; font-size: 10.5px; color: var(--text3); }
+  .legend-lead { font-weight: 600; font-size: 10.5px; color: var(--text3); }
   .legend-item { display: inline-flex; align-items: center; gap: 7px; }
   .legend-rail { display: inline-block; width: 4px; height: 14px; }
   .legend-rail.cancel { background: #c5221f; }
@@ -235,11 +373,11 @@
      calendar. Removing any one is on its own card (Delete + undo toast). */
   .receipt {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
-    background: var(--surface-2); border: 1.5px solid var(--ink);
+    background: var(--surface-2); border: 1px solid var(--line-strong);
     padding: 12px 16px; margin: 0 0 12px;
   }
   .receipt .r-lead { font-size: 13px; color: var(--ink); }
-  .receipt .r-lead b { font-family: 'Archivo Black', sans-serif; font-weight: 400; }
+  .receipt .r-lead b { font-family: var(--font-display); font-weight: 400; }
   .r-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .r-chip {
     display: inline-flex; align-items: center; font-size: 11.5px;
@@ -253,15 +391,15 @@
   /* ── Stats row (Review page) ─────────────────────────────────────────── */
   .stats-row { display: flex; gap: 48px; margin-bottom: 2rem; }
   .stat-block { display: flex; flex-direction: column; }
-  .stat-number { font-family: 'Archivo Black', sans-serif; font-size: 26px; color: var(--ink); line-height: 1; }
-  .stat-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); margin-top: 4px; }
+  .stat-number { font-family: var(--font-display); font-size: 26px; color: var(--ink); line-height: 1; }
+  .stat-label { font-size: 11.5px; color: var(--text3); margin-top: 4px; }
 
   /* ── Scan control bar ───────────────────────────────────────────────── */
   .scan-bar {
     display: flex; align-items: center; justify-content: space-between;
-    border: 1.5px solid var(--ink); padding: 20px 26px; margin-bottom: 0;
+    border: 1px solid var(--line-strong); padding: 20px 26px; margin-bottom: 0;
   }
-  .scan-bar-label { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); }
+  .scan-bar-label { font-size: 13px; font-weight: 600; color: var(--text3); }
   .scan-bar-btns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
   /* The "N to review" row is a light action strip, not a second heavy box like
      Scan Gmail — one bordered bar per screen is plenty. */
@@ -270,7 +408,7 @@
   /* Recovery actions. These delete calendar events, so each one states what it
      does in a full sentence rather than relying on a two-word label: the moment
      someone reaches for these is the moment they are least willing to guess. */
-  .fixit-bar { border: 1.5px solid var(--ink); border-top: none; padding: 16px 26px; }
+  .fixit-bar { border: 1px solid var(--line-strong); border-top: none; padding: 16px 26px; }
   .fixit-row { display: flex; align-items: flex-start; gap: 0.75rem; }
   .fixit-row + .fixit-row { margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid var(--bg2); }
   .fixit-row .btn-outlined { flex: 0 0 auto; white-space: nowrap; }
@@ -280,7 +418,7 @@
   /* ── Review event rows ───────────────────────────────────────────────── */
   /* Cards are bordered boxes on the pink ground (not a hairline-divided list),
      so each event reads as one contained object with its own actions. */
-  .review-card { border: 1.5px solid var(--ink); background: var(--surface); margin-bottom: 12px; }
+  .review-card { border: 1px solid var(--line-strong); background: var(--surface); margin-bottom: 12px; }
   /* Cancel/reschedule keep the coloured rail, but as an inset shadow so the card
      edge stays aligned with every other card instead of shifting inward. */
   .review-card.cancel-card { box-shadow: inset 4px 0 0 #c5221f; padding-left: 0; }
@@ -310,23 +448,23 @@
   .trust-sender-btn:hover { color: var(--ink); border-bottom-color: var(--ink); }
   .trust-sender-done { font-style: normal; font-size: 12px; margin-left: 0.5rem; color: #1a7f37; }
   /* Badge styles */
-  .review-badge-gmail { display: inline-block; background: var(--pill); color: var(--ink); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; white-space: nowrap; }
-  .review-badge { background: var(--bg2); color: var(--ink); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 3px 9px; white-space: nowrap; }
-  .review-badge-cancel { background: #fce8e6; color: #c5221f; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-reschedule { background: #fef7e0; color: #b45309; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-deadline { background: #fce8e6; color: #c5221f; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-action { background: #fef7e0; color: #b06000; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-financial { background: var(--bg2); color: #137333; font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
-  .review-badge-recurring { background: var(--bg2); color: var(--ink); font-size: 10.5px; padding: 3px 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .review-badge-gmail { display: inline-block; background: var(--pill); color: var(--ink); font-size: 10.5px; font-weight: 600; padding: 3px 9px; white-space: nowrap; }
+  .review-badge { background: var(--bg2); color: var(--ink); font-size: 10.5px; font-weight: 600; padding: 3px 9px; white-space: nowrap; }
+  .review-badge-cancel { background: #fce8e6; color: #c5221f; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-reschedule { background: #fef7e0; color: #b45309; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-deadline { background: #fce8e6; color: #c5221f; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-action { background: #fef7e0; color: #b06000; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-financial { background: var(--bg2); color: #137333; font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
+  .review-badge-recurring { background: var(--bg2); color: var(--ink); font-size: 10.5px; padding: 3px 9px; font-weight: 600; }
 
   /* ── Today (daily digest) ──────────────────────────────────────────────
      Reads as a list you scan once, not a queue you work through. Same ink
      system as everything else; the only new idea is the time gutter. */
-  .today-head { border-bottom: 1.5px solid var(--ink); padding-bottom: 12px; margin-bottom: 18px; }
+  .today-head { border-bottom: none; padding-bottom: 0; }
   .today-greeting { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
   .today-date { font-size: 13px; color: var(--text2); margin-top: 2px; }
   .today-section { margin-bottom: 26px; }
-  .today-section-head { font-size: 11.5px; letter-spacing: .09em; text-transform: uppercase;
+  .today-section-head { font-size: 11.5px;
                         color: var(--text2); border-bottom: 1px solid var(--line);
                         padding-bottom: 5px; margin-bottom: 8px; }
   .today-row { display: flex; gap: 12px; align-items: flex-start; }
@@ -359,8 +497,7 @@
      above it — these were deliberately NOT added to the calendar. */
   .today-nl-head { display: flex; width: 100%; justify-content: space-between; align-items: center;
                    background: none; border: none; border-bottom: 1px solid var(--line);
-                   padding: 6px 0; cursor: pointer; font: inherit; font-size: 11.5px;
-                   letter-spacing: .09em; text-transform: uppercase; color: var(--text2); }
+                   padding: 6px 0; cursor: pointer; font: inherit; font-size: 11.5px; color: var(--text2); }
   .today-nl-chev { font-size: 15px; line-height: 1; }
   .today-nl-note { font-size: 12px; color: var(--text2); margin: 8px 0 4px; }
   .today-nl-item { opacity: .92; }
@@ -372,7 +509,7 @@
 
   /* Clear-a-whole-sender block. Sits above the row list on the same tab: it is
      a shortcut for the list below it, not a separate place to go. */
-  .src-wrap { border: 1.5px solid var(--ink); padding: 14px 16px; margin: 0 0 18px; }
+  .src-wrap { border: 1px solid var(--line-strong); padding: 14px 16px; margin: 0 0 18px; }
   .src-head { font-weight: 700; font-size: 14px; letter-spacing: .02em; }
   .src-sub { font-size: 12.5px; color: var(--text2); margin: 4px 0 12px; max-width: 640px; }
   .src-row { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between;
@@ -387,14 +524,14 @@
 
   /* ── Recent event rows (Edit Calendar Events) ─────────────────────────
      Boxed cards, matching the Review queue, so the two lists read as one app. */
-  .recent-card { border: 1.5px solid var(--ink); background: var(--surface); margin-bottom: 8px; }
+  .recent-card { border: 1px solid var(--line-strong); background: var(--surface); margin-bottom: 8px; }
   .recent-card-header { display: flex; align-items: flex-start; padding: 14px 18px; gap: 1.25rem; }
-  .recent-row-day { font-family: 'Archivo Black', sans-serif; font-size: 13px; color: var(--ink); width: 44px; flex-shrink: 0; text-transform: uppercase; padding-top: 3px; }
+  .recent-row-day { font-family: var(--font-display); font-size: 13px; color: var(--ink); width: 44px; flex-shrink: 0; padding-top: 3px; }
   .recent-row-info { flex: 1; min-width: 0; }
   .recent-card-title { font-size: 16px; font-weight: 700; color: var(--ink); margin-bottom: 0.25rem; }
   .recent-card-meta { font-size: 13px; color: var(--text3); }
   .recent-card-right { display: flex; align-items: center; gap: 0.625rem; flex-shrink: 0; padding-top: 2px; }
-  .btn-edit { font-size: 11px; color: var(--ink); background: none; border: 1.5px solid var(--ink); padding: 6px 12px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif; font-weight: 500; }
+  .btn-edit { font-size: 11px; color: var(--ink); background: none; border: 1px solid var(--line-strong); padding: 6px 12px; cursor: pointer; font-family: var(--font-body); font-weight: 500; }
   .btn-edit:hover { background: var(--ink); color: var(--bg); }
 
   /* ── Empty state ─────────────────────────────────────────────────────── */
@@ -411,25 +548,24 @@
   .dry-run-table tr:last-child td { border-bottom: none; }
   .dry-run-table tr.would-send td { background: rgba(217,169,166,0.12); }
   .dry-run-table tr.skipped td { background: transparent; color: var(--text2); }
-  .verdict-pill { display: inline-block; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+  .verdict-pill { display: inline-block; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 700; }
   .verdict-pill.send { background: var(--pill); color: var(--ink); }
   .verdict-pill.skip { background: var(--bg2); color: var(--text3); }
   .dry-run-summary { display: flex; gap: 1.5rem; margin-top: 0.6rem; font-size: 0.8rem; color: var(--text2); flex-wrap: wrap; }
 
   /* ── Calendars page ─────────────────────────────────────────────────── */
-  .cal-form { background: white; border: 1.5px solid var(--ink); padding: 1.5rem; margin-bottom: 2rem; }
+  .cal-form { background: white; border: 1px solid var(--line-strong); padding: 1.5rem; margin-bottom: 2rem; }
   .cal-form h3 { font-size: 1rem; font-weight: 600; margin-bottom: 1.25rem; }
   .form-group { margin-bottom: 1rem; }
   .form-group label { display: block; font-size: 0.8rem; color: var(--text2); margin-bottom: 5px; font-weight: 500; }
-  .form-group input { width: 100%; padding: 0.625rem 0.875rem; border: 1.5px solid var(--ink); font-size: 0.875rem; background: var(--bg); color: var(--ink); font-family: inherit; }
+  .form-group input { width: 100%; padding: 0.625rem 0.875rem; border: 1px solid var(--line-strong); font-size: 0.875rem; background: var(--bg); color: var(--ink); font-family: inherit; }
   .form-group input:focus { outline: none; background: white; }
   /* Reads as a quiet aside next to the label rather than a second label. */
   .label-optional { font-weight: 400; font-size: 0.75rem; color: var(--text2); text-transform: none; letter-spacing: 0; }
   /* An invitation is a question with two answers, so the card opens flat
      instead of hiding the buttons behind an accordion. */
   .invite-card { border-left: 3px solid var(--ink); }
-  .review-badge-invite { background: var(--ink); color: var(--bg); font-size: 0.68rem; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase; padding: 3px 8px; border-radius: 2px; }
+  .review-badge-invite { background: var(--ink); color: var(--bg); font-size: 0.68rem; font-weight: 700; padding: 3px 8px; border-radius: 2px; }
   .invite-panel { padding: 0 1rem 1rem; }
 
   /* One heading per day. The day column inside each card goes away when a
@@ -437,7 +573,7 @@
      ungrouped ones rather than jumping left. */
   /* No per-day count here: "Thursday, September 3" followed by a "9" read as
      "September 39". The events are directly below and countable by eye. */
-  .recent-date-head { font-family: 'Archivo Black', sans-serif; font-size: 0.95rem;
+  .recent-date-head { font-family: var(--font-display); font-size: 0.95rem;
     margin: 1.6rem 0 0; padding-bottom: 0.35rem; }
   /* Grouped cards drop the day column (the heading carries the date), so they
      just use the normal card padding — no need to indent to a missing column. */
@@ -454,13 +590,13 @@
 
   /* Section rules for the Approved page. Sits above the first card of each
      group rather than boxing it, so the list still reads as one column. */
-  .recent-section { margin: 2rem 0 0.25rem; padding-bottom: 0.4rem; border-bottom: 1.5px solid var(--ink); }
+  .recent-section { margin: 2rem 0 0.25rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--line); }
   .recent-section:first-child { margin-top: 0; }
-  .recent-section-head { font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+  .recent-section-head { font-size: 0.75rem; font-weight: 700; }
   .recent-section-count { font-weight: 400; color: var(--text2); letter-spacing: 0; }
   .recent-section-note { font-size: 0.78rem; color: var(--text2); margin-top: 0.3rem; text-transform: none; letter-spacing: 0; font-weight: 400; }
   .source-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-  .source-tab { padding: 0.5rem 1rem; border: 1.5px solid var(--ink); font-size: 0.875rem; cursor: pointer; background: transparent; color: var(--ink); }
+  .source-tab { padding: 0.5rem 1rem; border: 1px solid var(--line-strong); font-size: 0.875rem; cursor: pointer; background: transparent; color: var(--ink); }
   .source-tab.active { background: var(--ink); color: var(--bg); }
   .drop-zone { border: 2px dashed var(--ink); padding: 2rem; text-align: center; cursor: pointer; color: var(--text2); font-size: 0.875rem; transition: all 0.15s; }
   .drop-zone:hover, .drop-zone.dragover { background: var(--bg2); }
@@ -471,20 +607,16 @@
   .cal-instructions:focus { outline: none; border-color: var(--blue); }
   .cal-instructions::placeholder { color: #999; }
   .form-actions { display: flex; gap: 0.75rem; margin-top: 1.25rem; }
-  .btn-primary { padding: 0.625rem 1.5rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
-  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-secondary { padding: 0.625rem 1rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.875rem; cursor: pointer; }
-  .btn-secondary:hover { background: var(--ink); color: var(--bg); }
   .cal-list-item { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--ink); padding: 18px 0; }
   .cal-list-name { font-weight: 700; font-size: 15px; }
   .cal-list-meta { font-size: 0.8rem; color: var(--text2); margin-top: 2px; }
   .cal-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 10px; flex-shrink: 0; }
   .cal-section { margin-bottom: 40px; }
   .cal-section-head { margin-bottom: 4px; }
-  .cal-section-title { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .cal-section-title { font-size: 0.95rem; font-weight: 700; }
   .cal-section-sub { font-size: 0.8rem; color: var(--text2); margin-top: 4px; max-width: 60ch; }
   .cal-member-group { margin-top: 18px; }
-  .cal-member-name { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; }
+  .cal-member-name { font-size: 0.8rem; font-weight: 600; color: var(--text2); }
   .cal-feed-link { color: var(--text2); text-decoration: underline; }
   .cal-feed-link:hover { color: var(--ink); }
   .cal-sync-bad { color: #b3261e; font-weight: 600; }
@@ -497,10 +629,11 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── Category review page ─────────────────────────────────────────── */
+  #page-category { max-width: 720px; margin: 0 auto; }
   .cat-back-btn { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; cursor: pointer; color: var(--text2); font-size: 0.875rem; padding: 0.25rem 0; margin-bottom: 1rem; }
   .cat-back-btn:hover { color: var(--ink); }
   .cat-back-btn .material-icons { font-size: 18px; }
-  .cat-card { border: 1.5px solid var(--ink); margin-bottom: 0.75rem; overflow: hidden; background: white; }
+  .cat-card { border: 1px solid var(--line-strong); margin-bottom: 0.75rem; overflow: hidden; background: white; }
   .cat-card-header { display: flex; align-items: center; padding: 0.875rem 1rem; gap: 0.75rem; }
   .cat-card-header:hover { background: var(--bg); }
   .cat-header-left { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; cursor: pointer; user-select: none; }
@@ -509,10 +642,10 @@
   .cat-name { font-size: 0.925rem; font-weight: 600; }
   .cat-header-actions { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
   .cat-header-status { font-size: 0.8rem; white-space: nowrap; }
-  .btn-cat-add { padding: 0.35rem 0.875rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.8rem; font-weight: 500; cursor: pointer; white-space: nowrap; }
+  .btn-cat-add { padding: 0.35rem 0.875rem; background: var(--ink); color: var(--bg); border: 1px solid var(--line-strong); font-size: 0.8rem; font-weight: 500; cursor: pointer; white-space: nowrap; }
   .btn-cat-add:hover { opacity: 0.82; }
   .btn-cat-add:disabled { opacity: 0.45; cursor: not-allowed; }
-  .btn-cat-dismiss { padding: 0.35rem 0.75rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
+  .btn-cat-dismiss { padding: 0.35rem 0.75rem; background: transparent; color: var(--ink); border: 1px solid var(--line-strong); font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
   .btn-cat-dismiss:hover { background: var(--ink); color: var(--bg); }
   .btn-cat-dismiss:disabled { opacity: 0.45; cursor: not-allowed; }
   .cat-card-body { border-top: 1px solid var(--ink); }
@@ -595,7 +728,7 @@
   .quick-newperson { display: inline-flex; align-items: center; gap: 6px; }
   .quick-newperson-input { font-family: inherit; font-size: 12px; padding: 3px 10px; border: 1px solid var(--ink); border-radius: 999px; background: #fff; color: var(--ink); width: 8.5rem; outline: none; }
   .qnp-field { position: relative; display: inline-block; }
-  .qnp-drop { position: absolute; top: calc(100% + 3px); left: 0; z-index: 60; min-width: 210px; max-height: 220px; overflow-y: auto; background: #fff; border: 1.5px solid var(--ink); }
+  .qnp-drop { position: absolute; top: calc(100% + 3px); left: 0; z-index: 60; min-width: 210px; max-height: 220px; overflow-y: auto; background: #fff; border: 1px solid var(--line-strong); }
   .qnp-drop .contact-option:not(:last-child) { border-bottom: 1px solid rgba(0,0,0,0.08); }
   .qnp-drop .contact-option:hover { background: var(--bg); }
   .quick-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
@@ -617,7 +750,7 @@
   .btn-update:disabled { opacity: 0.5; cursor: not-allowed; }
 
   /* ── Confidence pills ────────────────────────────────────────────── */
-  .confidence-pill { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 2px 8px; margin-left: 6px; vertical-align: middle; text-transform: uppercase; letter-spacing: 0.02em; }
+  .confidence-pill { display: inline-block; font-size: 0.72rem; font-weight: 600; padding: 2px 8px; margin-left: 6px; vertical-align: middle; letter-spacing: 0.02em; }
   .confidence-high   { background: var(--pill); color: var(--ink); }
   .confidence-medium { background: var(--pill); color: var(--ink); opacity: 0.8; }
   .confidence-low    { background: #fce8e6; color: #9b1c1c; }
@@ -644,7 +777,7 @@
 
   /* ── Reminders section ───────────────────────────────────────────── */
   .reminders-section { margin-bottom: 2rem; }
-  .reminders-section-label { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text3); margin-bottom: 0.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--ink); }
+  .reminders-section-label { font-size: 0.72rem; font-weight: 700; color: var(--text3); margin-bottom: 0.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--ink); }
   .reminder-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 0; border-bottom: 1px solid rgba(17,17,17,0.1); }
   .reminder-card:last-child { border-bottom: none; }
   .reminder-headline { font-size: 0.925rem; font-weight: 600; color: var(--ink); }
@@ -654,22 +787,22 @@
 
   /* ── Custom Recurrence Modal ─────────────────────────────────────── */
   .custom-recur-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 2000; display: flex; align-items: center; justify-content: center; padding: 1rem; }
-  .custom-recur-modal { background: white; border: 1.5px solid var(--ink); padding: 1.5rem; width: 100%; max-width: 400px; }
-  .custom-recur-title { font-size: 1rem; font-weight: 700; margin-bottom: 1.25rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .custom-recur-modal { background: white; border: 1px solid var(--line-strong); padding: 1.5rem; width: 100%; max-width: 400px; }
+  .custom-recur-title { font-size: 1rem; font-weight: 700; margin-bottom: 1.25rem; }
   .custom-recur-row { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 1rem; flex-wrap: wrap; }
   .custom-recur-label { font-size: 0.875rem; color: var(--ink); white-space: nowrap; }
-  .custom-recur-num { width: 60px; padding: 0.4rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); text-align: center; }
+  .custom-recur-num { width: 60px; padding: 0.4rem 0.5rem; border: 1px solid var(--line-strong); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); text-align: center; }
   .custom-recur-num:focus { outline: none; background: white; }
-  .custom-recur-select { padding: 0.4rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
+  .custom-recur-select { padding: 0.4rem 0.5rem; border: 1px solid var(--line-strong); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
   .custom-recur-select:focus { outline: none; background: white; }
   .weekday-row { display: flex; gap: 6px; flex-wrap: wrap; }
-  .weekday-btn { width: 34px; height: 34px; border: 1.5px solid var(--ink); background: transparent; font-size: 0.8rem; font-weight: 600; cursor: pointer; font-family: inherit; color: var(--ink); transition: background 0.1s, color 0.1s; }
+  .weekday-btn { width: 34px; height: 34px; border: 1px solid var(--line-strong); background: transparent; font-size: 0.8rem; font-weight: 600; cursor: pointer; font-family: inherit; color: var(--ink); transition: background 0.1s, color 0.1s; }
   .weekday-btn.active { background: var(--ink); color: white; }
   .ends-section { margin-bottom: 1rem; }
-  .ends-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.625rem; }
+  .ends-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); margin-bottom: 0.625rem; }
   .ends-radio-row { display: flex; align-items: center; gap: 0.625rem; margin-bottom: 0.5rem; font-size: 0.875rem; }
   .ends-radio-row input[type=radio] { accent-color: var(--ink); }
-  .ends-date-input { padding: 0.35rem 0.5rem; border: 1.5px solid var(--ink); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
+  .ends-date-input { padding: 0.35rem 0.5rem; border: 1px solid var(--line-strong); font-size: 0.875rem; font-family: inherit; color: var(--ink); background: var(--bg); }
   .ends-date-input:focus { outline: none; background: white; }
   .custom-recur-actions { display: flex; gap: 0.75rem; justify-content: flex-end; border-top: 1px solid rgba(17,17,17,0.15); padding-top: 1.25rem; margin-top: 0.25rem; }
   #weekday-row-wrap { margin-bottom: 1rem; }
@@ -699,7 +832,7 @@
 
   /* ── Settings page ───────────────────────────────────────────────── */
   .settings-section { margin-bottom: 2rem; }
-  .settings-section-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.875rem; }
+  .settings-section-title { font-size: 0.8rem; font-weight: 600; color: var(--text2); margin-bottom: 0.875rem; }
   /* Collapsed by default, because this list is consulted rarely and read
      anxiously — it is where someone goes to ask "what is being hidden from me".
      The count sits in the summary so that question is answered without opening
@@ -708,8 +841,13 @@
   .settings-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
   .settings-section > summary::-webkit-details-marker { display: none; }
   .settings-section > summary .settings-section-title { margin-bottom: 0; }
-  .settings-section > summary::after { content: '+'; font-size: 0.95rem; color: var(--text2); line-height: 1; order: 2; }
-  .settings-section[open] > summary::after { content: '\2212'; }
+  /* A chevron, not a +/- pair: this expands a list, it does not add anything. */
+  .settings-section > summary::after {
+    content: ''; order: 2; width: 10px; height: 10px; margin-left: 2px;
+    border-right: 1.4px solid var(--muted); border-bottom: 1.4px solid var(--muted);
+    transform: rotate(45deg) translate(-2px, -2px);
+  }
+  .settings-section[open] > summary::after { transform: rotate(225deg) translate(-2px, -2px); }
   .settings-section > summary:hover .settings-section-title { color: var(--ink); }
   .settings-section > summary + .page-desc { margin-top: 0.875rem; }
   .settings-section .page-desc { text-align: left; max-width: 680px; }
@@ -725,7 +863,7 @@
 .cal-section-count { font-weight: 400; color: var(--text2); }
 .cal-section-hint { font-style: normal; color: var(--text2); }
   .excl-count { font-size: 0.8rem; color: var(--text2); font-weight: 400; text-transform: none; letter-spacing: 0; }
-  .member-row { display: flex; align-items: center; gap: 0.75rem; background: white; border: 1.5px solid var(--ink); padding: 0.75rem 1rem; margin-bottom: 0.5rem; }
+  .member-row { display: flex; align-items: center; gap: 0.75rem; background: white; border: 1px solid var(--line-strong); padding: 0.75rem 1rem; margin-bottom: 0.5rem; }
   .member-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
   .member-name { flex: 1; font-size: 0.9rem; font-weight: 500; }
   .member-cal-badge { font-size: 0.75rem; color: var(--text2); background: var(--bg); border: 1px solid var(--ink); padding: 2px 7px; }
@@ -733,117 +871,413 @@
   .member-grade:focus { outline: none; background: white; }
   .member-circle { font-family: inherit; font-size: 0.78rem; padding: 3px 5px; border: 1px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
   .member-circle:focus { outline: none; background: white; }
-  .circle-heading { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text2); margin: 0.75rem 0 0.35rem; }
+  .circle-heading { font-size: 0.72rem; font-weight: 600; color: var(--text2); margin: 0.75rem 0 0.35rem; }
   .circle-heading:first-child { margin-top: 0; }
   /* The circle a suggested event is heading for, shown on the review card. */
-  .circle-tag { display: inline-block; font-size: 0.68rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); background: var(--bg); border: 1px solid var(--text2); border-radius: 3px; padding: 1px 5px; margin-left: 6px; }
+  .circle-tag { display: inline-block; font-size: 0.68rem; font-weight: 600; color: var(--text2); background: var(--bg); border: 1px solid var(--text2); border-radius: 3px; padding: 1px 5px; margin-left: 6px; }
 
   /* ── Review calendar view ───────────────────────────────────────────
      Reuses the existing palette only: pink --bg, ink borders, white cards,
      Archivo Black headings. Proposed (awaiting approval) reads as a dashed
      chip; already-on-your-calendar reads as a solid muted chip. */
-  .src-title { font-size: 2.1rem; font-weight: 400; margin: 0 0 0.35rem; }
-  .src-lead { font-size: 0.92rem; color: var(--text2); margin: 0 0 1.6rem; }
-  .src-block { margin-bottom: 2rem; }
-  .src-block-head { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.6rem; }
-  @media (min-width: 700px) { .src-title { font-size: 2.6rem; } }
+  /* Sources, per 6c. Cards on --surface with a hairline, not black boxes. */
+  #page-calendars, #page-settings { max-width: 720px; margin: 0 auto; }
+  .src-title {
+    font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1.05;
+    color: var(--primary); margin: 0 0 12px;
+  }
+  .src-lead {
+    font-family: var(--font-body); font-size: 15px; line-height: 1.6; color: var(--text-2);
+    margin: 0 0 40px; max-width: 60ch;
+  }
+  .src-card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    padding: 24px; margin-bottom: 16px;
+  }
+  .src-card-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .src-card-head {
+    font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary); margin: 0;
+  }
+  .src-card-note { font-family: var(--font-body); font-size: 14px; color: var(--muted); margin-top: 8px; }
+  .src-section {
+    font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary);
+    margin: 48px 0 12px;
+  }
+  .src-block-head { font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary); margin: 0 0 12px; }
+  .src-rows { display: flex; flex-direction: column; }
+  .src-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    min-height: 46px; padding: 8px 0; border-bottom: 1px solid var(--line);
+    font-family: var(--font-body); font-size: 15px; color: var(--text);
+  }
+  .src-row:first-child { border-top: 1px solid var(--line); }
+  .src-row-meta { font-size: 13px; color: var(--muted); white-space: nowrap; }
 
-  /* Today */
-  .today-date { font-size: 2.1rem; font-weight: 400; margin-bottom: 0.9rem; }
-  .today-summary { display: flex; align-items: flex-start; gap: 14px; justify-content: space-between;
-    border-left: 2px solid var(--ink); padding: 0.5rem 0 0.5rem 0.9rem; margin-bottom: 1.8rem; }
-  .today-summary-text { font-size: 0.95rem; line-height: 1.55; color: var(--ink); }
-  .today-rewrite { font-family: inherit; font-size: 0.75rem; background: none; border: none;
-    color: var(--text2); text-decoration: underline; cursor: pointer; flex-shrink: 0; padding: 0; }
-  .today-section { margin-bottom: 2rem; }
-  .today-section-head { font-size: 0.9rem; font-weight: 600; margin-bottom: 0.5rem; }
-  .today-maybe-note { font-size: 0.85rem; color: var(--text2); margin-bottom: 0.7rem; }
-  .today-none { font-size: 0.9rem; color: var(--text2); }
-  .today-peek { display: flex; align-items: center; justify-content: space-between; gap: 12px;
-    font-size: 0.92rem; padding: 0.45rem 0; border-bottom: 1px solid var(--bg2); }
-  .today-peek:last-child { border-bottom: none; }
-  .today-peek-time { color: var(--text2); font-size: 0.82rem; margin-right: 10px; }
-  .today-clear { font-size: 0.95rem; color: var(--text2); margin-bottom: 2rem; }
-  @media (min-width: 700px) { .today-date { font-size: 2.6rem; } }
+  /* Recently added: apricot, because it names what Criba did on its own. */
+  .src-recent { background: var(--apricot-tint); border: none; }
+  .src-recent-lead { font-family: var(--font-body); font-size: 15px; color: var(--text); }
+  .src-recent-lead b { font-weight: 600; }
+  /* Two lines of chips at most -- 67 of them turned the card into a wall. */
+  .src-recent-chips {
+    display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px;
+    max-height: 72px; overflow: hidden;
+  }
+  .src-chip {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-pill);
+    padding: 6px 12px; font-size: 13px; color: var(--text);
+    max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .src-chip-more { background: transparent; border-color: var(--line-strong); }
+  .src-recent-note { font-size: 13px; color: var(--muted); margin-top: 12px; font-style: normal; }
 
-  /* What's Ahead. The whole screen is a list of dates; a day opens only when
-     it is asked for. The previous version put 116 rows on screen at once, each
-     with buttons demanding a decision, and there was no way to look at the week
-     without the entire backlog looking back. */
-  .wa-title { font-size: 2.1rem; font-weight: 400; margin: 0 0 0.35rem; }
-  .wa-sub { font-size: 0.92rem; color: var(--text2); margin: 0 0 1.6rem; }
-  .wa-day { border-bottom: 1px solid var(--bg2); }
-  .wa-dayhead { display: flex; align-items: center; justify-content: space-between; width: 100%;
-    font-family: inherit; font-size: 1.05rem; color: var(--ink); text-align: left;
-    background: none; border: none; padding: 0.85rem 0.1rem; cursor: pointer; }
-  .wa-dayhead:hover { background: var(--bg2); }
-  .wa-dayname { display: inline-flex; align-items: center; gap: 10px; }
-  .wa-count { font-size: 0.82rem; color: var(--text2); }
-  .wa-clash { font-size: 0.78rem; color: #b06a00; }
-  .wa-plus { font-size: 1.15rem; color: var(--text2); line-height: 1; }
-  .wa-daybody { padding: 0 0 0.6rem; }
-  .wa-daybody[hidden] { display: none; }
-  .wa-empty { font-size: 0.9rem; color: var(--text2); padding: 0.6rem 0.1rem; }
-  @media (min-width: 700px) { .wa-title { font-size: 2.6rem; } }
+  /* Maintenance: text first, button second. */
+  .src-maint { margin-top: 48px; }
+  .src-maint-row { padding: 20px 0; border-bottom: 1px solid var(--line); }
+  .src-maint-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .src-maint-title { font-size: 15px; font-weight: 600; color: var(--text); }
+  .src-maint-desc { font-size: 14px; color: var(--muted); line-height: 1.6; max-width: 60ch; margin: 4px 0 12px; }
 
-  /* Home. Mobile first; the desktop rule only widens the measure so the
-     headline does not stretch across a monitor. Existing tokens only --
-     no new colours while the palette is still being decided. */
-  #page-home { max-width: 34rem; }
-  .home-date { font-size: 0.78rem; font-weight: 600; color: var(--text2); }
-  .home-headline { font-size: 2.1rem; line-height: 1.12; margin: 1.1rem 0 0.9rem; font-weight: 400; }
-  .home-summary { font-size: 0.95rem; line-height: 1.5; color: var(--text2); margin: 0 0 2.2rem; max-width: 30rem; }
-  .home-go { font-size: 0.8rem; font-weight: 600; color: var(--text2); margin-bottom: 0.4rem; }
-  .home-menu { display: flex; flex-direction: column; }
-  .home-link { display: flex; align-items: center; justify-content: space-between; width: 100%;
-    font-family: inherit; font-size: 1.15rem; color: var(--ink); text-align: left; cursor: pointer;
-    background: none; border: none; border-bottom: 1px solid var(--bg2); padding: 0.58rem 0.1rem; }
-  .home-link:hover { background: var(--bg2); }
-  .home-link-right { display: inline-flex; align-items: center; gap: 10px; }
-  .home-arrow { color: var(--text2); font-size: 0.95rem; }
-  .home-new { font-size: 0.72rem; font-weight: 600; padding: 0.2rem 0.5rem; border: 1.5px solid var(--ink); }
-  .home-new[hidden] { display: none; }
-  .home-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px;
-    flex-wrap: wrap; margin-top: 2.2rem; }
-  .home-gcal { font-size: 0.85rem; color: var(--ink); }
-  .home-signout { font-family: inherit; font-size: 0.85rem; background: none; border: none;
-    color: var(--text2); cursor: pointer; padding: 0; text-decoration: underline; }
-  @media (min-width: 700px) { .home-headline { font-size: 2.6rem; } }
-
-  /* Shared event row (Today + What's Ahead). Uses the existing ink/bg tokens
-     only -- no new colours, the palette is still being worked on. Mobile first:
-     the time sits above the title on narrow screens and beside it from 520px. */
-  .ev-row { display: grid; grid-template-columns: 1fr; gap: 2px 14px; padding: 0.7rem 0; border-bottom: 1px solid var(--bg2); }
-  .ev-row:last-child { border-bottom: none; }
-  .ev-time { font-size: 0.78rem; color: var(--text2); letter-spacing: 0.02em; white-space: nowrap; }
-  .ev-title { font-size: 0.98rem; line-height: 1.35; display: flex; align-items: baseline; }
-  .ev-meta { font-size: 0.78rem; color: var(--text2); margin-top: 2px; }
-  .ev-row.ev-past .ev-title, .ev-row.ev-past .ev-time { text-decoration: line-through; opacity: 0.55; }
-  .ev-actions { display: flex; gap: 8px; margin-top: 7px; flex-wrap: wrap; }
-  .ev-act { font-family: inherit; font-size: 0.8rem; font-weight: 600;
-            padding: 0.3rem 0.7rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
-  .ev-act:hover { background: var(--ink); color: var(--bg); }
-  .ev-act-danger { border-color: #c5221f; color: #c5221f; }
-  .ev-act-danger:hover { background: #c5221f; color: white; }
-  .ev-editor { grid-column: 1 / -1; }
-  .ev-editor[hidden] { display: none; }
-  @media (min-width: 520px) {
-    .ev-row { grid-template-columns: 64px 1fr; }
-    .ev-editor { grid-column: 2 / -1; }
+  /* Buttons */
+  .btn-apricot {
+    background: var(--apricot); color: var(--on-apricot); border: 1px solid var(--apricot);
+    border-radius: var(--radius); min-height: 44px; padding: 0 20px;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; cursor: pointer;
+  }
+  .btn-apricot:hover { background: var(--apricot-hover); border-color: var(--apricot-hover); }
+  .btn-danger-text {
+    background: none; border: none; color: var(--danger); cursor: pointer;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; min-height: 44px; padding: 0;
+  }
+  .btn-danger-text:hover { text-decoration: underline; }
+  .btn-text {
+    background: none; border: none; color: var(--primary); cursor: pointer;
+    font-family: var(--font-body); font-size: 13px; font-weight: 500; padding: 0; text-decoration: underline;
   }
 
+  /* Add calendar form */
+  .cal-form { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 24px; }
+  .cal-form .src-card-head { margin-bottom: 20px; }
+  .cal-form .form-group { margin-bottom: 20px; }
+  .cal-form label { display: block; font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .cal-form .label-optional { font-weight: 400; color: var(--muted); }
+  .cal-form input[type="text"], .cal-form input[type="url"] {
+    width: 100%; height: 48px; background: var(--bg); border: 1px solid var(--line-strong);
+    border-radius: var(--radius); padding: 0 14px; font-family: var(--font-body); font-size: 15px; color: var(--text);
+  }
+  .cal-form input::placeholder, .cal-instructions::placeholder { color: var(--placeholder); }
+  .cal-form input:focus, .cal-instructions:focus { outline: none; border: 2px solid var(--primary); }
+  .cal-instructions {
+    width: 100%; background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    padding: 12px 14px; font-family: var(--font-body); font-size: 15px; color: var(--text); margin-top: 12px;
+  }
+  /* Segmented control, not two black buttons. */
+  .source-tabs {
+    display: flex; height: 44px; border: 1px solid var(--line-strong); border-radius: var(--radius);
+    overflow: hidden; margin-bottom: 12px;
+  }
+  .source-tab {
+    flex: 1 1 0; background: transparent; color: var(--primary); border: none; cursor: pointer;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500;
+  }
+  .source-tab.active { background: var(--apricot); color: var(--on-apricot); }
+  .drop-zone {
+    border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--bg);
+    padding: 28px 20px; text-align: center; color: var(--muted); font-size: 14px; cursor: pointer;
+  }
+  .drop-zone:hover { border-color: var(--primary); }
+  .form-actions { display: flex; align-items: center; gap: 12px; margin-top: 24px; }
+  @media (max-width: 480px) {
+    .src-card, .cal-form { padding: 20px; }
+    .src-card-row .btn-apricot { width: 100%; margin-top: 16px; }
+  }
+
+  /* People and rules, per 6d. One card per person, everything for that person
+     inside it -- the chips used to float outside the row they belonged to. */
+  .person-group {
+    font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted);
+    margin: 8px 0 12px;
+  }
+  .person-card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    padding: 16px 20px; margin-bottom: 12px;
+  }
+  .person-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .person-dot { width: 10px; height: 10px; border-radius: 50%; border: none; flex-shrink: 0; cursor: pointer; }
+  .person-name { font-family: var(--font-body); font-size: 16px; font-weight: 500; color: var(--text); }
+  .person-controls { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+  .person-select, .person-grade {
+    height: 36px; background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--radius);
+    font-family: var(--font-body); font-size: 14px; color: var(--text); padding: 0 10px;
+  }
+  .person-grade { width: 64px; }
+  .person-remove {
+    width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--muted); cursor: pointer; border-radius: var(--radius);
+  }
+  .person-remove:hover { color: var(--danger); background: var(--bg2); }
+  .member-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
+  /* Chips are teal-tint pills, and domains are not monospace. */
+  .act-chip {
+    display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px;
+    background: var(--tint); color: var(--primary); border: none; border-radius: var(--radius-pill);
+    font-family: var(--font-body); font-size: 13px;
+  }
+  .act-chip-detail { color: var(--muted); font-family: var(--font-body); }
+  .act-chip-guess { opacity: 0.75; }
+  .act-chip-x {
+    width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: none; color: var(--primary); cursor: pointer; font-size: 12px; padding: 0;
+  }
+  .act-add {
+    background: none; border: none; color: var(--primary); cursor: pointer;
+    font-family: var(--font-body); font-size: 13px; font-weight: 500; padding: 0;
+  }
+  .act-add:hover { text-decoration: underline; }
+  .pr-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+  .pr-count {
+    background: var(--tint); color: var(--primary); border-radius: var(--radius-pill);
+    height: 24px; padding: 0 10px; display: inline-flex; align-items: center;
+    font-family: var(--font-body); font-size: 12px; font-weight: 600;
+  }
+  .pr-showall { color: var(--primary); text-decoration: underline; }
+  #page-settings .settings-section { margin-bottom: 48px; }
+  #page-settings .page-desc, #page-settings .src-lead { font-style: normal; }
+
+  /* Today, per 6a. */
+  #page-today { max-width: 720px; margin: 0 auto; }
+  .today-title {
+    font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1.05;
+    color: var(--primary); margin: 0;
+  }
+  .today-date {
+    font-family: var(--font-display); font-size: 19px; font-weight: 400;
+    color: var(--text-2); margin: 12px 0 0;
+  }
+  .today-head { margin-bottom: 32px; }
+  /* No left rule and no floating link: the summary is a card, and Rewrite sits
+     under the text where it reads as a footnote to it. */
+  .today-summary {
+    background: var(--apricot-tint); border-radius: var(--radius-card);
+    padding: 20px 24px; margin-bottom: 40px;
+  }
+  .today-summary-text {
+    font-family: var(--font-body); font-size: 15px; line-height: 1.6; color: var(--text);
+    max-width: 60ch;
+  }
+  .today-summary-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
+  .today-rewrite {
+    font-family: var(--font-body); font-size: 13px; font-weight: 500; color: var(--primary);
+    background: none; border: none; cursor: pointer; padding: 0; text-decoration: underline;
+  }
+  .today-section { margin-bottom: 48px; }
+  .today-section-label {
+    font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted);
+    margin-bottom: 12px;
+  }
+  .today-section-head {
+    font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary);
+    margin: 0 0 12px;
+  }
+  .today-maybe-note { font-size: 14px; color: var(--muted); margin-bottom: 12px; }
+  .today-none { font-size: 15px; color: var(--muted); }
+  .today-peek {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    font-size: 15px; color: var(--text); min-height: 46px; padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .today-peek:first-of-type { border-top: 1px solid var(--line); }
+  .today-peek-time { color: var(--muted); font-size: 13px; margin-right: 12px; font-variant-numeric: tabular-nums; }
+  .today-clear { font-size: 15px; color: var(--muted); margin-bottom: 48px; }
+  @media (max-width: 480px) {
+    .today-summary { padding: 16px 18px; }
+  }
+
+  /* Shared event row (Today + What's ahead), per the Today spec.
+     A three-column grid: time | content | one More menu. The previous version
+     stacked Edit, Dismiss and Delete under every single event, which put three
+     buttons and a red outline on every line of the day. */
+  .ev-row {
+    display: grid; grid-template-columns: 96px 1fr 44px; column-gap: 16px;
+    align-items: start; padding: 14px 0; border-bottom: 1px solid var(--line);
+  }
+  .ev-row:first-child { border-top: 1px solid var(--line); }
+  .ev-time {
+    font-family: var(--font-body); font-size: 13px; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+    display: flex; flex-direction: column; gap: 2px; padding-top: 2px;
+  }
+  .ev-time-end { color: var(--done); }
+  .ev-title {
+    font-family: var(--font-body); font-size: 16px; font-weight: 500; color: var(--text);
+    line-height: 1.4; display: flex; align-items: baseline; gap: 8px;
+  }
+  .ev-origin {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--apricot);
+    flex-shrink: 0; align-self: center;
+  }
+  .ev-meta {
+    font-family: var(--font-body); font-size: 13px; color: var(--muted); margin-top: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ev-row.ev-past .ev-title { color: var(--done); text-decoration: line-through; }
+  .ev-row.ev-past .ev-time { color: var(--done); }
+  .ev-actions { position: relative; justify-self: end; }
+  .ev-more {
+    width: 44px; height: 44px; margin-top: -8px; display: inline-flex;
+    align-items: center; justify-content: center; background: none; border: none;
+    color: var(--muted); cursor: pointer; border-radius: var(--radius);
+  }
+  .ev-more:hover { color: var(--primary); background: var(--bg2); }
+  .ev-menu {
+    position: absolute; right: 0; top: 40px; z-index: 200; min-width: 160px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    box-shadow: 0 1px 2px rgba(36,48,42,.06); padding: 6px; display: flex; flex-direction: column;
+  }
+  .ev-menu[hidden] { display: none; }
+  .ev-menu-item {
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; color: var(--primary);
+    background: none; border: none; text-align: left; padding: 10px 12px;
+    border-radius: var(--radius); cursor: pointer; min-height: 44px; display: flex; align-items: center;
+  }
+  .ev-menu-item:hover { background: var(--bg2); }
+  .ev-menu-danger { color: var(--danger); }
+  /* Inline actions that are not the row's More menu: Add / Dismiss under
+     "Want it on your calendar?", and Undo under "Just added". Secondary button
+     style, since none of them is the primary action of the screen. */
+  .ev-actions-inline { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .ev-act {
+    font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    min-height: 44px; padding: 0 16px; cursor: pointer;
+    background: transparent; color: var(--primary);
+    border: 1px solid var(--line-strong); border-radius: var(--radius);
+  }
+  .ev-act:hover { border-color: var(--primary); }
+  .ev-act-primary { background: var(--apricot); border-color: var(--apricot); color: var(--on-apricot); }
+  .ev-act-primary:hover { background: var(--apricot-hover); border-color: var(--apricot-hover); }
+  .ev-editor { grid-column: 1 / -1; margin-top: 12px; }
+  .ev-editor[hidden] { display: none; }
+  @media (max-width: 480px) {
+    .ev-row { grid-template-columns: 56px 1fr 44px; column-gap: 12px; }
+  }
+
+  .today-proposed {
+    font-family: var(--font-body); font-size: 15px; line-height: 1.6; color: var(--text);
+    margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(47,82,87,0.14);
+  }
+  .today-proposed-link {
+    font-family: var(--font-body); font-size: 15px; font-weight: 500; color: var(--primary);
+    background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline;
+  }
+
+  /* A row that is not on the calendar. Quiet, but a word rather than a dot --
+     the coloured dot already means "whose event is this", and two dot meanings
+     on one row would collide. */
+  .ev-tag {
+    font-family: var(--font-body); font-size: 11px; font-weight: 600;
+    color: var(--muted); border: 1px solid var(--line-strong); border-radius: var(--radius-pill);
+    padding: 1px 8px; margin-right: 8px; white-space: nowrap;
+  }
+  .ev-row.ev-waiting .ev-title { color: var(--text-2); }
+
+  /* "Not reviewed" collapsible. Closed by default: a question to open when
+     there is room for it, not a queue to face on arrival. */
+  .nr { border-top: 1px solid var(--line); margin-top: 8px; }
+  .nr-inline { margin-top: 16px; }
+  .nr-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    width: 100%; min-height: 56px; padding: 0; background: none; border: none;
+    cursor: pointer; text-align: left; color: var(--primary);
+  }
+  .nr-title { font-family: var(--font-display); font-size: 21px; font-weight: 400; }
+  .nr-chev { font-size: 18px; color: var(--muted); line-height: 1; }
+  .nr-body { padding-bottom: 8px; }
+  .nr-body[hidden] { display: none; }
+  .nr-note { font-family: var(--font-body); font-size: 14px; color: var(--muted); margin-bottom: 12px; }
+
+  /* Home. Rows are exactly 56px and touch each other, hairline at the bottom
+     of each and a border-top on the first. */
+  #page-home { max-width: 640px; margin: 0 auto; padding-top: 48px; }
+  @media (min-width: 700px) { #page-home { padding-top: 96px; } }
+  .home-date { font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted); }
+  .home-headline {
+    font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1.05;
+    color: var(--primary); margin: 12px 0 16px;
+  }
+  .home-summary {
+    font-family: var(--font-body); font-size: 16px; font-weight: 400; line-height: 1.6;
+    color: var(--text-2); margin: 0 0 48px; max-width: 60ch;
+  }
+  .home-go { font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 12px; }
+  .home-menu { display: flex; flex-direction: column; }
+  .home-link {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    width: 100%; height: 56px; padding: 0; margin: 0;
+    background: none; border: none; border-bottom: 1px solid var(--line);
+    color: var(--primary); text-align: left; cursor: pointer;
+  }
+  .home-link:first-child { border-top: 1px solid var(--line); }
+  .home-link:hover .home-label { text-decoration: underline; }
+  .home-label { font-family: var(--font-display); font-size: 22px; font-weight: 400; line-height: 1; }
+  .home-link-right { display: inline-flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .home-arrow { color: var(--muted); display: block; }
+  .home-new[hidden] { display: none; }
+  .home-foot { margin-top: 40px; }
+  .home-gcal { font-family: var(--font-body); font-size: 14px; color: var(--primary); text-decoration: none; }
+  .home-gcal:hover { text-decoration: underline; }
+
+  /* What's ahead, per 6b. The screen is a list of days; a day opens only when
+     it is asked for. The previous version put 116 rows on screen at once. */
+  #page-review { max-width: 720px; margin: 0 auto; }
+  .wa-title {
+    font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1.05;
+    color: var(--primary); margin: 0 0 12px;
+  }
+  .wa-sub {
+    font-family: var(--font-body); font-size: 15px; line-height: 1.6;
+    color: var(--text-2); margin: 0 0 40px; max-width: 60ch;
+  }
+  .wa-day { margin-bottom: 40px; }
+  .wa-dayhead {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    width: 100%; height: 56px; padding: 0; background: none; border: none;
+    border-bottom: 1px solid var(--line); cursor: pointer; text-align: left;
+    position: sticky; top: 72px; background: var(--bg); z-index: 2;
+  }
+  .wa-dayname { display: inline-flex; align-items: baseline; gap: 12px; min-width: 0; }
+  .wa-dayname-text {
+    font-family: var(--font-display); font-size: 21px; font-weight: 400; color: var(--primary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .wa-count { font-family: var(--font-body); font-size: 13px; color: var(--muted); white-space: nowrap; }
+  /* A pill, not loose orange text: the old amber sentence read as an alarm. */
+  .wa-clash {
+    font-family: var(--font-body); font-size: 12px; font-weight: 600;
+    background: var(--apricot-tint); color: var(--text);
+    border-radius: var(--radius-pill); padding: 5px 12px; white-space: nowrap;
+  }
+  .wa-chev {
+    width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center;
+    color: var(--muted); flex-shrink: 0;
+  }
+  .wa-dayhead:hover .wa-chev { color: var(--primary); }
+  .wa-daybody { padding-top: 4px; }
+  .wa-daybody[hidden] { display: none; }
+  .wa-empty { font-family: var(--font-body); font-size: 15px; color: var(--muted); padding: 14px 0; }
+
+
+
   .rv-view-toggle { display: flex; gap: 0; margin: 0.75rem 0 0; }
-  .rv-view-toggle button { font-family: inherit; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.5rem 1.1rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
+  .rv-view-toggle button { font-family: inherit; font-size: 12.5px; padding: 0.5rem 1.1rem; border: 1px solid var(--line-strong); background: var(--bg); color: var(--ink); cursor: pointer; }
   .rv-view-toggle button.on { background: var(--ink); color: var(--bg); }
   .rv-view-toggle button + button { border-left: none; }
-  .rv-cal { border: 1.5px solid var(--ink); background: white; margin-top: 1rem; }
-  .rv-cal-head { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.9rem; border-bottom: 1.5px solid var(--ink); }
-  .rv-cal-month { font-family: 'Archivo Black', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; }
+  .rv-cal { border: 1px solid var(--line-strong); background: white; margin-top: 1rem; }
+  .rv-cal-head { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line); }
+  .rv-cal-month { font-family: var(--font-display); font-size: 15px; letter-spacing: 0.02em; }
   .rv-cal-nav { display: flex; gap: 6px; }
-  .rv-cal-nav button { font-family: inherit; font-size: 14px; width: 30px; height: 30px; border: 1.5px solid var(--ink); background: var(--bg); cursor: pointer; color: var(--ink); line-height: 1; }
+  .rv-cal-nav button { font-family: inherit; font-size: 14px; width: 30px; height: 30px; border: 1px solid var(--line-strong); background: var(--bg); cursor: pointer; color: var(--ink); line-height: 1; }
   .rv-cal-nav button:hover { background: var(--bg2); }
   .rv-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); }
-  .rv-cal-dow { font-size: 0.64rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text2); text-align: center; padding: 6px 0; border-bottom: 1px solid var(--ink); }
+  .rv-cal-dow { font-size: 0.64rem; font-weight: 600; color: var(--text2); text-align: center; padding: 6px 0; border-bottom: 1px solid var(--ink); }
   .rv-cal-cell { min-height: 88px; border-right: 1px solid var(--bg2); border-bottom: 1px solid var(--bg2); padding: 4px 4px 6px; overflow: hidden; }
   .rv-cal-cell:nth-child(7n) { border-right: none; }
   .rv-cal-cell.other-month { background: var(--bg); }
@@ -856,27 +1290,27 @@
   .rv-cal-ev.already { background: var(--bg2); color: var(--text2); opacity: 0.9; }
   .rv-cal-ev-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .rv-cal-more { font-size: 0.64rem; color: var(--text2); margin-top: 2px; cursor: pointer; }
-  .rv-cal-legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 0.6rem 0.9rem; border-top: 1.5px solid var(--ink); font-size: 0.7rem; color: var(--text2); align-items: center; }
+  .rv-cal-legend { display: flex; gap: 16px; flex-wrap: wrap; padding: 0.6rem 0.9rem; border-top: 1px solid var(--line); font-size: 0.7rem; color: var(--text2); align-items: center; }
   .rv-cal-legend span { display: inline-flex; align-items: center; gap: 6px; }
   .rv-cal-legend i { width: 16px; border-top: 1.5px dashed var(--ink); display: inline-block; }
   .rv-cal-legend i.solid { border-top-style: solid; }
   .rv-cal-detail { margin-top: 1.25rem; }
-  .rv-cal-detail-head { font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 0.5rem; }
+  .rv-cal-detail-head { font-family: var(--font-display); font-size: 13px; letter-spacing: 0.02em; margin-bottom: 0.5rem; }
   .rv-cal-hint { font-size: 0.8rem; color: var(--text2); margin-top: 1rem; text-align: center; }
 
   /* Agenda view — the review workspace. */
   .rv-agenda { margin-top: 1rem; }
   .rv-agenda-day { margin-bottom: 1.75rem; }
-  .rv-agenda-daylabel { font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink); padding-bottom: 0.5rem; margin-bottom: 0.75rem; border-bottom: 1.5px solid var(--ink); }
+  .rv-agenda-daylabel { font-family: var(--font-display); font-size: 13px; color: var(--ink); padding-bottom: 0.5rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--line); }
   .rv-agenda-daylabel.is-today { color: var(--blue); border-bottom-color: var(--blue); }
 
   /* Themed confirm/alert modal — replaces the browser's native cribaAlert()/confirm(). */
   .criba-modal-overlay { position: fixed; inset: 0; background: rgba(17,17,17,0.5); display: flex; align-items: center; justify-content: center; z-index: 10000; padding: 20px; }
-  .criba-modal { background: #fff; border: 1.5px solid var(--ink); max-width: 420px; width: 100%; padding: 22px 22px 18px; }
-  .criba-modal-title { font-family: 'Archivo Black', sans-serif; font-size: 15px; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 10px; color: var(--ink); }
+  .criba-modal { background: #fff; border: 1px solid var(--line-strong); max-width: 420px; width: 100%; padding: 22px 22px 18px; }
+  .criba-modal-title { font-family: var(--font-display); font-size: 15px; letter-spacing: 0.02em; margin-bottom: 10px; color: var(--ink); }
   .criba-modal-msg { font-size: 0.9rem; line-height: 1.55; color: var(--ink); }
   .criba-modal-btns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-  .criba-modal-btns button { font-family: inherit; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500; padding: 8px 16px; border: 1.5px solid var(--ink); cursor: pointer; }
+  .criba-modal-btns button { font-family: inherit; font-size: 13px; font-weight: 500; padding: 8px 16px; border: 1px solid var(--line-strong); cursor: pointer; }
   .criba-modal-cancel { background: var(--bg); color: var(--ink); }
   .criba-modal-cancel:hover { background: var(--bg2); }
   .criba-modal-ok { background: var(--ink); color: var(--bg); }
@@ -884,31 +1318,72 @@
   .criba-modal-ok:hover { opacity: 0.9; }
 
   /* First-run onboarding overlay — same theme as the sign-in screen. */
+  /* Setup wizard. Flat oat ground -- the pink radial gradient went with the
+     old palette, and section 5 rules out split or gradient backgrounds. */
   .ob-overlay { position: fixed; inset: 0; z-index: 9500; display: flex; align-items: center; justify-content: center; padding: 20px;
-    background: radial-gradient(ellipse 90% 80% at 50% 42%, #F6E4E2 0%, var(--bg) 48%, #E4CBC7 100%); }
-  .ob-card { background: #fff; border: 1.5px solid var(--ink); width: 100%; max-width: 460px; padding: 2.25rem 2rem; text-align: center; }
-  .ob-logo { font-family: 'Archivo Black', sans-serif; font-size: 1.7rem; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ink); margin-bottom: 1rem; }
-  .ob-dots { display: flex; justify-content: center; gap: 7px; margin-bottom: 1.25rem; }
-  .ob-dots span { width: 7px; height: 7px; border-radius: 50%; background: rgba(0,0,0,0.18); }
-  .ob-dots span.on { background: var(--ink); }
-  .ob-title { font-family: 'Archivo Black', sans-serif; font-size: 1.3rem; line-height: 1.15; color: var(--ink); margin-bottom: 0.6rem; text-transform: uppercase; letter-spacing: 0.01em; }
-  .ob-sub { font-size: 0.9rem; line-height: 1.55; color: var(--text2); margin-bottom: 1.5rem; }
-  .ob-add-row { display: flex; gap: 6px; margin-bottom: 0.9rem; }
-  .ob-input { flex: 1; min-width: 0; font-family: inherit; font-size: 0.875rem; padding: 0.55rem 0.75rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); }
-  .ob-input:focus { outline: none; background: #fff; }
-  .ob-select { font-family: inherit; font-size: 0.8rem; padding: 0.55rem 0.4rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
-  .ob-btn-add { font-family: inherit; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; font-weight: 500; padding: 0.55rem 0.9rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
-  .ob-btn-add:hover { background: var(--bg2); }
-  .ob-people { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; min-height: 1.5rem; margin-bottom: 1.5rem; }
-  .ob-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--ink); border: 1px solid var(--ink); border-radius: 999px; padding: 3px 10px; }
-  .ob-dot { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
-  .ob-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-  .ob-btn-primary { font-family: inherit; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; font-weight: 500; padding: 0.7rem 1.5rem; border: 1.5px solid var(--ink); background: var(--ink); color: var(--bg); cursor: pointer; }
-  .ob-btn-primary:hover { opacity: 0.9; }
-  .ob-btn-ghost { font-family: inherit; font-size: 0.82rem; color: var(--text2); background: none; border: none; cursor: pointer; text-decoration: underline; }
-  .ob-btn-ghost:hover { color: var(--ink); }
-  .ob-spinner { font-size: 2rem; color: var(--ink); margin-bottom: 0.75rem; animation: ob-spin 1.6s linear infinite; display: inline-block; }
-  @keyframes ob-spin { to { transform: rotate(360deg); } }
+    background: var(--bg); }
+  .ob-card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card);
+    width: 100%; max-width: 460px; padding: 32px; text-align: left;
+  }
+  .ob-logo {
+    font-family: var(--font-display); font-size: 24px; font-weight: 500; color: var(--primary);
+    margin-bottom: 16px; display: inline-flex; align-items: baseline;
+  }
+  /* Progress as dots, not a coloured bar. */
+  .ob-dots { display: flex; gap: 8px; margin-bottom: 24px; }
+  .ob-dots span { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); }
+  .ob-dots span.on { background: var(--apricot); }
+  .ob-title {
+    font-family: var(--font-display); font-size: 28px; font-weight: 400; line-height: 1.15;
+    color: var(--primary); margin: 0 0 12px;
+  }
+  .ob-sub { font-family: var(--font-body); font-size: 15px; line-height: 1.6; color: var(--text-2); margin-bottom: 24px; }
+  .ob-add-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  /* Underline inputs, per section 5. */
+  .ob-input {
+    flex: 1; min-width: 0; font-family: var(--font-body); font-size: 15px; min-height: 44px;
+    padding: 0 2px; border: none; border-bottom: 1px solid var(--primary);
+    background: transparent; color: var(--text);
+  }
+  .ob-input::placeholder { color: var(--placeholder); }
+  .ob-input:focus { outline: none; border-bottom: 2px solid var(--primary); }
+  .ob-select {
+    font-family: var(--font-body); font-size: 14px; min-height: 44px; padding: 0 10px;
+    border: 1px solid var(--line-strong); border-radius: var(--radius);
+    background: var(--bg); color: var(--text); cursor: pointer;
+  }
+  .ob-btn-add {
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; min-height: 44px; padding: 0 16px;
+    border: 1px solid var(--line-strong); border-radius: var(--radius);
+    background: transparent; color: var(--primary); cursor: pointer;
+  }
+  .ob-btn-add:hover { border-color: var(--primary); }
+  .ob-people { display: flex; flex-wrap: wrap; gap: 8px; min-height: 1.5rem; margin-bottom: 24px; }
+  .ob-chip {
+    display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px;
+    font-family: var(--font-body); font-size: 13px; color: var(--primary);
+    background: var(--tint); border: none; border-radius: var(--radius-pill);
+  }
+  .ob-dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: none; }
+  .ob-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .ob-btn-primary {
+    font-family: var(--font-body); font-size: 14px; font-weight: 500; min-height: 44px; padding: 0 20px;
+    border: 1px solid var(--apricot); border-radius: var(--radius);
+    background: var(--apricot); color: var(--on-apricot); cursor: pointer;
+  }
+  .ob-btn-primary:hover { background: var(--apricot-hover); border-color: var(--apricot-hover); opacity: 1; }
+  .ob-btn-ghost {
+    font-family: var(--font-body); font-size: 14px; color: var(--muted); background: none;
+    border: none; cursor: pointer; text-decoration: underline; min-height: 44px;
+  }
+  .ob-btn-ghost:hover { color: var(--primary); }
+  /* A pulsing apricot dot rather than a spinning glyph. */
+  .ob-spinner {
+    width: 12px; height: 12px; border-radius: 50%; background: var(--apricot);
+    display: inline-block; margin-bottom: 16px; animation: ob-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes ob-pulse { 0%, 100% { opacity: 0.35; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
   .member-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 0 0 6px 22px; }
   .act-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 0.72rem; padding: 2px 5px 2px 7px; border: 1px solid var(--ink); border-radius: 999px; }
   /* Dashed edge marks a fact Criba inferred rather than one you confirmed. */
@@ -921,10 +1396,10 @@
   .act-in { text-align: left; padding-left: 5px; }
   .act-in-wide { width: 6.5rem; }
   /* Senders read as addresses, not activities — monospace keeps them distinct. */
-  .act-chip-sender { font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem; }
+  .act-chip-sender { font-family: var(--font-body); font-size: 0.68rem; }
   .member-delete { background: none; border: none; cursor: pointer; color: var(--text2); padding: 4px 6px; font-size: 0.875rem; }
   .member-delete:hover { color: var(--red); }
-  .add-member-form { background: white; border: 1.5px solid var(--ink); padding: 1rem; margin-top: 0.5rem; }
+  .add-member-form { background: white; border: 1px solid var(--line-strong); padding: 1rem; margin-top: 0.5rem; }
   .add-member-form input[type=text] { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--ink); font-size: 0.875rem; background: var(--bg); font-family: inherit; margin-bottom: 0.75rem; }
   .add-member-form input[type=text]:focus { outline: none; background: white; }
   .color-swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 0.875rem; }
@@ -935,16 +1410,16 @@
 
   /* ── Member picker modal ─────────────────────────────────────────── */
   .picker-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 1rem; }
-  .picker-modal { background: white; border: 1.5px solid var(--ink); padding: 1.5rem; width: 100%; max-width: 380px; }
+  .picker-modal { background: white; border: 1px solid var(--line-strong); padding: 1.5rem; width: 100%; max-width: 380px; }
   .picker-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.375rem; }
   .picker-sub { font-size: 0.85rem; color: var(--text2); margin-bottom: 1.25rem; }
   .picker-members { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
-  .picker-member-btn { display: flex; align-items: center; gap: 0.75rem; padding: 0.7rem 1rem; border: 1.5px solid var(--ink); background: white; cursor: pointer; text-align: left; font-size: 0.9rem; font-weight: 500; transition: background 0.12s; font-family: inherit; width: 100%; }
+  .picker-member-btn { display: flex; align-items: center; gap: 0.75rem; padding: 0.7rem 1rem; border: 1px solid var(--line-strong); background: white; cursor: pointer; text-align: left; font-size: 0.9rem; font-weight: 500; transition: background 0.12s; font-family: inherit; width: 100%; }
   .picker-member-btn:hover { background: var(--bg); }
   .picker-member-dot { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; }
   .picker-add-btn { width: 100%; padding: 0.6rem 1rem; border: 1.5px dashed var(--ink); background: transparent; cursor: pointer; font-size: 0.875rem; color: var(--text2); font-family: inherit; margin-bottom: 1rem; transition: all 0.12s; }
   .picker-add-btn:hover { color: var(--ink); background: var(--bg); }
-  .picker-inline-form { border: 1.5px solid var(--ink); padding: 1rem; margin-bottom: 1rem; }
+  .picker-inline-form { border: 1px solid var(--line-strong); padding: 1rem; margin-bottom: 1rem; }
   .picker-inline-form input[type=text] { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--ink); font-size: 0.875rem; background: var(--bg); font-family: inherit; margin-bottom: 0.75rem; }
   .picker-inline-form input[type=text]:focus { outline: none; background: white; }
   .picker-cancel { width: 100%; padding: 0.5rem; border: none; background: none; color: var(--text2); font-size: 0.875rem; cursor: pointer; font-family: inherit; }
@@ -1009,21 +1484,21 @@
   /* Empty state reads as an intentional card, not a void: same bordered box as
      the event cards, on the muted surface so it's clearly "nothing here" rather
      than "something failed to load". */
-  .empty-state { border: 1.5px solid var(--ink); background: var(--surface-2); padding: 56px 24px; text-align: center; }
+  .empty-state { border: 1px solid var(--line-strong); background: var(--surface-2); padding: 56px 24px; text-align: center; }
   .empty-icon { font-size: 2.25rem; margin-bottom: 0.75rem; opacity: 0.5; }
-  .empty-state h3 { font-family: 'Archivo Black', sans-serif; font-size: 15px; font-weight: 400; text-transform: uppercase; letter-spacing: 0.03em; color: var(--ink); margin-bottom: 0.5rem; }
+  .empty-state h3 { font-family: var(--font-display); font-size: 15px; font-weight: 400; color: var(--ink); margin-bottom: 0.5rem; }
   .empty-state p { font-size: 14px; line-height: 1.6; color: var(--text2); max-width: 44ch; margin: 0 auto; }
-  .backfill-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--surface); border: 1.5px solid var(--ink); margin-bottom: 1rem; }
+  .backfill-bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--surface); border: 1px solid var(--line-strong); margin-bottom: 1rem; }
   .backfill-bar .material-icons { color: var(--gcal-icon); font-size: 18px !important; }
   .backfill-bar-text { flex: 1; font-size: 0.85rem; color: var(--text2); }
-  .btn-backfill { padding: 0.4rem 0.9rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity 0.15s; }
+  .btn-backfill { padding: 0.4rem 0.9rem; background: var(--ink); color: var(--bg); border: 1px solid var(--line-strong); font-size: 0.82rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: opacity 0.15s; }
   .btn-backfill:hover { opacity: 0.82; }
   .btn-backfill:disabled { opacity: 0.5; cursor: default; }
-  .btn-backfill-secondary { padding: 0.4rem 0.9rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.82rem; cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s; }
+  .btn-backfill-secondary { padding: 0.4rem 0.9rem; background: transparent; color: var(--ink); border: 1px solid var(--line-strong); font-size: 0.82rem; cursor: pointer; white-space: nowrap; transition: background 0.15s, color 0.15s; }
   .btn-backfill-secondary:hover { background: var(--ink); color: var(--bg); }
   .btn-backfill-secondary:disabled { opacity: 0.5; cursor: default; }
   #backfill-result { font-size: 0.8rem; color: var(--text2); margin-top: 0.5rem; text-align: center; }
-  .dry-run-table-wrap { margin-top: 0.75rem; overflow-x: auto; border: 1.5px solid var(--ink); }
+  .dry-run-table-wrap { margin-top: 0.75rem; overflow-x: auto; border: 1px solid var(--line-strong); }
   .dry-run-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
   .dry-run-table th { background: var(--bg2); color: var(--text2); font-weight: 600; padding: 0.45rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border); }
   .dry-run-table td { padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -1037,7 +1512,7 @@
   .dry-run-summary strong { color: var(--text1); }
 
   /* ── Review queue (Gmail / iMessage / WhatsApp — future stages) ───── */
-  .event-card { background: var(--surface); border: 1.5px solid var(--ink); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
+  .event-card { background: var(--surface); border: 1px solid var(--line-strong); padding: 1.25rem 1.5rem; margin-bottom: 1rem; }
   .event-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1rem; }
   .event-title-input { font-size: 1rem; font-weight: 500; border: none; background: transparent; width: 100%; padding: 0; color: var(--text); font-family: inherit; }
   .event-title-input:focus { outline: none; border-bottom: 1px solid var(--border); }
@@ -1135,10 +1610,9 @@
   /* ── Test mode ──────────────────────────────────────────────────────────── */
   #test-mode-banner {
     display: none; position: sticky; top: 88px; z-index: 99;
-    background: #111; color: #F0DAD8;
-    padding: 10px 48px; font-size: 12.5px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    border-bottom: 1px solid #F0DAD8;
+    background: var(--primary); color: var(--bg);
+    padding: 10px 48px; font-size: 13px; font-weight: 600;
+    border-bottom: 1px solid var(--line);
     display: none; align-items: center; gap: 12px;
   }
   #test-mode-banner.active { display: flex; }
@@ -1147,9 +1621,14 @@
 
   /* Live status pill — tells the user Criba is watching Gmail in the
      background, so they know they do not need to press Scan. */
-  .live-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1.5px solid var(--ink); font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
-  .live-pill.is-off { border-color: #c5221f; color: #c5221f; }
-  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #1e8e3e; flex-shrink: 0; animation: blink 2.2s infinite; }
+  .live-pill { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border: 1px solid var(--line-strong); font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
+  /* display:inline-flex on the element beats the browser's [hidden] rule, so
+     the pill stayed visible in the header despite the attribute. It is kept in
+     the DOM only because updateLiveStatus() writes to it and renderSources()
+     reads it. */
+  .live-pill[hidden] { display: none; }
+  .live-pill.is-off { border-color: var(--danger); color: var(--danger); }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); flex-shrink: 0; animation: blink 2.2s infinite; }
   .live-pill.is-off .live-dot { background: #c5221f; animation: none; }
   .live-sub { font-size: 0.72rem; font-weight: 400; opacity: 0.6; }
   /* The renewal date is the least load-bearing thing in the header, so it is
@@ -1161,9 +1640,9 @@
   #new-events-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(140%); background: var(--ink); color: #fff; padding: 12px 20px; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 14px; z-index: 900; transition: transform 0.28s ease; }
   #new-events-toast.show { transform: translateX(-50%) translateY(0); }
   #new-events-toast button { background: none; border: 1px solid rgba(255,255,255,0.5); color: #fff; padding: 4px 10px; font-size: 0.78rem; font-weight: 600; cursor: pointer; }
-  .test-mode-panel { border: 1.5px solid var(--ink); padding: 20px 24px; margin-bottom: 28px; }
+  .test-mode-panel { border: 1px solid var(--line-strong); padding: 20px 24px; margin-bottom: 28px; }
   .test-mode-panel-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0; }
-  .test-mode-panel-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+  .test-mode-panel-title { font-size: 12px; font-weight: 700; }
   .test-mode-toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; }
   .test-mode-toggle input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--ink); cursor: pointer; }
   .test-mode-toggle-label { font-size: 13px; font-weight: 500; }
@@ -1171,7 +1650,7 @@
   .test-mode-body.open { display: block; }
   .test-mode-desc { font-size: 13px; color: var(--text2); font-style: italic; margin-bottom: 14px; line-height: 1.55; }
   .test-mode-field { display: flex; gap: 10px; align-items: center; }
-  .test-mode-field input { flex: 1; padding: 8px 12px; border: 1.5px solid var(--ink); font-size: 13px; background: var(--bg); font-family: inherit; color: var(--ink); }
+  .test-mode-field input { flex: 1; padding: 8px 12px; border: 1px solid var(--line-strong); font-size: 13px; background: var(--bg); font-family: inherit; color: var(--ink); }
   .test-mode-field input:focus { outline: none; background: white; }
   .test-mode-field input::placeholder { color: #aaa; font-style: italic; }
 
@@ -1186,7 +1665,7 @@
   #undo-toast.visible { display: flex; }
   .undo-toast-msg { flex: 1; }
   .undo-toast-bar { position: absolute; bottom: 0; left: 0; height: 3px; background: var(--pill); transition: width linear; }
-  .undo-toast-btn { background: none; border: 1.5px solid var(--bg); color: var(--bg); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.04em; font-family: 'Inter', sans-serif; flex-shrink: 0; }
+  .undo-toast-btn { background: none; border: 1.5px solid var(--bg); color: var(--bg); padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: var(--font-body); flex-shrink: 0; }
   .undo-toast-btn:hover { background: var(--bg); color: var(--ink); }
 
   /* ── Inline delete countdown ─────────────────────────────────────────────
@@ -1197,14 +1676,13 @@
   .card-dismissing > *:not(.card-dismiss-overlay) { opacity: 0.25; pointer-events: none; filter: grayscale(0.25); }
   .card-dismiss-overlay {
     position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; gap: 14px;
-    padding: 0 18px; background: var(--surface); border: 1.5px solid var(--ink);
+    padding: 0 18px; background: var(--surface); border: 1px solid var(--line-strong);
   }
   .cd-msg { flex: 1; font-size: 13.5px; color: var(--ink); min-width: 0; }
   .cd-msg strong { font-weight: 600; }
   .cd-undo {
-    background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink);
-    padding: 7px 15px; font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.04em; cursor: pointer; font-family: 'Inter', sans-serif; flex-shrink: 0;
+    background: var(--ink); color: var(--bg); border: 1px solid var(--line-strong);
+    padding: 7px 15px; font-size: 11px; font-weight: 600; cursor: pointer; font-family: var(--font-body); flex-shrink: 0;
   }
   .cd-undo:hover { background: transparent; color: var(--ink); }
   .card-dismiss-bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: var(--ink); }
@@ -1230,7 +1708,7 @@
     display: none; position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
     background: var(--bg); color: var(--ink); padding: 12px 16px;
     z-index: 9998; flex-direction: column; gap: 8px; max-width: min(560px, 92vw);
-    font-size: 13px; border: 1.5px solid var(--ink); box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+    font-size: 13px; border: 1px solid var(--line-strong); box-shadow: 0 4px 20px rgba(0,0,0,0.18);
   }
   #dismiss-reason.visible { display: flex; }
   .dr-head { display: flex; align-items: baseline; gap: 10px; }
@@ -1257,16 +1735,16 @@
   .ahead-refresh { margin-left: auto; }
   .ahead-meta { color: var(--text2); font-size: 12px; margin-bottom: 14px; }
   .ahead-week { margin-bottom: 6px; }
-  .ahead-week-head { font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--text2); border-bottom: 1px solid var(--line); padding-bottom: 5px; margin: 18px 0 4px; }
+  .ahead-week-head { font-size: 11.5px; color: var(--text2); border-bottom: 1px solid var(--line); padding-bottom: 5px; margin: 18px 0 4px; }
   .ahead-group { margin-bottom: 30px; }
-  .ahead-group-head { display: flex; align-items: center; gap: 9px; font-family: 'Archivo Black', sans-serif; font-size: 13px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--ink); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1.5px solid var(--ink); }
-  .ahead-group-count { margin-left: auto; color: var(--text2); font-family: 'Inter', sans-serif; font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; }
+  .ahead-group-head { display: flex; align-items: center; gap: 9px; font-family: var(--font-display); font-size: 13px; letter-spacing: 0.02em; color: var(--ink); margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .ahead-group-count { margin-left: auto; color: var(--text2); font-family: var(--font-body); font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 12px; }
   .ahead-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 2px; border-bottom: 1px solid rgba(0,0,0,0.09); }
   .ahead-row:last-child { border-bottom: none; }
   .ahead-row.is-clash { background: #fffbeb; margin: 0 -8px; padding-left: 10px; padding-right: 10px; }
   .ahead-row-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
   .ahead-when { flex-shrink: 0; width: 118px; color: var(--ink); font-weight: 500; font-size: 12.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
-  .ahead-when .awd { display: block; color: var(--text2); font-weight: 400; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .ahead-when .awd { display: block; color: var(--text2); font-weight: 400; font-size: 11.5px; }
   .ahead-content { flex: 1; min-width: 0; }
   .ahead-title { font-size: 0.9rem; line-height: 1.35; color: var(--ink); }
   .ahead-where { display: block; color: var(--text2); font-size: 12px; margin-top: 3px; }
@@ -1277,7 +1755,7 @@
   .ahead-more { background: none; border: none; padding: 0; margin-top: 3px; font: inherit; font-size: 11.5px; color: var(--ink); text-decoration: underline; cursor: pointer; }
   .ahead-source { display: block; color: var(--text2); font-size: 11.5px; margin-top: 4px; }
   .ahead-source a { color: inherit; }
-  .ahead-summary { border: 1.5px solid var(--ink); padding: 12px 14px; margin: 10px 0 14px; background: var(--surface-2); }
+  .ahead-summary { border: 1px solid var(--line-strong); padding: 12px 14px; margin: 10px 0 14px; background: var(--surface-2); }
   .asum-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
   .asum-title { font-size: 12.5px; font-weight: 600; letter-spacing: .02em; }
   .asum-btn { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; font: inherit; font-size: 11.5px; cursor: pointer; }
@@ -1285,7 +1763,7 @@
   .asum-body { font-size: 13px; line-height: 1.6; white-space: pre-wrap; margin-top: 8px; }
   .asum-body:empty { display: none; }
   .asum-note { display: block; color: var(--text2); font-size: 11.5px; margin-top: 8px; }
-  .ahead-clash { display: inline-block; margin-top: 5px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
+  .ahead-clash { display: inline-block; margin-top: 5px; color: #92400e; background: #fef3c7; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 3px; }
   .ahead-empty { color: var(--text2); font-size: 0.875rem; padding: 1.5rem 0; }
   .ahead-conflict-band { background: #fffbeb; border-left: 3px solid #f59e0b; padding: 10px 14px; margin-bottom: 18px; font-size: 0.875rem; }
   .ahead-conflict-band .acb-title { color: #92400e; font-weight: 600; margin-bottom: 6px; }
@@ -1309,8 +1787,8 @@
     font-size: 0.85rem; color: var(--text2); cursor: pointer; text-decoration: underline;
     text-underline-offset: 3px; }
   .presignin-toggle:hover { color: var(--ink); }
-  .presignin-body { display: none; margin-top: 0.9rem; border: 1px solid var(--border, #e3e3e3);
-    background: #fafafa; padding: 1rem 1.1rem; font-size: 0.85rem; line-height: 1.5; color: #444; }
+  .presignin-body { display: none; margin-top: 12px; background: var(--tint);
+    border: none; border-radius: var(--radius); padding: 20px; color: var(--text); }
   .presignin-body.open { display: block; }
   .presignin-body ol { margin: 0; padding-left: 1.15rem; }
   .presignin-body li { margin-bottom: 0.85rem; }
@@ -1325,8 +1803,8 @@
 
 <!-- ── Auth screen ──────────────────────────────────────────────────────── -->
 <div id="auth-screen">
-  <div class="auth-logo">CRIBA</div>
-  <div class="auth-tagline">Filter the noise.</div>
+  <div class="auth-logo">criba<span class="wordmark-dot"></span></div>
+  <h1 class="auth-tagline">Filter the noise.</h1>
   <div class="auth-card">
     <h2>Sign in to Criba</h2>
     <p>Connect your Google account to start adding school calendars and events to Google Calendar.</p>
@@ -1364,28 +1842,48 @@
 <!-- ── App shell ────────────────────────────────────────────────────────── -->
 <div id="app-screen">
   <header>
+    <div class="header-inner">
     <div class="header-logo-section">
-      <div class="logo">CRIBA</div>
+      <a class="wordmark" href="#" onclick="homeGo('home');return false;" aria-label="Criba home">criba<span class="wordmark-dot"></span></a>
     </div>
-    <nav class="header-nav-section">
+    <nav class="header-nav-section" id="header-nav">
       <button class="nav-btn active" id="nav-home-btn" onclick="showPage('home', this)">Home</button>
-      <button class="nav-btn" id="nav-review-btn" onclick="showPage('review', this)">What’s Ahead<span id="review-count-label"></span></button>
+      <button class="nav-btn" id="nav-review-btn" onclick="showPage('review', this)">Your week ahead<span id="review-count-label"></span></button>
       <button class="nav-btn" id="nav-today-btn" onclick="showPage('today', this)">Today</button>
       <button class="nav-btn" id="nav-calendars-btn" onclick="showPage('calendars', this)">Sources</button>
       <!-- The Family page was built but never linked, so members could never be
            added — which silently disabled every colour feature downstream. -->
-      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">People &amp; Rules</button>
+      <button class="nav-btn" id="nav-settings-btn" onclick="showPage('settings', this)">People and rules</button>
     </nav>
     <div class="header-user-section">
-      <span class="live-pill" id="live-pill" title="Checking…">
+      <button class="menu-btn" id="menu-btn" onclick="toggleNavSheet()" aria-expanded="false">Menu</button>
+      <div class="acct-wrap">
+        <button class="acct-btn" id="acct-btn" onclick="toggleAcctMenu()" aria-haspopup="menu" aria-expanded="false" aria-label="Account">
+          <span id="acct-initial">&nbsp;</span>
+          <span class="acct-live" id="acct-live" role="img" title="Checking…" aria-label="Checking Gmail connection"></span>
+        </button>
+        <div class="acct-menu" id="acct-menu" role="menu" hidden>
+          <div class="acct-status" id="acct-status">Checking…</div>
+          <div class="acct-name" id="user-name"></div>
+          <a class="acct-item" role="menuitem" href="https://calendar.google.com" target="_blank" rel="noopener noreferrer">Open Google Calendar</a>
+          <button class="acct-item" role="menuitem" onclick="logout()">Sign out</button>
+        </div>
+      </div>
+      <!-- The Gmail watch status lives on Sources now. These stay in the DOM,
+           hidden, because updateLiveStatus() writes into them on a timer and
+           renderSources() reads them to decide what to show. -->
+      <span class="live-pill" id="live-pill" title="Checking…" hidden>
         <span class="live-dot"></span>
         <span id="live-pill-text">Checking…</span>
         <span class="live-sub" id="live-pill-sub"></span>
       </span>
-      <span class="user-name" id="user-name"></span>
-      <button class="logout-btn" onclick="logout()">Sign out</button>
+    </div>
     </div>
   </header>
+  <div class="nav-sheet" id="nav-sheet" hidden>
+    <button class="nav-sheet-close" onclick="toggleNavSheet()" aria-label="Close menu">&times;</button>
+    <nav class="nav-sheet-list" id="nav-sheet-list"></nav>
+  </div>
 
   <!-- New-events toast — raised by the background poller -->
   <div id="new-events-toast">
@@ -1415,7 +1913,7 @@
   <div id="onboarding-overlay" class="ob-overlay" style="display:none">
     <div class="ob-card">
       <div class="ob-step" id="ob-step-1">
-        <div class="ob-logo">CRIBA</div>
+        <div class="ob-logo">criba<span class="wordmark-dot"></span></div>
         <div class="ob-dots"><span class="on"></span><span></span><span></span><span></span></div>
         <h2 class="ob-title">Welcome to Criba</h2>
         <p class="ob-sub">Criba reads your Gmail, PDFs and calendar feeds and adds anything with a date to your Google Calendar — colour-coded by person, and never a duplicate. Two quick steps and you're set.</p>
@@ -1455,7 +1953,7 @@
           <button class="ob-btn-add" onclick="obAddSchool()">Add</button>
         </div>
         <div class="ob-people" id="ob-schools"></div>
-        <div class="ob-err" id="ob-school-err" style="display:none;color:#b3261e;font-size:0.82rem;margin-top:0.5rem"></div>
+        <div class="ob-err" id="ob-school-err" style="display:none;color:var(--danger);font-size:0.82rem;margin-top:0.5rem"></div>
         <p class="ob-sub" style="font-size:0.8rem;opacity:0.75;margin-top:0.75rem">Don't know it? Skip — Criba learns senders as their mail arrives, and you can mark any sender "always read" from the review queue.</p>
         <div class="ob-actions">
           <button class="ob-btn-ghost" onclick="obFinish()">Skip for now</button>
@@ -1464,7 +1962,7 @@
       </div>
       <div class="ob-step" id="ob-step-4" style="display:none">
         <div class="ob-dots"><span></span><span></span><span></span><span class="on"></span></div>
-        <div class="ob-spinner">◴</div>
+        <div class="ob-spinner" role="status" aria-label="Reading your email"></div>
         <h2 class="ob-title">Setting up your calendar</h2>
         <p class="ob-sub" id="ob-scan-msg">Reading your last 48 hours of email to get you started — this takes up to a minute.</p>
       </div>
@@ -1473,7 +1971,7 @@
 
   <!-- Review queue (Gmail events) -->
   <div class="page" id="page-review">
-    <h1 class="wa-title">What’s Ahead</h1>
+    <h1 class="wa-title">Your week ahead</h1>
     <p class="wa-sub">The next seven days, from your Google Calendar.</p>
     <div id="wa-list"></div>
     <!-- The old queue still renders into this while Today is being built, so
@@ -1499,19 +1997,21 @@
     <div class="home-go">Go to</div>
     <nav class="home-menu">
       <button class="home-link" onclick="homeGo('today')">
-        <span>Today</span><span class="home-arrow">&rarr;</span></button>
+        <span class="home-label">Today</span>
+        <span class="home-link-right"><svg class="home-arrow" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 9h11M10 4.5 14.5 9 10 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
       <button class="home-link" onclick="homeGo('review')">
-        <span>What’s Ahead</span>
-        <span class="home-link-right"><span class="home-new" id="home-new-count" hidden></span><span class="home-arrow">&rarr;</span></span></button>
+        <span class="home-label">Your week ahead</span>
+        <span class="home-link-right"><span class="home-new" id="home-new-count" hidden></span><svg class="home-arrow" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 9h11M10 4.5 14.5 9 10 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
       <button class="home-link" onclick="homeGo('calendars')">
-        <span>Sources</span><span class="home-arrow">&rarr;</span></button>
+        <span class="home-label">Sources</span>
+        <span class="home-link-right"><svg class="home-arrow" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 9h11M10 4.5 14.5 9 10 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
       <button class="home-link" onclick="homeGo('settings')">
-        <span>People &amp; Rules</span><span class="home-arrow">&rarr;</span></button>
+        <span class="home-label">People and rules</span>
+        <span class="home-link-right"><svg class="home-arrow" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 9h11M10 4.5 14.5 9 10 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
     </nav>
 
     <div class="home-foot">
-      <a class="home-gcal" href="https://calendar.google.com" target="_blank" rel="noopener noreferrer">Open Google Calendar &nearr;</a>
-      <button class="home-signout" onclick="logout()">Sign out</button>
+      <a class="home-gcal" href="https://calendar.google.com" target="_blank" rel="noopener noreferrer">Open Google Calendar ↗</a>
     </div>
   </div>
 
@@ -1528,16 +2028,14 @@
     <!-- Moved here from the top bar and from the old queue: this is the page
          about where events come from, which is where the controls over them
          belong. -->
-    <div id="sources-status"></div>
     <div id="sources-tools"></div>
     <div id="sources-receipt"></div>
-    <div id="sources-cancelled"></div>
     <!-- Always open. Adding a calendar is the entire purpose of this page, so
          hiding it behind a "+ Add calendar" button made the first thing a new
          user needs the one thing they had to go looking for. -->
     <div id="cal-form-container">
       <div class="cal-form">
-        <h3>Add calendar</h3>
+        <h2 class="src-card-head">Add calendar</h2>
         <div class="form-group">
           <label>Calendar name <span class="label-optional">optional</span></label>
           <input type="text" id="cal-name" placeholder="Named from your file or link" oninput="calNameTouched = true" />
@@ -1586,13 +2084,16 @@
         </div>
       </div>
     </div>
+    <h2 class="src-section">Calendars you’re subscribed to</h2>
     <div id="cal-list"></div>
+    <div id="sources-cancelled"></div>
+    <div id="sources-maintenance"></div>
   </div>
 
   <!-- Settings / Family members page -->
   <div class="page" id="page-settings">
     <div class="page-title-block" style="flex-direction:column;align-items:flex-start;gap:1.1rem">
-      <h1 class="src-title">People &amp; Rules</h1>
+      <h1 class="src-title">People and rules</h1>
       <div class="src-lead" style="text-align:left;max-width:680px">Add the people in your life and group them into circles — family, friends, work, whoever. Each person gets a distinct event colour on your calendar. The details under each person teach Criba whose event is whose: a <em>grade</em> lets it hold back school mail meant for other grades, and <em>activity</em> tags (a topic plus the sender’s domain) let it colour an event for the right person even when their name isn’t in the email. The more you fill in, the fewer grey, unattributed events you’ll see.</div>
     </div>
     <div class="settings-section">
@@ -1619,10 +2120,10 @@
          you cannot see is indistinguishable from a bug, so every rule is listed
          in the words it was agreed to and removed with one click. -->
     <details class="settings-section">
-      <summary style="flex-wrap:wrap">
+      <summary class="pr-summary">
         <span class="src-block-head">Rules</span>
-        <span class="excl-count" id="exclusion-count"></span>
-        <div class="page-desc" style="margin:0.6rem 0 0;flex-basis:100%;max-width:none;order:3"><span style="display:block;max-width:680px">Criba learned these from what you’ve dismissed — each rule was created when you answered “yes” to a question after dismissing an event, and is written here in the words you agreed to. If Criba got one wrong, remove it with one click. Nothing is ever deleted by a rule: matching events still reach Review with the reason attached, one click from being added. <span style="font-style:normal;color:var(--text2)">(Expand to view the rules.)</span></span></div>
+        <span class="pr-count" id="exclusion-count"></span>
+        <div class="page-desc" style="margin:0.6rem 0 0;flex-basis:100%;max-width:none;order:3"><span style="display:block;max-width:680px">Criba learned these from what you’ve dismissed — each rule was created when you answered “yes” to a question after dismissing an event, and is written here in the words you agreed to. If Criba got one wrong, remove it with one click. Nothing is ever deleted by a rule: matching events still reach Review with the reason attached, one click from being added. <span class="pr-showall">Show all rules</span></span></div>
       </summary>
       <div id="exclusion-list"></div>
     </details>
@@ -1649,7 +2150,7 @@
         <input type="text" id="recipient-email-input" placeholder="them@example.com" />
         <button class="btn-filled btn-sm" onclick="addRecipient()">Add</button>
       </div>
-      <div id="recipient-status" style="font-size:12px;margin-top:10px;color:var(--text2);font-style:italic"></div>
+      <div id="recipient-status" style="font-size:12px;margin-top:10px;color:var(--text-2)"></div>
     </div>
   </div>
 
@@ -1668,7 +2169,7 @@
         </select>
       </div>
       <div id="weekday-row-wrap">
-        <div class="custom-recur-label" style="margin-bottom:0.5rem;font-size:0.8rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:0.05em">Repeat on</div>
+        <div class="custom-recur-label" style="margin-bottom:0.5rem;font-size:0.8rem;font-weight:600;color:var(--text-2)">Repeat on</div>
         <div class="weekday-row">
           <button class="weekday-btn" data-day="SU" onclick="toggleWeekday(this)">S</button>
           <button class="weekday-btn" data-day="MO" onclick="toggleWeekday(this)">M</button>
@@ -1724,12 +2225,12 @@
   <div class="page" id="page-category">
     <div class="page-title-block" style="align-items:flex-start;flex-direction:column;gap:1.25rem">
       <button class="cat-back-btn" onclick="leaveCategoryPage()" style="margin-bottom:0">
-        <span class="material-icons">arrow_back</span>
-        Back to Calendar Upload
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M14.5 9h-11M8 4.5 3.5 9 8 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Back to Sources
       </button>
       <div style="display:flex;align-items:flex-end;justify-content:space-between;width:100%;gap:1rem;flex-wrap:wrap">
-        <div class="page-headline page-headline-sm" id="cat-page-title">REVIEW</div>
-        <button class="btn-filled btn-sm" id="cat-add-all-btn" onclick="catAddAllGroups()">Add All to Calendar</button>
+        <h1 class="src-title" id="cat-page-title">Review this upload</h1>
+        <button class="btn-apricot" id="cat-add-all-btn" onclick="catAddAllGroups()">Add all to calendar</button>
       </div>
       <div class="page-desc" id="cat-page-sub" style="text-align:left;max-width:none">Review events by group and add them to your calendar.</div>
       <div id="cat-add-all-status" style="text-align:left"></div>
@@ -2048,33 +2549,48 @@ async function apiDeleteMember(id) {
 
 // ── Settings page ─────────────────────────────────────────────────────────
 
+// Names are shown as the person typed them, except when that was SHOUTING.
+// One member is stored as "PRIYA ZACHARIAH" from a Google profile, and a name
+// in caps reads as a label rather than a person.
+function displayName(name) {
+  const n = String(name || '').trim();
+  if (!n || n !== n.toUpperCase()) return n;      // leave mixed case alone
+  return n.toLowerCase().replace(/(^|[\s'\-])([a-z])/g, (_, p, c) => p + c.toUpperCase());
+}
+
 function renderSettingsPage() {
   const el = document.getElementById('settings-members-list');
   if (!familyMembers.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">No people yet — add someone below.</div>';
+    el.innerHTML = '<div style="color:var(--text-2);font-size:0.875rem;padding:0.5rem 0">No people yet — add someone below.</div>';
     return;
   }
   // The colour was settable only while adding someone, so the sole way to
   // correct it was to delete the person and recreate them. The dot is now the
   // control that changes it.
   const memberRow = m => `
-    <div class="member-row">
-      <span class="member-dot member-dot-btn" style="background:${memberColor(m.color)}"
-            title="Change ${escHtml(m.name)}'s colour" onclick="toggleMemberColors('${m.id}')"></span>
-      <span class="member-name">${escHtml(m.name)}</span>
-      <select class="member-circle" title="Which circle ${escHtml(m.name)} belongs to"
-              onchange="setMemberCircle('${m.id}', this.value)">
-        ${CIRCLE_ORDER.map(c => `<option value="${c}"${memberCircle(m) === c ? ' selected' : ''}>${circleLabel(c)}</option>`).join('')}
-      </select>
-      <input class="member-grade" id="member-grade-${m.id}" value="${escHtml(m.grade || '')}"
-             placeholder="grade" maxlength="4" autocomplete="off"
-             title="School grade — TK, K, or a number. Used to skip newsletter events for grades nobody is in."
-             onchange="setMemberGrade('${m.id}', this.value)" />
-      ${m.googleCalendarId ? '<span class="member-cal-badge">Calendar created</span>' : ''}
-      <button class="member-delete" title="Remove" onclick="deleteMember('${m.id}')">✕</button>
+    <div class="person-card">
+      <div class="person-top">
+        <span class="person-dot" title="Change ${escHtml(displayName(m.name))}\u2019s colour"
+              style="background:${memberColor(m.color)}" onclick="toggleMemberColors('${m.id}')"></span>
+        <span class="person-name">${escHtml(displayName(m.name))}</span>
+        <span class="person-controls">
+          <select class="person-select" title="Which circle ${escHtml(displayName(m.name))} belongs to"
+                  onchange="setMemberCircle('${m.id}', this.value)">
+            ${CIRCLE_ORDER.map(c => `<option value="${c}"${memberCircle(m) === c ? ' selected' : ''}>${circleLabel(c)}</option>`).join('')}
+          </select>
+          <input class="person-grade" id="member-grade-${m.id}" value="${escHtml(m.grade || '')}"
+                 placeholder="Grade" maxlength="4" autocomplete="off"
+                 title="School grade — TK, K, or a number. Used to skip newsletter events for grades nobody is in."
+                 onchange="setMemberGrade('${m.id}', this.value)" />
+          <button class="person-remove" aria-label="Remove ${escHtml(displayName(m.name))}"
+                  onclick="deleteMember('${m.id}')">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+        </span>
+      </div>
+      <div class="member-colors" id="member-colors-${m.id}" style="display:none"></div>
+      ${renderMemberActivities(m)}
     </div>
-    <div class="member-colors" id="member-colors-${m.id}" style="display:none"></div>
-    ${renderMemberActivities(m)}
   `;
   // Members are grouped by circle so the household, the friend group and work
   // read as distinct lists rather than one undifferentiated column. A circle
@@ -2083,7 +2599,7 @@ function renderSettingsPage() {
     .map(c => {
       const inCircle = familyMembers.filter(m => memberCircle(m) === c);
       if (!inCircle.length) return '';
-      return `<div class="circle-heading">${circleLabel(c)}</div>${inCircle.map(memberRow).join('')}`;
+      return `<div class="person-group">${circleLabel(c)}</div>${inCircle.map(memberRow).join('')}`;
     })
     .join('');
 }
@@ -2116,7 +2632,7 @@ function renderMemberActivities(m) {
   }).join('');
   return `<div class="member-acts">
     ${chips}${senders}
-    <button class="act-add" onclick="toggleActivityForm('${m.id}')">+ activity</button>
+    <button class="act-add" onclick="toggleActivityForm('${m.id}')">+ Add activity</button>
     <div class="act-form" id="act-form-${m.id}" style="display:none">
       <input class="member-grade act-in" id="act-type-${m.id}" placeholder="sport or activity" title="Activity or sport" />
       <input class="member-grade act-in" id="act-tier-${m.id}" placeholder="team level" title="Team tier — frosh, JV or varsity. Left blank, any tier matches." />
@@ -2154,7 +2670,7 @@ function renderExclusions() {
       : `${active} active${off ? `, ${off} no longer ${off === 1 ? 'applies' : 'apply'}` : ''}`;
   }
   if (!exclusionRules.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.875rem;padding:0.5rem 0">Nothing is being held back. Rules appear here when you dismiss an event and tell Criba why.</div>';
+    el.innerHTML = '<div style="color:var(--text-2);font-size:0.875rem;padding:0.5rem 0">Nothing is being held back. Rules appear here when you dismiss an event and tell Criba why.</div>';
     return;
   }
   el.innerHTML = exclusionRules.map(r => `
@@ -2463,7 +2979,7 @@ function cancelMemberPicker() {
 function renderMemberPickerList() {
   const el = document.getElementById('picker-members-list');
   if (!familyMembers.length) {
-    el.innerHTML = '<div style="color:var(--text2);font-size:0.8rem;padding:0.25rem 0 0.75rem">No people yet — add someone below.</div>';
+    el.innerHTML = '<div style="color:var(--text-2);font-size:0.8rem;padding:0.25rem 0 0.75rem">No people yet — add someone below.</div>';
     return;
   }
   el.innerHTML = familyMembers.map(m => `
@@ -2601,6 +3117,8 @@ function showApp() {
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('app-screen').style.display = 'block';
   document.getElementById('user-name').textContent = user.name || user.email;
+  const initial = document.getElementById('acct-initial');
+  if (initial) initial.textContent = String(user.name || user.email || '?').trim().charAt(0).toUpperCase();
   loadPlacesScript();
   loadData();
   checkGmailStatus();
@@ -2660,7 +3178,7 @@ function maybeShowHouseholdInvite() {
     <div class="criba-modal">
       <div class="criba-modal-title">Join a household?</div>
       <div class="criba-modal-msg">Someone invited you to share a household on Criba. Members can see each other's schedules so Criba can flag clashes and coverage gaps.</div>
-      <p id="household-invite-error" class="error-msg" style="margin:8px 0 0;display:none;"></p>
+      <p id="household-invite-error" class="error-msg" style="margin:8px 0 0;display:none"></p>
       <div class="criba-modal-btns">
         <button type="button" id="household-invite-decline" class="criba-modal-cancel">Not now</button>
         <button type="button" id="household-invite-join" class="criba-modal-ok">Join</button>
@@ -2729,7 +3247,7 @@ function renderRecipients() {
         <span><strong>${escHtml(r.name)}</strong> · ${escHtml(r.email)}</span>
         <button class="btn-outlined btn-sm btn-danger" onclick="removeRecipient('${escHtml(r.email)}')">Remove</button>
       </div>`).join('')
-    : `<div style="font-size:12px;color:var(--text2);font-style:italic">Nobody saved yet.</div>`;
+    : `<div style="font-size:12px;color:var(--text-2)">Nobody saved yet.</div>`;
 }
 
 async function addRecipient() {
@@ -3282,6 +3800,27 @@ async function updateLiveStatus() {
     const live = d.registered && !d.expiredAlready && d.hasRefreshToken && !d.disconnectedAt;
     pill.classList.toggle('is-off', !live);
     text.textContent = live ? 'Watching Gmail' : 'Not watching';
+    // The header keeps only a dot now; the sentence lives on Sources.
+    // One sentence, three places: the dot's tooltip, its accessible name, and
+    // the first line of the account menu. A coloured dot on its own tells
+    // nobody what it is reporting.
+    const renews = live && d.expiresAt
+      ? ` \u00b7 renews ${new Date(d.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+      : '';
+    const statusLine = live ? `Watching Gmail${renews}` : 'Not watching Gmail';
+    const dot = document.getElementById('acct-live');
+    if (dot) {
+      dot.classList.toggle('on', live);
+      dot.classList.toggle('off', !live);
+      dot.title = statusLine;
+      dot.setAttribute('aria-label', statusLine);
+    }
+    const acctStatus = document.getElementById('acct-status');
+    if (acctStatus) acctStatus.textContent = statusLine;
+    // Sources reads the pill to build its watch line. Landing there before this
+    // call returned left "Checking..." on screen for good, because nothing
+    // repainted afterwards.
+    if (pageIsActive('calendars')) renderSources();
     if (sub) {
       sub.textContent = live && d.expiresAt
         ? `renews ${new Date(d.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
@@ -3503,6 +4042,13 @@ async function loadToday() {
   // Tomorrow's preview and the Just added list come from data other screens
   // already load. Fetched only if absent, and the page repaints when they land.
   if (!waData) { loadWhatsAhead().then(renderToday).catch(() => {}); }
+  // The unreviewed section is the review queue, so Today needs it loaded even
+  // when the user landed here first.
+  if (!pendingEvents.length) {
+    fetch('/api/events/pending').then(r => r.ok ? r.json() : null)
+      .then(rows => { if (Array.isArray(rows)) { pendingEvents = rows; renderToday(); } })
+      .catch(() => {});
+  }
   if (typeof recentEvents === 'undefined' || !recentEvents.length) {
     try { loadRecentEvents().then(renderToday).catch(() => {}); } catch {}
   }
@@ -3554,31 +4100,62 @@ function evIsPast(ev) {
 // something to act on; a Google-native event shows without them rather than
 // offering buttons that would not work.
 function renderSources() {
-  const status = document.getElementById('sources-status');
-  if (status) {
+  // Scan card: the heading, the primary action, and the watch status that used
+  // to live in the top bar.
+  const tools = document.getElementById('sources-tools');
+  if (tools) {
     const live = document.getElementById('live-pill');
     const on = live && !live.classList.contains('is-off');
-    const txt = document.getElementById('live-pill-text');
-    status.innerHTML = `<div class="src-block">
-      <div class="src-block-head">${on ? 'Watching Gmail' : 'Not watching'}</div>
-      <div class="src-lead" style="margin:0">${on
-        ? 'Criba is reading new mail as it arrives. You do not need to scan.'
-        : escHtml((txt && txt.textContent) || 'Criba is not currently watching your inbox.')}</div>
+    const txt = (document.getElementById('live-pill-text') || {}).textContent || '';
+    const sub = (document.getElementById('live-pill-sub') || {}).textContent || '';
+    tools.innerHTML = `<div class="src-card">
+      <div class="src-card-row">
+        <h2 class="src-card-head">Scan Gmail</h2>
+        <button class="btn-apricot" id="backfill-btn-2" onclick="runBackfill(2)">Scan last 48 hours</button>
+      </div>
+      <div class="src-card-note">${escHtml(on ? `${txt}${sub ? ' \u00b7 ' + sub : ''}` : (txt || 'Not watching'))}</div>
+      ${DEBUG_TOOLS ? `<div class="src-card-note"><button class="btn-text" onclick="toggleScanDebug()">Tools</button></div>` : ''}
+      <div id="scan-debug-bar" style="display:none;gap:6px;flex-wrap:wrap;margin-top:12px">
+        <button class="btn-secondary btn-sm" id="backfill-btn-dry" onclick="runBackfill(2, true)">Dry run</button>
+        <button class="btn-secondary btn-sm" id="backfill-btn-clear" onclick="clearFingerprints(false)">Reset dedup</button>
+        <button class="btn-secondary btn-sm" id="backfill-btn-clear-force" onclick="clearFingerprints(true)">Force reset</button>
+        <button class="btn-secondary btn-sm" id="backfill-btn-cooldown" onclick="clearBackfillCooldown()">Reset lock</button>
+        <button class="btn-secondary btn-sm" onclick="showScanTrace()">Scan trace</button>
+        <button class="btn-secondary btn-sm" id="backfill-btn-7" onclick="runBackfill(7)">Last 7 days</button>
+      </div>
+      <div id="backfill-result"></div>
     </div>`;
   }
-  const tools = document.getElementById('sources-tools');
-  if (tools) tools.innerHTML = `<div class="src-block">${BACKFILL_BAR_HTML}</div>`;
+
   const receipt = document.getElementById('sources-receipt');
   if (receipt) receipt.innerHTML = receiptStripHtml();
+
   const canc = document.getElementById('sources-cancelled');
   if (canc) {
     const rows = (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])
       .filter(e => e.status === 'cancelled').slice(0, 12);
-    canc.innerHTML = rows.length ? `<div class="src-block">
-      <div class="src-block-head">Removed from your calendar</div>
-      ${rows.map(e => `<div class="today-peek"><span>${escHtml(e.title || '')}${
-        e.date ? ` \u00b7 ${escHtml(formatDate(e.date))}` : ''}</span></div>`).join('')}
-    </div>` : '';
+    canc.innerHTML = rows.length ? `<h2 class="src-section">Removed from your calendar</h2>
+      <div class="src-rows">${rows.map(e => `<div class="src-row"><span>${escHtml(e.title || '')}</span>
+        <span class="src-row-meta">${e.date ? escHtml(formatDate(e.date)) : ''}</span></div>`).join('')}</div>` : '';
+  }
+
+  // Maintenance last, and text before button: the description is what decides
+  // whether you want the button at all.
+  const maint = document.getElementById('sources-maintenance');
+  if (maint) {
+    maint.innerHTML = `<div class="src-card src-maint">
+      <h2 class="src-card-head">Maintenance</h2>
+      <div class="src-maint-row">
+        <div class="src-maint-title">Clean up duplicates</div>
+        <div class="src-maint-desc">If the same event was added to your calendar more than once, this finds the extra copies and removes them, keeping one of each. Events you created yourself and events from calendars you subscribe to are never touched.</div>
+        <button class="btn-secondary" onclick="cleanupDuplicates()">Clean up duplicates</button>
+      </div>
+      <div class="src-maint-row">
+        <div class="src-maint-title">Start fresh</div>
+        <div class="src-maint-desc">Removes every event Criba has added to your calendar and empties the review queue, putting your calendar back the way it was before you signed up. You\u2019ll see exactly what it found and be asked to confirm first.</div>
+        <button class="btn-danger-text" id="backfill-btn-reset" onclick="startFresh()">Start fresh</button>
+      </div>
+    </div>`;
   }
 }
 
@@ -3623,29 +4200,93 @@ function renderWhatsAhead() {
     if (e.calEventId) storedById.set(e.calEventId, e);
   }
 
-  host.innerHTML = waWindow().map(date => {
+  // Criba's rows that never reached the calendar. They live on the date they
+  // are for, from the moment Criba finds them -- there is no separate queue.
+  // On days three to seven they sit inline with everything else; on tomorrow
+  // they are pulled out and asked about.
+  const waitingByDate = new Map();
+  const seen = new Set();
+  const cribaRows = (typeof pendingEvents !== 'undefined' && Array.isArray(pendingEvents) ? pendingEvents : [])
+    .filter(e => (e.status === 'pending' || e.status === 'draft') && e.date && !e.calEventId);
+  for (const r of cribaRows) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    if (!waitingByDate.has(r.date)) waitingByDate.set(r.date, []);
+    waitingByDate.get(r.date).push(r);
+  }
+
+  const byTime = (a, b) => {
+    if (!!a.is_all_day !== !!b.is_all_day) return a.is_all_day ? -1 : 1;
+    return String(a.time || '').localeCompare(String(b.time || ''));
+  };
+  const win = waWindow();
+  const tomorrow = win[0];
+
+  host.innerHTML = win.map(date => {
     const day = events.filter(e => e.date === date);
+    const waiting = waitingByDate.get(date) || [];
     const clashes = conflicts.filter(c => c.date === date).length;
     const open = !!waOpen[date];
-    const body = !day.length
-      ? '<div class="wa-empty">Nothing on this day.</div>'
-      : day.map(e => {
-          // Join to Criba's row so the actions act on something Criba owns.
-          const mine = e.id && storedById.get(e.id);
-          const row = mine ? { ...mine, ...e, id: mine.id } : e;
-          return renderEventRow(row, 'ahead');
-        }).join('');
+    const label = waDayLabel(date);
+
+    const calRows = day.slice().sort(byTime).map(e => {
+      const mine = e.id && storedById.get(e.id);
+      return renderEventRow(mine ? { ...mine, ...e, id: mine.id } : { ...e, readOnly: true }, 'ahead');
+    });
+
+    let body;
+    if (date === tomorrow) {
+      // Tomorrow is called out, exactly like Today.
+      body = (calRows.length ? calRows.join('') : '<div class="wa-empty">Nothing on this day.</div>')
+        + `<div class="nr nr-inline">
+            <button class="nr-head" onclick="waToggleNr('${date}')" aria-expanded="${!!waNrOpen[date]}">
+              <span class="nr-title">Not reviewed \u2014 should these be on your calendar?</span>
+              <span class="nr-chev" aria-hidden="true">${waNrOpen[date] ? '\u2212' : '+'}</span>
+            </button>
+            <div class="nr-body" ${waNrOpen[date] ? '' : 'hidden'}>
+              <div class="nr-note">Criba found these and hasn\u2019t added them.</div>
+              ${waiting.length
+                ? waiting.slice().sort(byTime).map(r => renderEventRow({ ...r, notOnCalendar: true }, 'ahead')).join('')
+                : '<div class="today-none">Nothing waiting.</div>'}
+            </div>
+          </div>`;
+    } else {
+      // Days three to seven: everything inline, in time order, not called out.
+      const all = [...day.map(e => ({ e, waiting: false })), ...waiting.map(e => ({ e, waiting: true }))]
+        .sort((x, y) => byTime(x.e, y.e));
+      body = all.length
+        ? all.map(({ e, waiting: w }) => {
+            if (w) return renderEventRow({ ...e, notOnCalendar: true }, 'ahead');
+            const mine = e.id && storedById.get(e.id);
+            return renderEventRow(mine ? { ...mine, ...e, id: mine.id } : { ...e, readOnly: true }, 'ahead');
+          }).join('')
+        : '<div class="wa-empty">Nothing on this day.</div>';
+    }
+
+    // Collapsed row carries the date, an overlap marker if there is one, and
+    // the +. No counts anywhere the user can see.
     return `<div class="wa-day">
-      <button class="wa-dayhead" onclick="waToggle('${date}')" aria-expanded="${open}">
-        <span class="wa-dayname">${escHtml(waDayLabel(date))}
-          ${day.length ? `<span class="wa-count">${day.length}</span>` : ''}
-          ${clashes ? `<span class="wa-clash" title="Two things at once">overlap</span>` : ''}
+      <button class="wa-dayhead" onclick="waToggle('${date}')" aria-expanded="${open}"
+        aria-label="${open ? 'Collapse' : 'Expand'} ${escHtml(label)}">
+        <span class="wa-dayname">
+          <span class="wa-dayname-text">${escHtml(label)}</span>
+          ${clashes ? `<span class="wa-clash">overlap</span>` : ''}
         </span>
-        <span class="wa-plus">${open ? '&minus;' : '+'}</span>
+        <span class="wa-chev" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="${open ? 'M4.5 11 9 6.5 13.5 11' : 'M4.5 7 9 11.5 13.5 7'}" stroke="currentColor"
+              stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
       </button>
       <div class="wa-daybody" ${open ? '' : 'hidden'}>${body}</div>
     </div>`;
   }).join('');
+}
+
+let waNrOpen = {};
+function waToggleNr(date) {
+  waNrOpen[date] = !waNrOpen[date];
+  renderWhatsAhead();
 }
 
 let _waLoading = false;
@@ -3665,12 +4306,71 @@ async function loadWhatsAhead() {
     _waLoading = false;
     renderWhatsAhead();
   }
+  if (!pendingEvents.length) {
+    try {
+      const r = await fetch('/api/events/pending');
+      if (r.ok) { const rows = await r.json(); if (Array.isArray(rows)) { pendingEvents = rows; renderWhatsAhead(); } }
+    } catch {}
+  }
 }
 
 // ── Home ───────────────────────────────────────────────────
 // The summary line is built from Today's own counts rather than counting
 // again here. Two definitions of "how much is on today" would eventually
 // disagree, and the one on the landing screen is the one people would trust.
+// The account menu and the sub-1100px nav sheet. Both are presentation only:
+// every item calls the same function the old header button called.
+function toggleAcctMenu(force) {
+  const m = document.getElementById('acct-menu');
+  const b = document.getElementById('acct-btn');
+  if (!m) return;
+  const open = force === undefined ? m.hidden : force;
+  m.hidden = !open;
+  if (b) b.setAttribute('aria-expanded', String(open));
+}
+
+function toggleNavSheet() {
+  const sheet = document.getElementById('nav-sheet');
+  const btn = document.getElementById('menu-btn');
+  if (!sheet) return;
+  const open = sheet.hidden;
+  if (open) {
+    const list = document.getElementById('nav-sheet-list');
+    // Built from the real nav buttons, so the sheet can never drift out of
+    // step with what the nav actually offers.
+    if (list) {
+      list.innerHTML = [...document.querySelectorAll('#header-nav .nav-btn')].map(b => {
+        const count = (b.querySelector('#review-count-label') || {}).textContent || '';
+        const label = b.textContent.replace(count, '').trim();
+        return `<button class="nav-sheet-link" data-target="${b.id}">
+          <span>${escHtml(label)}</span>
+          <span style="display:inline-flex;align-items:center;gap:10px">
+            <span aria-hidden="true">&rarr;</span></span></button>`;
+      }).join('');
+      list.querySelectorAll('.nav-sheet-link').forEach(el => {
+        el.onclick = () => {
+          const target = document.getElementById(el.dataset.target);
+          if (target) target.click();
+          toggleNavSheet();
+        };
+      });
+    }
+  }
+  sheet.hidden = !open;
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+}
+
+document.addEventListener('click', (e) => {
+  const wrap = document.querySelector('.acct-wrap');
+  if (wrap && !wrap.contains(e.target)) toggleAcctMenu(false);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  toggleAcctMenu(false);
+  const sheet = document.getElementById('nav-sheet');
+  if (sheet && !sheet.hidden) toggleNavSheet();
+});
+
 function homeGo(page) {
   const btn = document.getElementById(`nav-${page}-btn`);
   showPage(page, btn || null);
@@ -3706,10 +4406,7 @@ function renderHome() {
   const sum = document.getElementById('home-summary');
   if (sum) sum.textContent = homeSummaryText(todayData, newCount);
   const badge = document.getElementById('home-new-count');
-  if (badge) {
-    badge.textContent = `${newCount} new`;
-    badge.hidden = !newCount;
-  }
+  if (badge) badge.hidden = true;
 }
 
 // Today's payload drives the summary, so Home needs it even when Today has not
@@ -3725,26 +4422,100 @@ function renderEventRow(ev, ctx = 'today') {
   evRemember(ev);
   const id = ev.id;
   const rid = `ev-${ctx}-${id}`;
-  const meta = [
-    ev.location ? escHtml(ev.location) : null,
-    ev.sender_name || ev.sender_email ? escHtml(ev.sender_name || ev.sender_email) : null,
-  ].filter(Boolean).join(' · ');
+  const who = evPersonName(ev);
+  const meta = [ev.location ? evShortPlace(ev.location) : null, who].filter(Boolean).join(' \u00b7 ');
   const past = evIsPast(ev) ? ' ev-past' : '';
+  // Three states, and the row has to be honest about which it is:
+  //  - on the calendar, Criba's own row  -> Edit / Keep / Delete
+  //  - not on the calendar (a proposal)  -> Add / Edit / Dismiss
+  //  - on the calendar, not Criba's      -> no menu; nothing to act on
+  const waiting = !!ev.notOnCalendar;
+  const readOnly = !!ev.readOnly;
+  const fromEmail = !waiting && (ev.source === 'gmail' || ev.sender_email)
+    ? '<span class="ev-origin" title="Criba added this from your email"></span>' : '';
   return `
-  <div class="ev-row${past}" id="${rid}">
-    <div class="ev-time">${escHtml(evTimeLabel(ev))}</div>
+  <div class="ev-row${past}${waiting ? ' ev-waiting' : ''}" id="${rid}">
+    <div class="ev-time">${evTimeCell(ev)}</div>
     <div class="ev-main">
-      <div class="ev-title">${eventDotHtml(ev)}${escHtml(ev.title || '(untitled)')}</div>
-      ${meta ? `<div class="ev-meta">${meta}</div>` : ''}
-      <div class="ev-actions">
-        <button class="ev-act" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
-        <button class="ev-act" onclick="evDismiss('${escHtml(id)}','${ctx}')">Dismiss</button>
-        <button class="ev-act ev-act-danger" onclick="evDelete('${escHtml(id)}','${ctx}')">Delete</button>
-      </div>
+      <div class="ev-title">${fromEmail}${waiting ? '<span class="ev-tag">Not added</span>' : ''}${escHtml(ev.title || '(untitled)')}</div>
+      ${meta && !past ? `<div class="ev-meta">${meta}</div>` : ''}
+    </div>
+    <div class="ev-actions">${readOnly ? '' : `
+      <button class="ev-more" id="${rid}-more" aria-label="More actions" aria-haspopup="menu"
+        aria-expanded="false" onclick="evMenu('${escHtml(id)}','${ctx}')">
+        <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="4" r="1.4" fill="currentColor"/><circle cx="9" cy="9" r="1.4" fill="currentColor"/><circle cx="9" cy="14" r="1.4" fill="currentColor"/></svg>
+      </button>
+      <div class="ev-menu" id="${rid}-menu" role="menu" hidden>
+        ${waiting ? `
+        <button class="ev-menu-item" role="menuitem" onclick="evAdd('${escHtml(id)}','${ctx}')">Add</button>
+        <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
+        <button class="ev-menu-item" role="menuitem" onclick="evDismissProposal('${escHtml(id)}','${ctx}')">Dismiss</button>`
+        : `
+        <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
+        <button class="ev-menu-item" role="menuitem" onclick="evKeep('${escHtml(id)}','${ctx}')">Keep</button>
+        <button class="ev-menu-item ev-menu-danger" role="menuitem" onclick="evDelete('${escHtml(id)}','${ctx}')">Delete</button>`}
+      </div>`}
     </div>
     <div class="ev-editor" id="${rid}-editor" hidden></div>
   </div>`;
 }
+
+// A time range on one line collides with the title at 96px, so the two halves
+// stack.
+function evTimeCell(ev) {
+  if (ev.is_all_day || !ev.time) return 'All day';
+  return ev.end_time
+    ? `<span>${escHtml(ev.time)}</span><span class="ev-time-end">${escHtml(ev.end_time)}</span>`
+    : escHtml(ev.time);
+}
+
+function evPersonName(ev) {
+  const id = ev.member_id || ev.memberId;
+  const m = id && typeof familyMembers !== 'undefined'
+    ? familyMembers.find(x => x.id === id) : null;
+  if (m) return m.name;
+  // Falling back to the sender printed "West Hillsborough School · West
+  // Hillsborough Elementary School" -- the venue twice, in slightly different
+  // words. A sender that is just another name for the place adds nothing.
+  const sender = ev.sender_name || null;
+  if (!sender || !ev.location) return sender;
+  const norm = t => String(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const a = norm(sender), b = norm(ev.location);
+  if (!a) return null;
+  if (b.includes(a) || a.includes(b)) return null;
+  // Also catch the partial case: most words of one appear in the other.
+  const wa = a.split(' ').filter(w => w.length > 2);
+  if (wa.length && wa.filter(w => b.includes(w)).length / wa.length >= 0.6) return null;
+  return sender;
+}
+
+// "625 Oak Grove Ave, Menlo Park, CA 94025, USA" is a venue plus noise. Keep
+// the part a person would say out loud.
+function evShortPlace(loc) {
+  const first = String(loc).split(',')[0].trim();
+  if (/^\d+\s/.test(first) && String(loc).includes(',')) {
+    const second = String(loc).split(',')[1];
+    if (second) return escHtml(second.trim());
+  }
+  return escHtml(first);
+}
+
+function evMenu(id, ctx) {
+  const menu = document.getElementById(`ev-${ctx}-${id}-menu`);
+  const btn = document.getElementById(`ev-${ctx}-${id}-more`);
+  if (!menu) return;
+  const open = menu.hidden;
+  document.querySelectorAll('.ev-menu').forEach(m => { m.hidden = true; });
+  document.querySelectorAll('.ev-more').forEach(b => b.setAttribute('aria-expanded', 'false'));
+  menu.hidden = !open;
+  if (btn) btn.setAttribute('aria-expanded', String(open));
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('.ev-actions')) return;
+  document.querySelectorAll('.ev-menu').forEach(m => { m.hidden = true; });
+  document.querySelectorAll('.ev-more').forEach(b => b.setAttribute('aria-expanded', 'false'));
+});
 
 // Opens the SAME editor the review queue uses. A second editor over a thinner
 // payload is how two screens end up disagreeing about what an event is.
@@ -3766,23 +4537,62 @@ function evEdit(id, ctx) {
 // Only the server knows whether an event reached Google Calendar, so only the
 // server can say whether removing it means forgetting a draft or deleting a
 // real calendar entry.
-function evDismiss(id, ctx) {
-  const ev = evGet(id);
-  beginCardDelete(`ev-${ctx}-${id}`, {
-    title: ev && ev.title,
-    commit: async () => {
-      try {
-        await fetch('/api/events/dismiss', { method: 'POST',
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
-      } catch {}
-      evRegistry.delete(id);
-      if (ctx === 'today') loadToday();
-    },
-  });
+// "Dismiss" called /api/events/dismiss, which DELETES the event from Google
+// Calendar when it is on there -- so the menu offered two destructive actions
+// and warned about only one of them. Renaming the label alone would have made
+// that worse, not better: a button saying "Keep" that removes the event is a
+// lie rather than a confusing word.
+//
+// mark-reviewed is the action the label describes, and it already existed --
+// the old Review screen used it, labelled "OK". Collapsing the buttons into
+// this menu in step 4 is where it got dropped.
+// A proposal is not on the calendar, so nothing here can destroy anything:
+// Add writes it, Dismiss forgets it. Delete deliberately does not appear.
+async function evAdd(id, ctx) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  try {
+    await fetch('/api/events/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+  } catch {}
+  evRegistry.delete(id);
+  if (ctx === 'today') loadToday(); else loadWhatsAhead();
+}
+
+async function evDismissProposal(id, ctx) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  try {
+    await fetch('/api/events/dismiss', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+  } catch {}
+  evRegistry.delete(id);
+  if (row) row.remove();
+}
+
+async function evKeep(id, ctx) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  try {
+    await fetch('/api/events/mark-reviewed', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+  } catch {}
+  evRegistry.delete(id);
+  if (row) row.remove();
 }
 
 function evDelete(id, ctx) {
   const ev = evGet(id);
+  // Deleting removes the event from Google Calendar. The 8-second undo strip
+  // still runs underneath, but a destructive action inside a menu needs to be
+  // asked for twice -- the menu item sits where "Dismiss" was a moment ago.
+  if (!confirm(`Delete \u201c${(ev && ev.title) || 'this event'}\u201d from your Google Calendar?`)) return;
   beginCardDelete(`ev-${ctx}-${id}`, {
     title: ev && ev.title, durationMs: 8000,
     commit: async () => {
@@ -3803,78 +4613,101 @@ function renderToday() {
   if (!todayData) { host.innerHTML = `<div class="empty-state">Loading today\u2026</div>`; return; }
 
   const d = todayData;
+  const unreviewed = todayUnreviewed(d.date, d.date);
   const head = `<div class="today-head">
+      <h1 class="today-title">Today</h1>
       <div class="today-date">${escHtml(todayDateLine(d.date))}</div>
     </div>
     <div class="today-summary" id="today-summary">
       <div class="today-summary-text" id="today-summary-text">${
         todaySummary ? escHtml(todaySummary.text) : 'Reading your day\u2026'}</div>
-      <button class="today-rewrite" onclick="loadTodaySummary(true)">Rewrite</button>
+      ${todayProposedLine(unreviewed.length)}
+      <div class="today-summary-foot">
+        <button class="today-rewrite" onclick="loadTodaySummary(true)">Rewrite</button>
+      </div>
     </div>`;
 
   const sections = [];
 
-  // Reminders and events are one time-ordered list in the same component. They
-  // were two differently-shaped lists before, which made a deadline at 3pm look
-  // like a different kind of object from a meeting at 3pm.
-  const main = [...(d.reminders || []), ...(d.events || [])].sort((a, b) => {
-    if (!!a.is_all_day !== !!b.is_all_day) return a.is_all_day ? -1 : 1;
-    return String(a.time || '').localeCompare(String(b.time || ''));
-  });
-  if (main.length) {
-    sections.push(`<div class="today-section">
-      ${main.map(it => renderEventRow(it, 'today')).join('')}
-    </div>`);
-  } else {
-    sections.push('<div class="today-clear">Nothing on today.</div>');
+  // Events by time: the calendar, joined to Criba's rows where it owns one.
+  const schedule = ((waData && waData.events) || [])
+    .filter(e => e.date === d.date)
+    .sort((a, b) => {
+      if (!!a.is_all_day !== !!b.is_all_day) return a.is_all_day ? -1 : 1;
+      return String(a.time || '').localeCompare(String(b.time || ''));
+    });
+  const mine = new Map();
+  for (const e of (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])) {
+    if (e.calEventId) mine.set(e.calEventId, e);
   }
+  sections.push(schedule.length
+    ? `<div class="today-section">${schedule.map(e => {
+        const own = e.id && mine.get(e.id);
+        return renderEventRow(own ? { ...own, ...e, id: own.id } : { ...e, readOnly: true }, 'today');
+      }).join('')}</div>`
+    : '<div class="today-clear">Nothing on your calendar today.</div>');
 
-  // Always shown, empty or not. A section that appears only when it has
-  // contents teaches people it is not there, and these are the items most
-  // easily missed -- Criba found them and deliberately did not add them.
-  const nl = (d.newsletters || []).filter(it => it.date === d.date || it.date === todayPlusOne(d.date));
-  sections.push(`<div class="today-section today-maybe">
-    <div class="today-section-head">Want it on your calendar?</div>
-    <div class="today-maybe-note">Criba found these in your email but wasn\u2019t sure you\u2019d want them.</div>
-    ${nl.length ? nl.map(it => `<div class="ev-row" id="maybe-${escHtml(it.id)}">
-        <div class="ev-time">${escHtml(it.is_all_day || !it.time ? 'All day' : it.time)}</div>
-        <div class="ev-main">
-          <div class="ev-title">${escHtml(it.title || '(untitled)')}</div>
-          <div class="ev-meta">${escHtml([it.location, it.sender_name || it.sender_email].filter(Boolean).join(' \u00b7 '))}</div>
-          <div class="ev-actions">
-            <button class="ev-act" onclick="todayAddToCalendar('${escHtml(it.id)}')">Add</button>
-            <button class="ev-act" onclick="todayDismissOne('${escHtml(it.id)}')">Dismiss</button>
-          </div>
-        </div>
-      </div>`).join('')
-    : '<div class="today-none">Nothing for today or tomorrow.</div>'}
-  </div>`);
-
-  // Tomorrow, read-only. A preview that could be acted on would be a second
-  // What's Ahead with different rules.
-  const tom = (waData && waData.events || []).filter(e => e.date === todayPlusOne(d.date));
-  if (tom.length) {
-    sections.push(`<div class="today-section">
-      <div class="today-section-head">Tomorrow</div>
-      ${tom.slice(0, 6).map(e => `<div class="today-peek">
-        <span class="today-peek-time">${escHtml(e.is_all_day || !e.time ? 'All day' : e.time)}</span>
-        <span>${escHtml(e.title || '')}</span></div>`).join('')}
-    </div>`);
-  }
-
-  // The last 24 hours of things Criba put on the calendar, with a way back.
-  const added = (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])
-    .filter(e => e.user_action_at && (Date.now() - Date.parse(e.user_action_at)) < 86400000 && e.calEventId);
-  if (added.length) {
-    sections.push(`<div class="today-section">
-      <div class="today-section-head">Just added</div>
-      ${added.slice(0, 6).map(e => `<div class="today-peek" id="justadded-${escHtml(e.id)}">
-        <span>${escHtml(e.title || '')}${e.date ? ` \u00b7 ${escHtml(formatDate(e.date))}` : ''}</span>
-        <button class="ev-act" onclick="evDelete('${escHtml(e.id)}','today')">Undo</button></div>`).join('')}
-    </div>`);
-  }
+  // Called out only because the date is today. Collapsed by default: this is a
+  // question to open when there is room for it, not a queue to face on arrival.
+  sections.push(todayNotReviewedHtml(unreviewed,
+    'Criba found these and hasn\u2019t added them. Nothing here is on your calendar.'));
 
   host.innerHTML = head + sections.join('');
+}
+
+// Everything for a date that Criba has found and not added: queue rows it never
+// wrote, and the suggestions it deliberately held back.
+function todayUnreviewed(from, to) {
+  const inRange = e => e.date && e.date >= from && e.date <= to;
+  const queue = (typeof pendingEvents !== 'undefined' && Array.isArray(pendingEvents) ? pendingEvents : [])
+    .filter(e => (e.status === 'pending' || e.status === 'draft') && inRange(e));
+  const proposed = ((todayData && todayData.newsletters) || []).filter(inRange);
+  return [...queue, ...proposed].sort((a, b) =>
+    String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))));
+}
+
+// Appended after the written summary rather than asked of the model. A count
+// is a fact, and a model asked for one will eventually invent it -- and this
+// number has to agree exactly with the section below, which is built from the
+// same list.
+function todayProposedLine(n) {
+  if (!n) return '';
+  const what = n === 1 ? '1 proposed item that is not' : `${n} proposed items that are not`;
+  return `<div class="today-proposed">You have ${what} yet on your calendar.
+    <button class="today-proposed-link" onclick="openNotReviewed()">View ${n === 1 ? 'it' : 'them'}</button></div>`;
+}
+
+// Opens the section and moves to it, so the sentence leads somewhere.
+function openNotReviewed() {
+  if (!notReviewedOpen) toggleNotReviewed();
+  const el = document.getElementById('nr-head');
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+let notReviewedOpen = false;
+function toggleNotReviewed() {
+  notReviewedOpen = !notReviewedOpen;
+  const body = document.getElementById('nr-body');
+  const btn = document.getElementById('nr-head');
+  if (body) body.hidden = !notReviewedOpen;
+  if (btn) btn.setAttribute('aria-expanded', String(notReviewedOpen));
+  const chev = document.getElementById('nr-chev');
+  if (chev) chev.textContent = notReviewedOpen ? '\u2212' : '+';
+}
+
+function todayNotReviewedHtml(items, note) {
+  return `<div class="today-section nr">
+    <button class="nr-head" id="nr-head" onclick="toggleNotReviewed()" aria-expanded="${notReviewedOpen}">
+      <span class="nr-title">Not reviewed \u2014 should these be on your calendar?</span>
+      <span class="nr-chev" id="nr-chev" aria-hidden="true">${notReviewedOpen ? '\u2212' : '+'}</span>
+    </button>
+    <div class="nr-body" id="nr-body" ${notReviewedOpen ? '' : 'hidden'}>
+      <div class="nr-note">${note}</div>
+      ${items.length
+        ? items.map(it => renderEventRow({ ...it, notOnCalendar: true }, 'today')).join('')
+        : '<div class="today-none">Nothing waiting.</div>'}
+    </div>
+  </div>`;
 }
 
 function todayPlusOne(iso) {
@@ -4346,7 +5179,11 @@ let lastScanDays = null; // set after a successful backfill so the header reflec
 
 function updateReviewCount(n) {
   const label = document.getElementById('review-count-label');
-  if (label) label.textContent = n > 0 ? ` (${n})` : '';
+  // Deliberately blank. Beta testers said they never review, and a badge
+  // counting an unbounded backlog -- it read 119 and only ever grew -- is a
+  // debt notice rather than information. The count stays queryable from the
+  // API; it is not put in front of the user.
+  if (label) label.textContent = '';
 }
 
 function updateReviewHeader(days) {
@@ -4405,7 +5242,7 @@ function wireBackfillBar() {}
 async function startFresh() {
   const out = document.getElementById('backfill-result');
   const say = html => { if (out) out.innerHTML = html; };
-  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Checking your calendar…</div>');
+  say('<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">Checking your calendar…</div>');
   let plan;
   try {
     const res = await fetch('/api/calendar/reset', {
@@ -4432,7 +5269,7 @@ async function startFresh() {
       say(`<div style="padding:8px 2px;color:var(--red);font-size:0.8125rem">
         Couldn't finish checking — ${errs.length} of your calendar${errs.length === 1 ? '' : 's'} couldn't be read,
         so Criba can't tell you whether there's anything to remove. Nothing was changed. Try again in a few minutes.
-        <div style="margin-top:4px;font-size:11px;color:var(--text2)">${errs.map(e => escHtml(e.calendar + (DEBUG_TOOLS ? ' — ' + e.error : ''))).join('; ')}</div>
+        <div style="margin-top:4px;font-size:11px;color:var(--text-2)">${errs.map(e => escHtml(e.calendar + (DEBUG_TOOLS ? ' — ' + e.error : ''))).join('; ')}</div>
       </div>`);
       return;
     }
@@ -4440,7 +5277,7 @@ async function startFresh() {
     // The window bounds, event counts and description fragments are how a
     // failed match gets diagnosed — kept, but behind the debug flag. A parent
     // reading "read 412 events, sample: desc: …" thinks something broke.
-    say(`<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">
+    say(`<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">
       Nothing to remove — Criba hasn't added anything to your calendar yet.
       ${DEBUG_TOOLS ? `<div style="margin-top:4px;font-size:11px">
         Looked at ${scanned.length} calendar${scanned.length === 1 ? '' : 's'}
@@ -4465,7 +5302,7 @@ async function startFresh() {
   );
   if (!ok) { say(''); return; }
 
-  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Removing…</div>');
+  say('<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">Removing…</div>');
   try {
     const res = await fetch('/api/calendar/reset', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4490,7 +5327,7 @@ async function startFresh() {
 async function cleanupDuplicates() {
   const out = document.getElementById('backfill-result');
   const say = html => { if (out) out.innerHTML = html; };
-  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Scanning your calendar for duplicates…</div>');
+  say('<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">Scanning your calendar for duplicates…</div>');
   let plan;
   try {
     const res = await fetch('/api/calendar/cleanup-duplicates', {
@@ -4509,7 +5346,7 @@ async function cleanupDuplicates() {
     : '';
 
   if (!plan.wouldDelete) {
-    say(`<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">No duplicate copies found — your calendar is clean.${skippedNote}</div>`);
+    say(`<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">No duplicate copies found — your calendar is clean.${skippedNote}</div>`);
     return;
   }
 
@@ -4524,7 +5361,7 @@ async function cleanupDuplicates() {
   );
   if (!ok) { say(''); return; }
 
-  say('<div style="padding:8px 2px;color:var(--text2);font-size:0.8125rem">Removing duplicates…</div>');
+  say('<div style="padding:8px 2px;color:var(--text-2);font-size:0.8125rem">Removing duplicates…</div>');
   try {
     const res = await fetch('/api/calendar/cleanup-duplicates', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4564,7 +5401,7 @@ function renderPostWriteReviewCard(ev) {
   // on — the card is a notice, and OK just clears it.
   const isDup = ev.status === 'duplicate';
   const sourceTag = ev.source === 'gmail' ? `<span class="pill" style="font-size:9.5px">Gmail</span>` : ev.source ? `<span class="pill" style="font-size:9.5px">${escHtml(ev.source)}</span>` : '';
-  const dupTag = isDup ? `<span class="pill" style="font-size:9.5px;border-color:#c5221f;color:#c5221f">Already on calendar</span>` : '';
+  const dupTag = isDup ? `<span class="pill" style="font-size:9.5px;border-color:var(--danger);color:var(--danger)">Already on calendar</span>` : '';
   // The queue mixes events Criba actually wrote with ones it only drafted, and
   // used to give both the identical card — same Delete button, same "remove
   // from your Google Calendar" tooltip. That made the list impossible to
@@ -4579,7 +5416,7 @@ function renderPostWriteReviewCard(ev) {
     ? `<span class="pill state-pill state-draft">Not added yet</span>`
     : `<span class="pill state-pill state-added">On your calendar</span>`;
   const dot = eventDotHtml(ev);
-  const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem;font-style:italic">${linkify(ev.notes)}</div>` : '';
+  const notesHtml = ev.notes ? `<div class="review-card-meta" style="margin-top:0.25rem">${linkify(ev.notes)}</div>` : '';
   return `
   <div class="review-card" id="rcard-${id}" style="transition:opacity 0.3s">
     <div class="review-card-row" id="rrow-${id}">
@@ -4657,7 +5494,7 @@ function reminderHeadline(ev) {
   const titleLower = title.toLowerCase();
   if (dateStr && !titleLower.includes(dateStr.toLowerCase())) {
     // Append "on Aug 7th" only if the date isn't already in the title
-    return `${escHtml(title)} <span style="font-weight:400;color:var(--text2)">on ${escHtml(dateStr)}</span>`;
+    return `${escHtml(title)} <span style="font-weight:400;color:var(--text-2)">on ${escHtml(dateStr)}</span>`;
   }
   return escHtml(title);
 }
@@ -4968,13 +5805,13 @@ function receiptStripHtml() {
   const shown = added.slice(0, 4);
   const more = n - shown.length;
   const chips = shown
-    .map(e => `<span class="r-chip">${escHtml(e.title || 'Untitled event')}</span>`)
+    .map(e => `<span class="src-chip">${escHtml(e.title || 'Untitled event')}</span>`)
     .join('')
-    + (more > 0 ? `<span class="r-chip r-more">+${more} more</span>` : '');
-  return `<div class="receipt" id="review-receipt">
-    <span class="r-lead">Criba added <b>${n}</b> event${n > 1 ? 's' : ''} to your Google Calendar</span>
-    <span class="r-chips">${chips}</span>
-    <span class="r-note">Remove any below to undo</span>
+    + (more > 0 ? `<span class="src-chip src-chip-more">+${more} more</span>` : '');
+  return `<div class="src-card src-recent" id="review-receipt">
+    <div class="src-recent-lead">Criba added <b>${n}</b> event${n > 1 ? 's' : ''} to your Google Calendar</div>
+    <div class="src-recent-chips">${chips}</div>
+    <div class="src-recent-note">Remove any to undo</div>
   </div>`;
 }
 
@@ -5092,15 +5929,15 @@ function renderDryRunTable(result, accumulated, queryStr) {
 
     const subjectText = m.subject
       ? escHtml(m.subject.slice(0, 60)) + (m.subject.length > 60 ? '…' : '')
-      : `<em style="color:#999">(no subject · ${m.messageId})</em>`;
+      : `<em style="color:var(--muted)">(no subject · ${m.messageId})</em>`;
     const snippetLine = m.snippetPreview
-      ? `<br><span style="font-size:0.68rem;color:#94a3b8">${escHtml(m.snippetPreview)}…</span>`
+      ? `<br><span style="font-size:0.68rem;color:var(--muted)">${escHtml(m.snippetPreview)}…</span>`
       : '';
 
     const tokens = m.estTokens ? `~${m.estTokens.toLocaleString()}` : '—';
     const images = m.imageCount != null ? m.imageCount : '—';
     const skipLabel = DRY_RUN_SKIP_LABELS[m.reason] || m.reason || '';
-    const skipDetail = m.detail ? ` <span style="font-size:0.68rem;color:#94a3b8">(${escHtml(m.detail)})</span>` : '';
+    const skipDetail = m.detail ? ` <span style="font-size:0.68rem;color:var(--muted)">(${escHtml(m.detail)})</span>` : '';
     const skipReason = !isWould ? `${skipLabel}${skipDetail}` : '';
 
     return `<tr class="${isWould ? 'would-send' : 'skipped'}">
@@ -5125,14 +5962,14 @@ function renderDryRunTable(result, accumulated, queryStr) {
       <span>Skipped: ${skippedDedup} already&nbsp;processed · ${skippedPreFilter} no&nbsp;date&nbsp;signal</span>
       ${totalEst ? `<span>${totalEst}</span>` : ''}
     </div>
-    ${queryStr ? `<div style="font-size:0.72rem;color:#94a3b8;margin-top:0.3rem;font-family:monospace">${escHtml(queryStr)}</div>` : ''}
+    ${queryStr ? `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.3rem;font-family:monospace">${escHtml(queryStr)}</div>` : ''}
     <div class="dry-run-table-wrap">
       <table class="dry-run-table">
         <thead><tr>
           <th>Verdict</th><th>Subject / snippet</th><th>Pattern matched</th>
           <th style="text-align:center">Images</th><th style="text-align:right">Est. tokens</th><th>Skip reason</th>
         </tr></thead>
-        <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:1rem">No Primary-tab emails in this window</td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:1rem">No Primary-tab emails in this window</td></tr>'}</tbody>
       </table>
     </div>`;
 }
@@ -5226,11 +6063,11 @@ async function showScanTrace() {
                     e.stage === 'SKIP-BODY'  ? ` bodyLen=${e.bodyLen}` :
                     e.stage === 'ERROR'      ? ` ${escHtml(e.error||'')}` : '';
       return `<tr>
-        <td style="color:var(--text3);font-size:0.7rem;white-space:nowrap">${time}</td>
+        <td style="color:var(--muted);font-size:0.7rem;white-space:nowrap">${time}</td>
         <td><span style="font-size:0.7rem;font-weight:700;color:${color}">${e.stage}</span></td>
         <td style="font-size:0.75rem;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${subject}</td>
-        <td style="font-size:0.72rem;color:var(--text3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${from}</td>
-        <td style="font-size:0.72rem;color:var(--text2)">${extra}</td>
+        <td style="font-size:0.72rem;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${from}</td>
+        <td style="font-size:0.72rem;color:var(--text-2)">${extra}</td>
       </tr>`;
     }).join('');
 
@@ -5239,13 +6076,13 @@ async function showScanTrace() {
     const summary = Object.entries(counts).map(([s,n]) => `${s}: ${n}`).join(' · ');
 
     result.innerHTML = `
-      <div style="font-size:0.75rem;color:var(--text2);margin-bottom:0.5rem">${entries.length} entries · ${summary}
+      <div style="font-size:0.75rem;color:var(--text-2);margin-bottom:0.5rem">${entries.length} entries · ${summary}
         <button onclick="fetch('/api/scan/trace',{method:'DELETE'}).then(()=>document.getElementById('backfill-result').textContent='Trace cleared')"
-          style="margin-left:1rem;font-size:0.7rem;background:none;border:1px solid var(--ink);padding:2px 8px;cursor:pointer">Clear trace</button>
+          style="margin-left:1rem;font-size:0.7rem;background:none;border:1px solid var(--primary);padding:2px 8px;cursor:pointer">Clear trace</button>
       </div>
       <div style="overflow-x:auto;max-height:400px;overflow-y:auto">
         <table style="width:100%;border-collapse:collapse;font-family:inherit">
-          <thead><tr style="font-size:0.7rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em">
+          <thead><tr style="font-size:0.7rem;color:var(--muted)">
             <th style="text-align:left;padding:3px 8px 3px 0">Time</th>
             <th style="text-align:left;padding:3px 8px">Stage</th>
             <th style="text-align:left;padding:3px 8px">Subject</th>
@@ -5301,8 +6138,8 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
       // neither can dedup against the other. That is how the same practice
       // landed on the calendar twice in two different children's colours.
       result.innerHTML = fetchErr.name === 'AbortError'
-        ? '<span style="color:#6b7280">Still processing in the background — check back in a minute.</span>'
-        : '<span style="color:#ef4444">Network error — check your connection, then reload.</span>';
+        ? '<span style="color:var(--muted)">Still processing in the background — check back in a minute.</span>'
+        : '<span style="color:var(--danger)">Network error — check your connection, then reload.</span>';
       return;
     }
 
@@ -5310,7 +6147,7 @@ async function runBackfill(days, dryRun = false, continuation = 0) {
       // 409 (already running) and 429 (cooldown) are not failures and must not
       // read like one — a "try again" here is what produced the duplicates.
       const calm = res.status === 409 || res.status === 429;
-      result.innerHTML = `<span style="color:${calm ? '#6b7280' : '#ef4444'}">${escHtml(data?.error || 'Scan failed — reload and try once more.')}</span>`;
+      result.innerHTML = `<span style="color:${calm ? 'var(--muted)' : 'var(--danger)'}">${escHtml(data?.error || 'Scan failed — reload and try once more.')}</span>`;
       return;
     }
 
@@ -5585,7 +6422,7 @@ function renderRescheduleCard(ev) {
           ? `<div class="cancel-panel-title">Update "${escHtml(ev.matched_event_title || ev.title)}" in your calendar?${pill}</div>
              <div class="reschedule-arrow">
                <span class="reschedule-old">${[oldDateStr, oldTimeStr].filter(Boolean).join(' · ') || 'previous date'}</span>
-               <span class="material-icons" style="font-size:1rem;color:var(--text2)">arrow_forward</span>
+               <span class="material-icons" style="font-size:1rem;color:var(--text-2)">arrow_forward</span>
                <span class="reschedule-new">${[newDateStr, newTimeStr].filter(Boolean).join(' · ')}</span>
              </div>`
           : `<div class="cancel-panel-title">Reschedule notice — no matching event found</div>
@@ -6470,7 +7307,7 @@ async function saveEdit(id) {
   const status = document.getElementById(`rv-status-${id}`);
   const btn = document.getElementById(`rv-addbtn-${id}`);
   if (btn) btn.disabled = true;
-  if (status) status.innerHTML = '<span style="font-size:0.8rem;color:var(--text2)">Saving…</span>';
+  if (status) status.innerHTML = '<span style="font-size:0.8rem;color:var(--text-2)">Saving…</span>';
   const allDay = document.getElementById(`rv-allday-${id}`)?.checked;
   const payload = {
     id,
@@ -7011,7 +7848,7 @@ async function loadCategoryGroups(calendarId, calName, totalEvents, memberId, re
   document.getElementById('cat-page-title').textContent = groupsState.calName;
   const member = memberId && familyMembers.find(m => m.id === memberId);
   const memberBadge = member
-    ? ` <span style="display:inline-flex;align-items:center;gap:5px;font-size:0.8rem;background:white;border:1px solid var(--border);border-radius:20px;padding:2px 9px;vertical-align:middle"><span style="width:9px;height:9px;border-radius:50%;background:${memberColor(member.color)};display:inline-block"></span>${member.name}</span>`
+    ? ` <span style="display:inline-flex;align-items:center;gap:5px;font-size:0.8rem;background:white;border:1px solid var(--line);border-radius:20px;padding:2px 9px;vertical-align:middle"><span style="width:9px;height:9px;border-radius:50%;background:${memberColor(member.color)};display:inline-block"></span>${member.name}</span>`
     : '';
   const removalCount = base.removals.reduce((n, r) => n + (r.dates ? r.dates.length : 0), 0);
   const parts = [];
@@ -7491,7 +8328,7 @@ async function catAddAll(ci) {
   const disBtn    = document.getElementById(`cat-dis-btn-${ci}`);
   if (addBtn) addBtn.disabled = true;
   if (disBtn) disBtn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text2)">Adding…</span>';
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-2)">Adding…</span>';
   try {
     const res = await fetch('/api/calendars/group-approve', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -7633,7 +8470,7 @@ async function cedApprove(evId, key, ci, ei) {
   const addBtn  = document.getElementById(`ced-add-${key}`);
   const statusEl = document.getElementById(`ced-status-${key}`);
   if (addBtn) addBtn.disabled = true;
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text2)">Adding…</span>';
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-2)">Adding…</span>';
 
   // Only send fields whose inputs are actually rendered. The end-date box only
   // exists for breaks, so sending endDate:'' unconditionally now reads as

@@ -244,7 +244,8 @@
   .logout-btn:hover { background: var(--ink); color: var(--bg); }
 
   /* ── Page layout ─────────────────────────────────────────────────────── */
-  .page { display: none; padding: 56px 48px 72px; max-width: 1240px; margin: 0 auto; }
+  .page { display: none; padding: 48px 32px 72px; max-width: 1240px; margin: 0 auto; }
+  @media (min-width: 700px) { .page { padding-top: 64px; } }
   .page.active { display: block; }
 
   /* Page title block: big headline left, italic description right, rule below */
@@ -883,6 +884,61 @@
   .wa-empty { font-size: 0.9rem; color: var(--text2); padding: 0.6rem 0.1rem; }
   @media (min-width: 700px) { .wa-title { font-size: 2.6rem; } }
 
+  /* Home. Mobile first. Rows are exactly 56px and touch each other, with the
+     hairline at the bottom of each and a border-top on the first, so the menu
+     reads as one group rather than four separate blocks. */
+  #page-home { max-width: 640px; margin: 0 auto; }
+  .home-date { font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted); }
+  .home-headline {
+    font-family: var(--font-display); font-size: 46px; font-weight: 400; line-height: 1;
+    color: var(--primary); margin: 16px 0 12px;
+  }
+  .home-summary {
+    font-family: var(--font-body); font-size: 16px; font-weight: 400; line-height: 1.6;
+    color: var(--text-2); margin: 0 0 40px; max-width: 60ch;
+  }
+  .home-go { font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 12px; }
+  .home-menu { display: flex; flex-direction: column; }
+  .home-link {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    width: 100%; height: 56px; padding: 0; margin: 0;
+    background: none; border: none; border-bottom: 1px solid var(--line);
+    color: var(--primary); text-align: left; cursor: pointer;
+  }
+  .home-link:first-child { border-top: 1px solid var(--line); }
+  .home-link:hover .home-label { text-decoration: underline; }
+  .home-label { font-family: var(--font-display); font-size: 26px; font-weight: 400; line-height: 1; }
+  .home-link-right { display: inline-flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .home-arrow { color: var(--muted); display: block; }
+  .home-new {
+    background: var(--apricot); color: var(--on-apricot); border-radius: var(--radius-pill);
+    padding: 5px 12px; font-family: var(--font-body); font-size: 12px; font-weight: 600; line-height: 1.2;
+  }
+  .home-new[hidden] { display: none; }
+  .home-foot { margin-top: 32px; }
+  .home-gcal { font-family: var(--font-body); font-size: 14px; color: var(--primary); text-decoration: none; }
+  .home-gcal:hover { text-decoration: underline; }
+
+  /* What's Ahead. The whole screen is a list of dates; a day opens only when
+     it is asked for. The previous version put 116 rows on screen at once, each
+     with buttons demanding a decision, and there was no way to look at the week
+     without the entire backlog looking back. */
+  .wa-title { font-size: 2.1rem; font-weight: 400; margin: 0 0 0.35rem; }
+  .wa-sub { font-size: 0.92rem; color: var(--text2); margin: 0 0 1.6rem; }
+  .wa-day { border-bottom: 1px solid var(--bg2); }
+  .wa-dayhead { display: flex; align-items: center; justify-content: space-between; width: 100%;
+    font-family: inherit; font-size: 1.05rem; color: var(--ink); text-align: left;
+    background: none; border: none; padding: 0.85rem 0.1rem; cursor: pointer; }
+  .wa-dayhead:hover { background: var(--bg2); }
+  .wa-dayname { display: inline-flex; align-items: center; gap: 10px; }
+  .wa-count { font-size: 0.82rem; color: var(--text2); }
+  .wa-clash { font-size: 0.78rem; color: #b06a00; }
+  .wa-plus { font-size: 1.15rem; color: var(--text2); line-height: 1; }
+  .wa-daybody { padding: 0 0 0.6rem; }
+  .wa-daybody[hidden] { display: none; }
+  .wa-empty { font-size: 0.9rem; color: var(--text2); padding: 0.6rem 0.1rem; }
+  @media (min-width: 700px) { .wa-title { font-size: 2.6rem; } }
+
   /* Home. Mobile first; the desktop rule only widens the measure so the
      headline does not stretch across a monitor. Existing tokens only --
      no new colours while the palette is still being decided. */
@@ -903,8 +959,6 @@
   .home-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px;
     flex-wrap: wrap; margin-top: 2.2rem; }
   .home-gcal { font-size: 0.85rem; color: var(--ink); }
-  .home-signout { font-family: inherit; font-size: 0.85rem; background: none; border: none;
-    color: var(--text2); cursor: pointer; padding: 0; text-decoration: underline; }
   @media (min-width: 700px) { .home-headline { font-size: 2.6rem; } }
 
   /* Shared event row (Today + What's Ahead). Uses the existing ink/bg tokens
@@ -1617,19 +1671,21 @@
     <div class="home-go">Go to</div>
     <nav class="home-menu">
       <button class="home-link" onclick="homeGo('today')">
-        <span>Today</span><span class="home-arrow">&rarr;</span></button>
+        <span class="home-label">Today</span>
+        <span class="home-link-right"><svg class="home-arrow" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 9h11M10 4.5 14.5 9 10 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
       <button class="home-link" onclick="homeGo('review')">
-        <span>What’s Ahead</span>
-        <span class="home-link-right"><span class="home-new" id="home-new-count" hidden></span><span class="home-arrow">&rarr;</span></span></button>
+        <span class="home-label">What’s ahead</span>
+        <span class="home-link-right"><span class="home-new" id="home-new-count" hidden></span><svg class="home-arrow" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 9h11M10 4.5 14.5 9 10 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
       <button class="home-link" onclick="homeGo('calendars')">
-        <span>Sources</span><span class="home-arrow">&rarr;</span></button>
+        <span class="home-label">Sources</span>
+        <span class="home-link-right"><svg class="home-arrow" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 9h11M10 4.5 14.5 9 10 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
       <button class="home-link" onclick="homeGo('settings')">
-        <span>People &amp; Rules</span><span class="home-arrow">&rarr;</span></button>
+        <span class="home-label">People &amp; rules</span>
+        <span class="home-link-right"><svg class="home-arrow" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><path d="M3.5 9h11M10 4.5 14.5 9 10 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
     </nav>
 
     <div class="home-foot">
-      <a class="home-gcal" href="https://calendar.google.com" target="_blank" rel="noopener noreferrer">Open Google Calendar &nearr;</a>
-      <button class="home-signout" onclick="logout()">Sign out</button>
+      <a class="home-gcal" href="https://calendar.google.com" target="_blank" rel="noopener noreferrer">Open Google Calendar ↗</a>
     </div>
   </div>
 

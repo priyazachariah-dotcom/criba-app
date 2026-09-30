@@ -253,9 +253,12 @@
   .page.active { display: block; }
 
   /* Page title block: big headline left, italic description right, rule below */
+  /* The 1.5px black rule under every page title is gone; spacing separates the
+     header from the body now. Used by People and rules and by the upload
+     review page -- the other screens that had one were rebuilt earlier. */
   .page-title-block {
     display: flex; justify-content: space-between; align-items: flex-end;
-    padding-bottom: 36px; margin-bottom: 44px; border-bottom: 1.5px solid var(--ink);
+    padding-bottom: 0; margin-bottom: 40px; border-bottom: none;
   }
   .page-headline {
     font-family: 'Archivo Black', sans-serif;
@@ -818,8 +821,13 @@
   .settings-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; }
   .settings-section > summary::-webkit-details-marker { display: none; }
   .settings-section > summary .settings-section-title { margin-bottom: 0; }
-  .settings-section > summary::after { content: '+'; font-size: 0.95rem; color: var(--text2); line-height: 1; order: 2; }
-  .settings-section[open] > summary::after { content: '\2212'; }
+  /* A chevron, not a +/- pair: this expands a list, it does not add anything. */
+  .settings-section > summary::after {
+    content: ''; order: 2; width: 10px; height: 10px; margin-left: 2px;
+    border-right: 1.4px solid var(--muted); border-bottom: 1.4px solid var(--muted);
+    transform: rotate(45deg) translate(-2px, -2px);
+  }
+  .settings-section[open] > summary::after { transform: rotate(225deg) translate(-2px, -2px); }
   .settings-section > summary:hover .settings-section-title { color: var(--ink); }
   .settings-section > summary + .page-desc { margin-top: 0.875rem; }
   .settings-section .page-desc { text-align: left; max-width: 680px; }

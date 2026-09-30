@@ -273,23 +273,34 @@
   }
 
   /* ── Buttons ─────────────────────────────────────────────────────────── */
-  .btn-outlined {
-    background: transparent; border: 1.5px solid var(--ink); color: var(--ink);
-    padding: 0.5rem 1.1rem; font-family: 'Inter', sans-serif; font-size: 12.5px;
-    font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em;
-    cursor: pointer; white-space: nowrap; transition: background 0.1s, color 0.1s;
+  /* One button system, per section 5. .btn-filled and .btn-outlined predate
+     .btn-primary / .btn-secondary and are used more (26 places against 20), so
+     all four are defined together here rather than leaving two visual systems
+     on the same screen. */
+  .btn-outlined, .btn-secondary {
+    background: transparent; border: 1px solid var(--line-strong); color: var(--primary);
+    border-radius: var(--radius); min-height: 44px; padding: 0 16px;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    cursor: pointer; white-space: nowrap; transition: border-color 0.12s;
+    display: inline-flex; align-items: center; justify-content: center;
   }
-  .btn-outlined:hover { background: var(--ink); color: var(--bg); }
-  .btn-outlined:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-filled {
-    background: var(--ink); border: 1.5px solid var(--ink); color: var(--bg);
-    padding: 0.5rem 1.1rem; font-family: 'Inter', sans-serif; font-size: 12.5px;
-    font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em;
-    cursor: pointer; white-space: nowrap; transition: opacity 0.1s;
+  .btn-outlined:hover, .btn-secondary:hover { border-color: var(--primary); background: transparent; color: var(--primary); }
+  .btn-outlined:disabled, .btn-secondary:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-filled, .btn-primary {
+    background: var(--apricot); border: 1px solid var(--apricot); color: var(--on-apricot);
+    border-radius: var(--radius); min-height: 44px; padding: 0 20px;
+    font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    cursor: pointer; white-space: nowrap; transition: background 0.12s;
+    display: inline-flex; align-items: center; justify-content: center;
   }
-  .btn-filled:hover { opacity: 0.8; }
-  .btn-filled:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn-sm { padding: 9px 14px; font-size: 11px; }
+  .btn-filled:hover, .btn-primary:hover { background: var(--apricot-hover); border-color: var(--apricot-hover); opacity: 1; }
+  .btn-filled:disabled, .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Destructive is text in --danger, never a filled or outlined red button. */
+  .btn-danger, .btn-outlined.btn-danger {
+    background: transparent; border-color: transparent; color: var(--danger); padding: 0 8px;
+  }
+  .btn-danger:hover, .btn-outlined.btn-danger:hover { border-color: transparent; color: var(--danger); text-decoration: underline; background: transparent; }
+  .btn-sm { min-height: 36px; padding: 0 12px; font-size: 13px; }
   /* Colour modifier for destructive actions — compose with .btn-outlined (+ .btn-sm)
      so Delete/Remove keep the outline button's size and shape but read as danger,
      never like Edit. Replaces the ad-hoc inline red styles that were copied around. */
@@ -573,10 +584,6 @@
   .cal-instructions:focus { outline: none; border-color: var(--blue); }
   .cal-instructions::placeholder { color: #999; }
   .form-actions { display: flex; gap: 0.75rem; margin-top: 1.25rem; }
-  .btn-primary { padding: 0.625rem 1.5rem; background: var(--ink); color: var(--bg); border: 1.5px solid var(--ink); font-size: 0.875rem; font-weight: 500; cursor: pointer; }
-  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-  .btn-secondary { padding: 0.625rem 1rem; background: transparent; color: var(--ink); border: 1.5px solid var(--ink); font-size: 0.875rem; cursor: pointer; }
-  .btn-secondary:hover { background: var(--ink); color: var(--bg); }
   .cal-list-item { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--ink); padding: 18px 0; }
   .cal-list-name { font-weight: 700; font-size: 15px; }
   .cal-list-meta { font-size: 0.8rem; color: var(--text2); margin-top: 2px; }
@@ -921,6 +928,7 @@
 
   /* Add calendar form */
   .cal-form { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 24px; }
+  .cal-form .src-card-head { margin-bottom: 20px; }
   .cal-form .form-group { margin-bottom: 20px; }
   .cal-form label { display: block; font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
   .cal-form .label-optional { font-weight: 400; color: var(--muted); }
@@ -3640,6 +3648,10 @@ async function updateLiveStatus() {
     }
     const acctStatus = document.getElementById('acct-status');
     if (acctStatus) acctStatus.textContent = statusLine;
+    // Sources reads the pill to build its watch line. Landing there before this
+    // call returned left "Checking..." on screen for good, because nothing
+    // repainted afterwards.
+    if (pageIsActive('calendars')) renderSources();
     if (sub) {
       sub.textContent = live && d.expiresAt
         ? `renews ${new Date(d.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`

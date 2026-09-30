@@ -4093,6 +4093,13 @@ function evTimeLabel(ev) {
 function evIsPast(ev) {
   if (ev.is_all_day || !ev.time) return false;
   const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  // The date has to be checked, not only the clock. Comparing times alone
+  // struck through every morning event on every future day: at 13:34 the whole
+  // of tomorrow before 13:34 read as already over.
+  if (!ev.date) return false;
+  if (ev.date > today) return false;
+  if (ev.date < today) return true;
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   return (ev.end_time || ev.time) < hhmm;
 }

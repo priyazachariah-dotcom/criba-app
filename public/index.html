@@ -945,6 +945,19 @@
   }
   .ev-menu-item:hover { background: var(--bg2); }
   .ev-menu-danger { color: var(--danger); }
+  /* Inline actions that are not the row's More menu: Add / Dismiss under
+     "Want it on your calendar?", and Undo under "Just added". Secondary button
+     style, since none of them is the primary action of the screen. */
+  .ev-actions-inline { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .ev-act {
+    font-family: var(--font-body); font-size: 14px; font-weight: 500;
+    min-height: 44px; padding: 0 16px; cursor: pointer;
+    background: transparent; color: var(--primary);
+    border: 1px solid var(--line-strong); border-radius: var(--radius);
+  }
+  .ev-act:hover { border-color: var(--primary); }
+  .ev-act-primary { background: var(--apricot); border-color: var(--apricot); color: var(--on-apricot); }
+  .ev-act-primary:hover { background: var(--apricot-hover); border-color: var(--apricot-hover); }
   .ev-editor { grid-column: 1 / -1; margin-top: 12px; }
   .ev-editor[hidden] { display: none; }
   @media (max-width: 480px) {
@@ -1028,27 +1041,6 @@
   .home-gcal { font-size: 0.85rem; color: var(--ink); }
   @media (min-width: 700px) { .home-headline { font-size: 2.6rem; } }
 
-  /* Shared event row (Today + What's Ahead). Uses the existing ink/bg tokens
-     only -- no new colours, the palette is still being worked on. Mobile first:
-     the time sits above the title on narrow screens and beside it from 520px. */
-  .ev-row { display: grid; grid-template-columns: 1fr; gap: 2px 14px; padding: 0.7rem 0; border-bottom: 1px solid var(--bg2); }
-  .ev-row:last-child { border-bottom: none; }
-  .ev-time { font-size: 0.78rem; color: var(--text2); letter-spacing: 0.02em; white-space: nowrap; }
-  .ev-title { font-size: 0.98rem; line-height: 1.35; display: flex; align-items: baseline; }
-  .ev-meta { font-size: 0.78rem; color: var(--text2); margin-top: 2px; }
-  .ev-row.ev-past .ev-title, .ev-row.ev-past .ev-time { text-decoration: line-through; opacity: 0.55; }
-  .ev-actions { display: flex; gap: 8px; margin-top: 7px; flex-wrap: wrap; }
-  .ev-act { font-family: inherit; font-size: 0.8rem; font-weight: 600;
-            padding: 0.3rem 0.7rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
-  .ev-act:hover { background: var(--ink); color: var(--bg); }
-  .ev-act-danger { border-color: #c5221f; color: #c5221f; }
-  .ev-act-danger:hover { background: #c5221f; color: white; }
-  .ev-editor { grid-column: 1 / -1; }
-  .ev-editor[hidden] { display: none; }
-  @media (min-width: 520px) {
-    .ev-row { grid-template-columns: 64px 1fr; }
-    .ev-editor { grid-column: 2 / -1; }
-  }
 
   .rv-view-toggle { display: flex; gap: 0; margin: 0.75rem 0 0; }
   .rv-view-toggle button { font-family: inherit; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 0.5rem 1.1rem; border: 1.5px solid var(--ink); background: var(--bg); color: var(--ink); cursor: pointer; }
@@ -4216,8 +4208,8 @@ function renderToday() {
         <div class="ev-main">
           <div class="ev-title">${escHtml(it.title || '(untitled)')}</div>
           <div class="ev-meta">${escHtml([it.location, it.sender_name || it.sender_email].filter(Boolean).join(' \u00b7 '))}</div>
-          <div class="ev-actions">
-            <button class="ev-act" onclick="todayAddToCalendar('${escHtml(it.id)}')">Add</button>
+          <div class="ev-actions-inline">
+            <button class="ev-act ev-act-primary" onclick="todayAddToCalendar('${escHtml(it.id)}')">Add</button>
             <button class="ev-act" onclick="todayDismissOne('${escHtml(it.id)}')">Dismiss</button>
           </div>
         </div>

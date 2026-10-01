@@ -1787,6 +1787,29 @@ For each extracted item return a JSON object with:
 - old_time (HH:MM 24hr | null) — for cancellation/reschedule: the original time of the event being changed; null if not stated or new_event
 - audience ("you" | "open" | "third_party" | "opportunity" | "promotion") — see Rule 10. Default to "you" when unsure.
 
+Rule 11: Whose "our" is it? First and second person in the source belong to
+whoever WROTE it, never to the reader. "At our home", "we're hosting", "join
+us", "my place", "come to ours" are the author speaking about themselves. The
+reader is being invited to someone else's thing.
+
+This matters most in a message the reader FORWARDED. A school's own newsletter
+is written to the reader, so "your child" means theirs. A forwarded invitation
+is written by a third party and only then passed on, so the same words mean the
+opposite — and the reader's name appearing anywhere nearby is a sign they are
+the one who forwarded it, never evidence that the event is theirs.
+
+So: never attach a possessive to a name the source did not attach it to.
+- "Diwali celebration at our home" from a forwarded invite
+  -> "Diwali Celebration". NOT "Diwali Celebration at <reader>'s Home" and not
+     "... at Our Home" either.
+- "We're hosting drinks Friday" -> "Drinks". If the author names themselves
+  ("Priya and Raj are hosting"), you may use that name, because the source
+  said it.
+- "Come to my place for the game" -> "Game". The venue is unnamed; leaving it
+  out is correct, and inventing a name for it is not.
+If the source names a venue or a host outright, use it. If it does not, stay
+generic rather than filling the gap with whoever is nearest.
+
 Rule 10: Whose event is this? A newsletter, digest or mailing list carries
 other people's business alongside the reader's own. A neighbourhood digest
 saying "I have two tickets to sell for a show tomorrow at 16:00" is a real
@@ -4547,8 +4570,18 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
   if (!body) return { stored: 0, skipped: 0, titles: [], reason: 'nothing to read' };
 
   const today = new Date().toISOString().slice(0, 10);
-  const framing = `A message the user shared with Criba from ${channel === 'whatsapp' ? 'WhatsApp' : 'their phone'}`
-    + `${fromLabel ? ` (from ${fromLabel})` : ''}. Today is ${today}. Only include events from today onward; `
+  // The forwarder's name is deliberately NOT in this prompt.
+  //
+  // Twilio's ProfileName on an inbound WhatsApp is whoever sent the message to
+  // Criba -- which on a forward is the account holder themselves. Passing it as
+  // "(from Pria)" put the reader's own name beside an invitation written by
+  // somebody else, and "Diwali celebration at our home" came back as "Diwali
+  // Celebration at Pria's Home". The name was not inferred; it was handed over.
+  //
+  // It is still stored as sender_name, where it is true: who forwarded this.
+  const framing = `A message the user FORWARDED to Criba from ${channel === 'whatsapp' ? 'WhatsApp' : 'their phone'}. `
+    + `They are the recipient of this message, not its author: anyone saying "we", "our" or "us" in it `
+    + `is the person who wrote it, not the user. Today is ${today}. Only include events from today onward; `
     + `if a date is named without a year, choose the next occurrence after today.\n\nMessage:\n${body}`;
 
   // Same model and token budget as Gmail extraction, read from the same

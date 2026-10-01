@@ -1101,6 +1101,8 @@
   .share-field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .share-field input { width: 100%; max-width: 420px; font-family: var(--font-body); font-size: 14px;
     padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); }
+  .share-hint { font-weight: 400; color: var(--muted); }
+  .share-error { color: var(--danger); }
   .share-steps { margin-top: 10px; font-size: 13px; color: var(--text2); }
   .share-steps ol { padding-left: 20px; line-height: 1.7; }
   .share-steps code { font-size: 12px; background: var(--card); padding: 1px 5px; border-radius: 4px; }
@@ -2838,8 +2840,8 @@ async function loadWhatsAppLink() {
     return;
   }
   el.innerHTML = `<div class="share-note">Add your number, confirm the code Criba sends you on WhatsApp, then forward messages straight to it.</div>
-    <div class="share-field"><label>Your WhatsApp number</label>
-      <input type="tel" id="wa-phone" placeholder="+1 555 123 4567"></div>
+    <div class="share-field"><label>Your WhatsApp number <span class="share-hint">with country code</span></label>
+      <input type="tel" id="wa-phone" placeholder="+1 555 123 4567" oninput="clearWaError()"></div>
     <button class="btn-secondary btn-sm" onclick="startWhatsAppLink()">Send me a code</button>
     <div id="wa-code-step" hidden>
       <div class="share-field"><label>Code from WhatsApp</label>
@@ -2849,8 +2851,36 @@ async function loadWhatsAppLink() {
     <div class="share-note" id="wa-err"></div>`;
 }
 
+// WhatsApp identifies people by their full international number, so a bare
+// local one cannot work. Checked here as well as on the server so the answer
+// is immediate and nothing is sent that cannot succeed -- the server stays the
+// one that decides.
+function waPhoneProblem(raw) {
+  const s = String(raw || '').trim().replace(/[\s()\-.]/g, '');
+  if (!s) return 'Enter your WhatsApp number.';
+  if (!s.startsWith('+')) {
+    return 'Start with your country code, like +1 for the US or +44 for the UK — for example +1 555 123 4567.';
+  }
+  if (!/^\+[1-9]\d{6,14}$/.test(s)) {
+    return 'That doesn\u2019t look complete. Use the full international number, for example +1 555 123 4567.';
+  }
+  return null;
+}
+
+function clearWaError() {
+  const err = document.getElementById('wa-err');
+  if (err) { err.textContent = ''; err.classList.remove('share-error'); }
+}
+
+function showWaError(msg) {
+  const err = document.getElementById('wa-err');
+  if (err) { err.textContent = msg; err.classList.add('share-error'); }
+}
+
 async function startWhatsAppLink() {
   const phone = (document.getElementById('wa-phone') || {}).value || '';
+  const problem = waPhoneProblem(phone);
+  if (problem) { showWaError(problem); return; }
   const err = document.getElementById('wa-err');
   try {
     const res = await fetch('/api/whatsapp/link/start', {
@@ -2858,11 +2888,11 @@ async function startWhatsAppLink() {
       body: JSON.stringify({ phone }),
     });
     const d = await res.json().catch(() => ({}));
-    if (!res.ok) { if (err) err.textContent = d.error || 'Could not send a code.'; return; }
-    if (err) err.textContent = '';
+    if (!res.ok) { showWaError(d.error || 'Could not send a code.'); return; }
+    clearWaError();
     const step = document.getElementById('wa-code-step');
     if (step) step.hidden = false;
-  } catch { if (err) err.textContent = 'Could not reach Criba.'; }
+  } catch { showWaError('Could not reach Criba.'); }
 }
 
 async function confirmWhatsAppLink() {
@@ -2874,9 +2904,9 @@ async function confirmWhatsAppLink() {
       body: JSON.stringify({ code }),
     });
     const d = await res.json().catch(() => ({}));
-    if (!res.ok) { if (err) err.textContent = d.error || 'That did not work.'; return; }
+    if (!res.ok) { showWaError(d.error || 'That did not work.'); return; }
     await loadWhatsAppLink();
-  } catch { if (err) err.textContent = 'Could not reach Criba.'; }
+  } catch { showWaError('Could not reach Criba.'); }
 }
 
 async function unlinkWhatsApp() {

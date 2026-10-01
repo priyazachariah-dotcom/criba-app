@@ -4632,6 +4632,25 @@ async function shareRateOk(key) {
 }
 
 // email -> the one function both channels call.
+// Does the extracted content already name a participant?
+//
+// Not the detector that was removed. That one decided whether to ASK -- a
+// judgement about when to bother the user, which could be wrong in either
+// direction and was. This decides only whether to LAYER a second name onto an
+// event that already carries one, and the cost of being wrong is small and
+// symmetric: either a title reads "Lunch with Mom" when it could have said
+// "with Mom and Asha", or it reads "Lunch with Mom with Asha".
+//
+// Deliberately narrower than the old one. Only an explicit "with X" or an
+// attendee the extraction itself filled in counts. The old version also
+// treated any possessive proper noun as a participant, which caught venues
+// ("St Ignatius's field") and is the kind of reach that made it unreliable.
+function eventAlreadyNamesParticipant(ev) {
+  if (Array.isArray(ev?.attendees) && ev.attendees.length) return true;
+  const text = [ev?.title, ev?.notes].filter(Boolean).join(' ');
+  return /\b(?:with|w\/)\s+[A-Z][\w'\u2019-]+/.test(text);
+}
+
 function withParticipant(title, name) {
   const t = String(title || '').trim();
   if (!t) return name;
@@ -4749,10 +4768,12 @@ async function ingestSharedText(email, { text, channel, fromLabel = null, partic
 
     // A name already learned for this sender is applied before the write, so
     // the calendar entry says who it is with rather than being corrected after.
-    // withParticipant is the only guard: it will not add a name the title
-    // already carries. There is deliberately no test for whether the title
-    // names somebody ELSE -- that was the heuristic that was removed.
-    if (participant) {
+    //
+    // Not when the content already names somebody. A forward from Asha's
+    // number saying "Lunch with Mom" is about Mom; Asha sent it. Layering both
+    // gave "Lunch with Mom with Asha", which is wrong twice over -- it reads
+    // badly and it asserts a second guest nobody mentioned.
+    if (participant && !eventAlreadyNamesParticipant(ev)) {
       ev.title = withParticipant(ev.title, participant);
       ev.attendees = [...(Array.isArray(ev.attendees) ? ev.attendees : []), participant];
     }

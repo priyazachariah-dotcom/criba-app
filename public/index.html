@@ -1095,6 +1095,7 @@
   /* Wraps: it is a sentence, not a verb, and truncating it would leave
      "Don't show me events from this..." which reads as a different promise. */
   .ev-menu-mute { white-space: normal; line-height: 1.35; max-width: 260px; }
+  .src-maint-last { font-size: 12px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
      housekeeping that already happened, not something to act on. */
@@ -4133,6 +4134,35 @@ function evIsPast(ev) {
 // back to Criba's rows by calEventId, which is what gives Edit/Dismiss/Delete
 // something to act on; a Google-native event shows without them rather than
 // offering buttons that would not work.
+// Criba also sweeps for duplicates every night at midnight. Saying so, with
+// the time it last ran, is the difference between "it found nothing" and "it
+// never fired" -- which otherwise look identical from the outside.
+let dedupeLast = null;
+function dedupeLastLine() {
+  if (!dedupeLast) return 'Criba also checks for duplicates every night at midnight.';
+  if (!dedupeLast.ran) return 'Criba also checks every night at midnight. It hasn\u2019t run yet.';
+  const when = dedupeLast.at ? new Date(dedupeLast.at).toLocaleString(undefined,
+    { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'recently';
+  const n = (dedupeLast.removed || []).length;
+  const left = (dedupeLast.leftAlone || []).length;
+  const leftNote = left
+    ? ` ${left} left alone \u2014 Criba can\u2019t tell which copy to keep.`
+    : '';
+  return n
+    ? `Last overnight check ${escHtml(when)}: removed ${n} duplicate${n > 1 ? 's' : ''}.${leftNote}`
+    : `Last overnight check ${escHtml(when)}: nothing to remove.${leftNote}`;
+}
+
+async function loadDedupeStatus() {
+  try {
+    const res = await fetch('/api/dedupe/status');
+    if (!res.ok) return;
+    dedupeLast = await res.json();
+    const el = document.getElementById('dedupe-last');
+    if (el) el.innerHTML = dedupeLastLine();
+  } catch {}
+}
+
 function renderSources() {
   // Scan card: the heading, the primary action, and the watch status that used
   // to live in the top bar.
@@ -4185,6 +4215,7 @@ function renderSources() {
       <div class="src-maint-row">
         <div class="src-maint-title">Clean up duplicates</div>
         <div class="src-maint-desc">If the same event was added to your calendar more than once, this finds the extra copies and removes them, keeping one of each. Events you created yourself and events from calendars you subscribe to are never touched.</div>
+        <div class="src-maint-last" id="dedupe-last">${dedupeLastLine()}</div>
         <button class="btn-secondary" onclick="cleanupDuplicates()">Clean up duplicates</button>
       </div>
       <div class="src-maint-row">
@@ -5341,7 +5372,7 @@ function showPage(page, btn) {
   if (page === 'recent') { renderRecent(); loadRecentEvents(); }
   // Always re-read: a digest showing a stale "today" is worse than a blank one,
   // and this view is cheap.
-  if (page === 'calendars') { renderSources(); loadRecentEvents().then(renderSources).catch(() => {}); }
+  if (page === 'calendars') { renderSources(); loadDedupeStatus(); loadRecentEvents().then(renderSources).catch(() => {}); }
   if (page === 'home') loadHome();
   if (page === 'today') loadToday();
   // renderSettingsPage returns early when there are no members, so the

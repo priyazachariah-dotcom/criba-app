@@ -4250,7 +4250,10 @@ const TODAY_EVENT_TYPES = new Set(['event']);
 // not part of today's plan. They are questions, and they keep their home in
 // Review until its future is decided.
 const TODAY_EXCLUDED_STATUSES = new Set([
-  'cancelled', 'duplicate', 'deleted',
+  // duplicate_removed is excluded from the plan and shown in its own line
+  // instead: it is not something happening today, it is something Criba did
+  // to today overnight.
+  'cancelled', 'duplicate', 'deleted', 'duplicate_removed',
   'pending_cancellation', 'pending_reschedule', 'pending_invite',
 ]);
 
@@ -4331,15 +4334,24 @@ async function buildTodayPayload(user) {
       return String(a.time || '').localeCompare(String(b.time || ''));
     });
 
+  // What the midnight job took off today, so a deletion made while nobody was
+  // watching is visible on the day it affects rather than nowhere at all.
+  const removedDuplicates = all
+    .filter(e => e && e.status === 'duplicate_removed' && String(e.date || '') === date)
+    .map(e => ({ id: e.id, title: e.title || '', time: e.time || null,
+      keptTitle: e.duplicate_kept_title || null, at: e.duplicate_removed_at || null }))
+    .sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+
   return {
     date, timezone: tz,
     greeting: todayGreeting(hour),
-    reminders, events,
+    reminders, events, removedDuplicates,
     // "Want it on your calendar?" on the Today screen. Kept separate from the
     // main lists so a suggestion can never be mistaken for something happening.
     newsletters: heldShown,
     counts: { reminders: reminders.length, events: events.length,
-      newsletters: heldShown.length, hiddenHeld: heldHiddenCount },
+      newsletters: heldShown.length, hiddenHeld: heldHiddenCount,
+      removedDuplicates: removedDuplicates.length },
   };
 }
 
@@ -11029,6 +11041,10 @@ async function dedupeUserCalendar(user, days, opts = {}) {
         deleteId: id, isSeries: !!d.seriesId, guests: d.guests,
         legacyMarker: d.legacyMarker, occurrences: p.occurrences,
         keeping: p.copies.find(c => c.fromCriba && (c.seriesId || c.eventId) !== id)?.eventId || null,
+        // "I deleted something" is alarming. "There were two, this one is still
+        // there" is a receipt. The survivor's title is what makes it the latter.
+        keepingTitle: p.copies.find(c => c.fromCriba && (c.seriesId || c.eventId) !== id)?.title || null,
+        date: p.date || null,
       });
     }
   }
@@ -11056,9 +11072,15 @@ async function dedupeUserCalendar(user, days, opts = {}) {
   const goneIds = new Set(deleted.map(d => d.deleteId));
   const store = getUserEvents(user.email);
   let storeCleared = 0;
+  const keptByDeleteId = new Map(deleted.map(d => [d.deleteId, d.keepingTitle || null]));
   for (const ev of await store.values()) {
     if (ev.calEventId && goneIds.has(ev.calEventId)) {
-      ev.status = 'dismissed';
+      // Deliberately not 'dismissed'. A dismissal is something the user did;
+      // this is something Criba did while nobody was watching, and the two must
+      // never be read as the same thing in any list.
+      ev.status = 'duplicate_removed';
+      ev.duplicate_removed_at = new Date().toISOString();
+      ev.duplicate_kept_title = keptByDeleteId.get(ev.calEventId) || null;
       ev.calEventId = null;
       await store.set(ev.id, ev);
       storeCleared++;

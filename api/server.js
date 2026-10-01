@@ -8631,31 +8631,80 @@ function titlesDifferOnAudience(a, b) {
   return false;
 }
 
-// Same date, same start, same end, same place, same person -> one event,
-// whatever the titles say. Every one of those must be positively known on both
-// sides: a missing location or an unattributed event falls through to the title
-// test rather than being merged on thin evidence. Erring toward keeping both is
-// the safe direction -- a school event must never vanish silently.
+// Is this the same place written two ways? "St. Ignatius" and "St. Ignatius
+// College Preparatory" are; so is a room named on one side and the building it
+// sits in named on the other, though no string test can see that -- which is
+// why a place is one signal among several rather than a gate.
+function placesCompatible(a, b) {
+  const pa = normPlace(a), pb = normPlace(b);
+  if (!pa || !pb) return false;
+  if (pa === pb || pa.includes(pb) || pb.includes(pa)) return true;
+  const wa = pa.split(' ').filter(w => w.length > 2);
+  const wb = pb.split(' ').filter(w => w.length > 2);
+  if (!wa.length || !wb.length) return false;
+  const small = wa.length <= wb.length ? wa : wb;
+  const big = new Set(wa.length <= wb.length ? wb : wa);
+  return small.filter(w => big.has(w)).length / small.length >= 0.6;
+}
+
+function sharedDistinctiveCount(a, b) {
+  const da = distinctiveTokens(a), db = distinctiveTokens(b);
+  let n = 0;
+  for (const w of da) if (db.has(w)) n++;
+  return n;
+}
+
+// One event, described twice.
+//
+// The first version of this demanded that date, start, end, location AND person
+// all match exactly. That was too literal to survive real data:
+//
+//   "Weight Room Check-in (Fully Dressed - Red Jerseys)"   15:40-17:00, Weight Room
+//   "Frosh Football - Weight Room (Fully Dressed, Red Jerseys)"  15:40-17:00, St. Ignatius
+//     -- the same hour in a room, and the room named on one side with the
+//        building it is in named on the other.
+//
+//   "St. Ignatius College Preparatory Football (Frosh) vs Vanden"  17:00-20:00
+//   "Frosh Football Game - Kickoff"                                17:00-18:00
+//     -- one source gave the whole game window, the other just the kickoff.
+//
+// No two sources agree on where an event ends or what to call the place. So
+// those became corroborating signals rather than requirements, over a core of
+// facts that sources do not disagree about: which day, which minute it starts,
+// and whose it is.
+//
+// Two of the three must corroborate, not one. A dentist appointment and a
+// soccer practice could share a room and a start minute; location on its own
+// would merge them, location plus a shared vocabulary would not.
 function sameEventByFacts(a, b) {
   if (!a || !b) return false;
+
+  // ── Hard guards. Any one of these and it is not the same event. ──
   if (!a.date || a.date !== b.date) return false;
 
   const aAll = !!(a.is_all_day !== undefined ? a.is_all_day : a.isAllDay);
   const bAll = !!(b.is_all_day !== undefined ? b.is_all_day : b.isAllDay);
   if (aAll !== bAll) return false;
-  if (!aAll) {
-    const aEnd = a.end_time !== undefined ? a.end_time : a.endTime;
-    const bEnd = b.end_time !== undefined ? b.end_time : b.endTime;
-    if (!a.time || !b.time || a.time !== b.time) return false;
-    if (!aEnd || !bEnd || aEnd !== bEnd) return false;
-  }
+  // The start minute is the one time two sources reliably agree on.
+  if (!aAll && (!a.time || !b.time || a.time !== b.time)) return false;
 
-  const pa = normPlace(a.location), pb = normPlace(b.location);
-  if (!pa || !pb || pa !== pb) return false;
+  // Only blocks when both sides are positively attributed. An unattributed
+  // event is unknown, never "somebody else" -- same as everywhere else here.
+  if (a.memberId && b.memberId && a.memberId !== b.memberId) return false;
 
-  if (!a.memberId || !b.memberId || a.memberId !== b.memberId) return false;
+  // Tier and grade range name WHO the event is for, and that outranks
+  // everything below: a frosh game and a varsity game, or "What to Expect
+  // Night 3rd-5th" and "K-2nd", can share a day, a room and a parent.
+  if (titlesDifferOnAudience(a.title, b.title)) return false;
 
-  return !titlesDifferOnAudience(a.title, b.title);
+  // ── Corroboration. Two of three. ──
+  let signals = 0;
+  const aEnd = a.end_time !== undefined ? a.end_time : a.endTime;
+  const bEnd = b.end_time !== undefined ? b.end_time : b.endTime;
+  if (aEnd && bEnd && aEnd === bEnd) signals++;
+  if (placesCompatible(a.location, b.location)) signals++;
+  if (sharedDistinctiveCount(a.title, b.title) >= 2) signals++;
+  return signals >= 2;
 }
 
 function titlesLooselyMatch(a, b) {

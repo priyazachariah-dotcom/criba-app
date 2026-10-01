@@ -1092,6 +1092,15 @@
   .today-peek:first-of-type { border-top: 1px solid var(--line); }
   .today-peek-time { color: var(--muted); font-size: 13px; margin-right: 12px; font-variant-numeric: tabular-nums; }
   .today-clear { font-size: 15px; color: var(--muted); margin-bottom: 48px; }
+
+  /* The midnight sweep's receipt. Quiet on purpose: this is a note about
+     housekeeping that already happened, not something to act on. */
+  .today-dupes {
+    margin-top: 36px; padding-top: 18px; border-top: 1px solid var(--line);
+    font-family: var(--font-body); font-size: 14px; color: var(--text2); line-height: 1.6;
+  }
+  .today-dupes-note { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; }
+
   @media (max-width: 480px) {
     .today-summary { padding: 16px 18px; }
   }
@@ -4688,6 +4697,31 @@ function evDelete(id, ctx) {
   });
 }
 
+// The receipt for the midnight duplicate sweep.
+//
+// A job that deletes from the calendar while nobody is watching has to say so
+// somewhere the user actually looks, and the day it changed is that place. It
+// is scoped to today's date, so it is gone tomorrow -- this is a note about
+// today, not a log that accumulates.
+//
+// One sentence, not a list. Nobody wants a standing register of deleted
+// things on the screen they open to see their day. It names what was KEPT
+// rather than what went, because "Criba deleted something" is alarming on its
+// own and "there were two of these, one is still there" is not.
+function todayRemovedDupesHtml(rows) {
+  if (!rows.length) return '';
+  const titles = rows.map(r => r.keptTitle || r.title).filter(Boolean);
+  const names = titles.length <= 2
+    ? titles.map(t => `\u201c${escHtml(t)}\u201d`).join(' and ')
+    : '';
+  const n = rows.length;
+  return `<div class="today-dupes">${n === 1
+    ? `Criba found two copies of ${names || 'an event'} this morning and removed one.`
+    : `Criba found duplicates of ${names || `${n} events`} this morning and removed the extra copies.`}
+    <span class="today-dupes-note">Only Criba\u2019s own second copy is ever removed \u2014 nothing from a calendar you subscribe to.</span>
+  </div>`;
+}
+
 function renderToday() {
   const host = document.getElementById('today-body');
   if (!host) return;
@@ -4733,6 +4767,8 @@ function renderToday() {
   // question to open when there is room for it, not a queue to face on arrival.
   sections.push(todayNotReviewedHtml(unreviewed,
     'Criba found these and hasn\u2019t added them. Nothing here is on your calendar.'));
+
+  sections.push(todayRemovedDupesHtml(d.removedDuplicates || []));
 
   host.innerHTML = head + sections.join('');
 }

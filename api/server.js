@@ -10189,6 +10189,80 @@ app.get('/api/cron/ical', async (req, res) => {
 
 // GET /api/cron/gmail — Vercel cron job (daily at 2am UTC).
 // Renews expiring Gmail watches and sends evening notification emails.
+// GET /api/cron/dedupe — Vercel cron, hourly.
+//
+// Runs at MIDNIGHT IN EACH USER'S OWN TIMEZONE, which is why the schedule is
+// hourly rather than daily: Vercel crons fire on UTC, and one UTC hour is a
+// different local hour for every user and a different one again after a DST
+// change. So this wakes every hour, asks each user what time it is where they
+// are, and acts only on the ones who have just passed midnight.
+//
+// Why midnight: a duplicate matters on the day you read it. Clearing the pair
+// before the day is written means Today and the week ahead are built from a
+// calendar that is already clean, rather than showing the mess and offering a
+// button to fix it.
+//
+// What it will and will not delete is decided entirely by the existing
+// cleanup path. chooseDuplicatesToDelete refuses any pair where one copy came
+// from a subscribed feed or was not written by Criba, so an unattended run can
+// only ever remove Criba's own second copy. That restraint is the whole reason
+// this is safe to run with nobody watching.
+app.get('/api/cron/dedupe', async (req, res) => {
+  const isVercelCron = req.headers['x-vercel-cron'] === '1';
+  const hasCronSecret = process.env.CRON_SECRET && req.headers['x-cron-secret'] === process.env.CRON_SECRET;
+  if (!isVercelCron && !hasCronSecret) return res.status(401).json({ error: 'Unauthorized' });
+
+  const deadline = Date.now() + 45000;
+  const emails = await redis.smembers('gmailWatchedUsers');
+  const out = { users: 0, notMidnight: 0, alreadyRan: 0, skippedPaused: 0,
+                deleted: 0, skipped: 0, perUser: [], errors: [], ranOut: false };
+
+  for (const email of emails) {
+    if (Date.now() > deadline) { out.ranOut = true; break; }
+    try {
+      const tz = await getUserTimezone(email);
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz, hour12: false, year: 'numeric', month: '2-digit',
+        day: '2-digit', hour: '2-digit',
+      }).formatToParts(new Date());
+      const get = t => (parts.find(x => x.type === t) || {}).value;
+      // en-CA gives 24-hour time, but midnight comes back as "24" in some ICU
+      // builds and "00" in others. Both mean the day just started.
+      const hour = parseInt(get('hour'), 10) % 24;
+      const localDate = `${get('year')}-${get('month')}-${get('day')}`;
+      if (hour !== 0) { out.notMidnight++; continue; }
+
+      // One run per local day. The hourly schedule would otherwise fire twice
+      // for the same midnight when a DST change repeats an hour.
+      const ranKey = `dedupeRan:${email}:${localDate}`;
+      if (!(await redis.set(ranKey, '1', 'EX', 172800, 'NX'))) { out.alreadyRan++; continue; }
+
+      if (await isGmailPaused(email)) { out.skippedPaused++; continue; }
+      const refreshToken = await redis.get(`refreshToken:${email}`);
+      if (!refreshToken) continue;
+
+      // Today and tomorrow only. A duplicate three weeks out is not yet worth
+      // deleting unattended -- it will be here, on its own day, before it is
+      // read, and a narrow window keeps an unattended delete narrow.
+      const r = await dedupeUserCalendar({ email }, 2);
+      out.users++;
+      out.deleted += r.deleted.length;
+      out.skipped += r.skipped.length;
+      if (r.deleted.length) {
+        out.perUser.push({ email, tz, deleted: r.deleted.map(d => d.title) });
+        console.log(`[cron/dedupe] ${email} (${tz}) removed ${r.deleted.length}: `
+          + r.deleted.map(d => JSON.stringify(d.title)).join(', '));
+      }
+    } catch (err) {
+      out.errors.push({ email, error: err.message });
+      console.error(`[cron/dedupe] ${email}:`, err.message);
+    }
+  }
+  console.log(`[cron/dedupe] users=${out.users} deleted=${out.deleted} `
+    + `notMidnight=${out.notMidnight} alreadyRan=${out.alreadyRan}`);
+  res.json(out);
+});
+
 // GET /api/cron/learn — Vercel cron. Run the calendar-deletion check for every
 // active mailbox, whether or not anyone opens the app.
 //
@@ -10650,7 +10724,7 @@ async function scanCalendarDuplicates(user, days) {
         timeMax: timeMax.toISOString(),
         singleEvents: true,   // expand recurring series into dated instances
         maxResults: 2500,
-        fields: 'items(id,summary,description,start,end,recurringEventId,attendees(email))',
+        fields: 'items(id,summary,description,location,colorId,start,end,recurringEventId,attendees(email))',
       });
       for (const it of resp.data.items || []) {
         const date = it.start?.date || (it.start?.dateTime || '').slice(0, 10);
@@ -10662,6 +10736,10 @@ async function scanCalendarDuplicates(user, days) {
         all.push({
           calendarId: cal.id, calendarName: cal.name, guests,
           eventId: it.id, seriesId: it.recurringEventId || null,
+          // Carried so sameEventByFacts can be used here too. Without a place
+          // and a person this scan could only compare titles, which is the
+          // comparison that missed the duplicate it was meant to find.
+          id: it.id, location: it.location || '', colorId: it.colorId ? String(it.colorId) : null,
           title: it.summary || '', date,
           time: it.start?.dateTime ? it.start.dateTime.slice(11, 16) : '',
           endTime: it.end?.dateTime ? it.end.dateTime.slice(11, 16) : '',
@@ -10677,6 +10755,19 @@ async function scanCalendarDuplicates(user, days) {
     } catch (err) {
       calendarErrors.push({ calendar: cal.name, error: err.message });
     }
+  }
+
+  // Attribute before clustering, for the same reason the ahead view does:
+  // sameEventByFacts asks whose event this is, and nobody had been asked yet.
+  try {
+    const members = await getUserFamily(user.email).values();
+    const stored = await getUserEvents(user.email).values();
+    const byCalId = new Map(stored.filter(e => e.calEventId).map(e => [e.calEventId, e]));
+    for (const ev of all) Object.assign(ev, attributeCalendarEvent(ev, members, byCalId));
+  } catch (err) {
+    // Attribution is an enrichment. Losing it costs the facts rule, not the
+    // scan -- clustering falls back to titles, which is what it did before.
+    console.error('[dup-scan] attribution failed:', err.message);
   }
 
   // Group by date, then cluster within the date by loose title match and
@@ -10695,9 +10786,13 @@ async function scanCalendarDuplicates(user, days) {
       const group = [evs[i]];
       for (let j = i + 1; j < evs.length; j++) {
         if (used.has(j)) continue;
-        if (!titlesLooselyMatch(evs[i].title, evs[j].title)) continue;
-        const bothTimed = evs[i].time && evs[j].time && !evs[i].isAllDay && !evs[j].isAllDay;
-        if (bothTimed && Math.abs(timeToMinutes(evs[i].time) - timeToMinutes(evs[j].time)) > 30) continue;
+        // Facts first: identical date, start, end, place and person is one
+        // event however the two sources worded it.
+        if (!sameEventByFacts(evs[i], evs[j])) {
+          if (!titlesLooselyMatch(evs[i].title, evs[j].title)) continue;
+          const bothTimed = evs[i].time && evs[j].time && !evs[i].isAllDay && !evs[j].isAllDay;
+          if (bothTimed && Math.abs(timeToMinutes(evs[i].time) - timeToMinutes(evs[j].time)) > 30) continue;
+        }
         used.add(j);
         group.push(evs[j]);
       }
@@ -10904,20 +10999,15 @@ app.post('/api/calendar/reset', requireAuth, async (req, res) => {
   res.json({ dryRun: false, deleted: deleted.length, failed: failed.length, storeCleared, failedItems: failed });
 });
 
-// POST /api/calendar/cleanup-duplicates — dry run unless { confirm: "DELETE" }.
-//
 // Deletes the whole recurring series (seriesId) rather than single instances,
 // since a duplicated weekly practice is one wrong series, not sixteen wrong
 // events. Never touches anything Criba did not write.
-app.post('/api/calendar/cleanup-duplicates', requireAuth, async (req, res) => {
-  const days = Math.min(Math.max(parseInt(req.body?.days, 10) || 180, 1), 400);
-  const confirmed = req.body?.confirm === 'DELETE';
-  let scan;
-  try {
-    scan = await scanCalendarDuplicates(req.user, days);
-  } catch (err) {
-    return res.status(502).json({ error: 'calendar scan failed', detail: err.message });
-  }
+// Plan and (optionally) apply a duplicate cleanup for one user. Extracted so
+// the button and the nightly cron cannot drift apart: what runs unattended at
+// midnight is exactly what the user sees in a dry run.
+async function dedupeUserCalendar(user, days, opts = {}) {
+  const apply = opts.apply !== false;
+  const scan = await scanCalendarDuplicates(user, days);
 
   // Collapse to unique targets — one recurring series produces the same
   // delete target on every one of its dates.
@@ -10944,10 +11034,7 @@ app.post('/api/calendar/cleanup-duplicates', requireAuth, async (req, res) => {
   }
 
   const plan = [...targets.values()];
-  if (!confirmed) {
-    return res.json({ dryRun: true, wouldDelete: plan.length, plan, skipped,
-      note: 'Nothing was deleted. Re-send with {"confirm":"DELETE"} to apply.' });
-  }
+  if (!apply) return { dryRun: true, plan, skipped, deleted: [], failed: [], storeCleared: 0 };
 
   const calendar = google.calendar({ version: 'v3', auth: scan.auth });
   const deleted = [], failed = [];
@@ -10967,7 +11054,7 @@ app.post('/api/calendar/cleanup-duplicates', requireAuth, async (req, res) => {
   // Keep the store honest: any record pointing at an event we just removed
   // would otherwise show in Edit Calendar Events as if it were still live.
   const goneIds = new Set(deleted.map(d => d.deleteId));
-  const store = getUserEvents(req.user.email);
+  const store = getUserEvents(user.email);
   let storeCleared = 0;
   for (const ev of await store.values()) {
     if (ev.calEventId && goneIds.has(ev.calEventId)) {
@@ -10977,8 +11064,25 @@ app.post('/api/calendar/cleanup-duplicates', requireAuth, async (req, res) => {
       storeCleared++;
     }
   }
+  return { dryRun: false, plan, skipped, deleted, failed, storeCleared };
+}
 
-  res.json({ dryRun: false, deleted: deleted.length, failed: failed.length, storeCleared, deletedItems: deleted, failed, skipped });
+// POST /api/calendar/cleanup-duplicates — dry run unless { confirm: "DELETE" }.
+app.post('/api/calendar/cleanup-duplicates', requireAuth, async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.body?.days, 10) || 180, 1), 400);
+  const confirmed = req.body?.confirm === 'DELETE';
+  let r;
+  try {
+    r = await dedupeUserCalendar(req.user, days, { apply: confirmed });
+  } catch (err) {
+    return res.status(502).json({ error: 'calendar scan failed', detail: err.message });
+  }
+  if (!confirmed) {
+    return res.json({ dryRun: true, wouldDelete: r.plan.length, plan: r.plan, skipped: r.skipped,
+      note: 'Nothing was deleted. Re-send with {"confirm":"DELETE"} to apply.' });
+  }
+  res.json({ dryRun: false, deleted: r.deleted.length, failed: r.failed.length,
+    storeCleared: r.storeCleared, deletedItems: r.deleted, failed: r.failed, skipped: r.skipped });
 });
 
 // DELETE /api/scan/trace — clear the trace log for the logged-in user

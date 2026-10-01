@@ -1093,6 +1093,17 @@
   .today-peek-time { color: var(--muted); font-size: 13px; margin-right: 12px; font-variant-numeric: tabular-nums; }
   .today-clear { font-size: 15px; color: var(--muted); margin-bottom: 48px; }
 
+  .share-block { border-top: 1px solid var(--line); padding: 16px 0; }
+  .share-head { font-family: var(--font-body); font-weight: 600; font-size: 14px; margin-bottom: 8px; }
+  .share-body { font-size: 14px; color: var(--text2); line-height: 1.6; }
+  .share-note { font-size: 13px; color: var(--muted); margin: 6px 0 10px; line-height: 1.5; }
+  .share-field { margin: 8px 0; }
+  .share-field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .share-field input { width: 100%; max-width: 420px; font-family: var(--font-body); font-size: 14px;
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); }
+  .share-steps { margin-top: 10px; font-size: 13px; color: var(--text2); }
+  .share-steps ol { padding-left: 20px; line-height: 1.7; }
+  .share-steps code { font-size: 12px; background: var(--card); padding: 1px 5px; border-radius: 4px; }
   .src-maint-last { font-size: 12px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
@@ -2157,6 +2168,22 @@
       </summary>
       <div id="paused-list"></div>
     </details>
+    <!-- Two more ways in: a message shared from the phone, and a WhatsApp
+         forward. Both land in Not reviewed, never straight on the calendar. -->
+    <div class="settings-section" id="share-section">
+      <div class="src-block-head">Send things to Criba from your phone</div>
+      <div class="page-desc" style="margin:0 0 0.9rem">Share a message or a note to Criba and it reads it like an email. Anything it finds <strong>goes straight onto your calendar</strong> &mdash; you already chose to send it, so Criba doesn&rsquo;t ask again. Delete anything that&rsquo;s wrong, the same as any other event.</div>
+
+      <div class="share-block">
+        <div class="share-head">iPhone Share Sheet</div>
+        <div class="share-body" id="share-key-body">Loading&hellip;</div>
+      </div>
+
+      <div class="share-block">
+        <div class="share-head">WhatsApp</div>
+        <div class="share-body" id="wa-link-body">Loading&hellip;</div>
+      </div>
+    </div>
     <!-- Moved here from the Tools panel. Setting up who events go to belongs
          next to setting up whose events they are — both are things a new user
          does once, and neither is a debugging tool. -->
@@ -2736,6 +2763,129 @@ function pausedCategoryLabel(cat) {
   const map = { delivery: 'deliveries', newsletter: 'newsletters', financial: 'bills & receipts',
     promotion: 'promotions', general: 'these' };
   return map[String(cat || '').toLowerCase()] || `${cat} events`;
+}
+
+// ── Phone channels ────────────────────────────────────────────────────────
+// The key is a credential, so it is shown once per request rather than cached
+// in a global, and "Create" doubles as "Replace" with the consequence stated.
+async function loadShareKey() {
+  const el = document.getElementById('share-key-body');
+  if (!el) return;
+  let d = {};
+  try {
+    const res = await fetch('/api/share/key');
+    d = res.ok ? await res.json() : {};
+  } catch { el.textContent = 'Could not load this just now.'; return; }
+
+  if (!d.key) {
+    el.innerHTML = `<div class="share-note">Create a key, then paste it into the Criba shortcut on your phone.</div>
+      <button class="btn-secondary" onclick="rotateShareKey(false)">Create my key</button>`;
+    return;
+  }
+  el.innerHTML = `<div class="share-field"><label>Your key</label>
+      <input type="text" id="share-key-val" readonly value="${escHtml(d.key)}" onclick="this.select()"></div>
+    <div class="share-field"><label>URL</label>
+      <input type="text" readonly value="${escHtml(d.shortcutUrl || '')}" onclick="this.select()"></div>
+    <div class="share-note">Treat the key like a password &mdash; anyone with it can put things in your review queue. Replacing it stops the old one working immediately.</div>
+    <button class="btn-secondary btn-sm" onclick="rotateShareKey(true)">Replace key</button>
+    <button class="btn-text" onclick="toggleShortcutSteps()">How do I set up the shortcut?</button>
+    <div id="shortcut-steps" hidden class="share-steps">
+      <ol>
+        <li>Open <strong>Shortcuts</strong> on your iPhone and tap <strong>+</strong>.</li>
+        <li>Tap the <strong>(i)</strong> info button and switch on <strong>Show in Share Sheet</strong>.</li>
+        <li>Set <strong>Accepts</strong> to <strong>Text</strong>.</li>
+        <li>Add the action <strong>Get Contents of URL</strong>.</li>
+        <li>URL: the address above. Method: <strong>POST</strong>. Request Body: <strong>JSON</strong>.</li>
+        <li>Add one field: key <code>text</code>, type <em>Text</em>, value <strong>Shortcut Input</strong>.</li>
+        <li>Under <strong>Headers</strong>, add <code>x-criba-key</code> with your key above.</li>
+        <li>Name it <strong>Send to Criba</strong>. Share any message &rarr; <strong>Send to Criba</strong>.</li>
+      </ol>
+    </div>`;
+}
+
+async function toggleShortcutSteps() {
+  const el = document.getElementById('shortcut-steps');
+  if (el) el.hidden = !el.hidden;
+}
+
+async function rotateShareKey(replacing) {
+  if (replacing && !(await cribaConfirm(
+    'Replace your Criba key?\n\nThe old key stops working straight away, so the shortcut on every phone using it will need the new one pasted in.',
+    { confirmLabel: 'Replace key', danger: true }))) return;
+  try {
+    const res = await fetch('/api/share/key', { method: 'POST' });
+    if (!res.ok) throw new Error();
+    await loadShareKey();
+  } catch { cribaAlert('Could not do that just now.'); }
+}
+
+async function loadWhatsAppLink() {
+  const el = document.getElementById('wa-link-body');
+  if (!el) return;
+  let d = {};
+  try {
+    const res = await fetch('/api/whatsapp/link');
+    d = res.ok ? await res.json() : {};
+  } catch { el.textContent = 'Could not load this just now.'; return; }
+
+  if (!d.configured) {
+    el.innerHTML = `<div class="share-note">WhatsApp isn\u2019t switched on for this Criba yet.</div>`;
+    return;
+  }
+  if (d.phone) {
+    el.innerHTML = `<div class="share-note">Forwards from <strong>${escHtml(d.phone)}</strong> reach your review queue.</div>
+      <button class="btn-secondary btn-sm" onclick="unlinkWhatsApp()">Unlink this number</button>`;
+    return;
+  }
+  el.innerHTML = `<div class="share-note">Add your number, confirm the code Criba sends you on WhatsApp, then forward messages straight to it.</div>
+    <div class="share-field"><label>Your WhatsApp number</label>
+      <input type="tel" id="wa-phone" placeholder="+1 555 123 4567"></div>
+    <button class="btn-secondary btn-sm" onclick="startWhatsAppLink()">Send me a code</button>
+    <div id="wa-code-step" hidden>
+      <div class="share-field"><label>Code from WhatsApp</label>
+        <input type="text" id="wa-code" inputmode="numeric" placeholder="123456"></div>
+      <button class="btn-secondary btn-sm" onclick="confirmWhatsAppLink()">Confirm</button>
+    </div>
+    <div class="share-note" id="wa-err"></div>`;
+}
+
+async function startWhatsAppLink() {
+  const phone = (document.getElementById('wa-phone') || {}).value || '';
+  const err = document.getElementById('wa-err');
+  try {
+    const res = await fetch('/api/whatsapp/link/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { if (err) err.textContent = d.error || 'Could not send a code.'; return; }
+    if (err) err.textContent = '';
+    const step = document.getElementById('wa-code-step');
+    if (step) step.hidden = false;
+  } catch { if (err) err.textContent = 'Could not reach Criba.'; }
+}
+
+async function confirmWhatsAppLink() {
+  const code = (document.getElementById('wa-code') || {}).value || '';
+  const err = document.getElementById('wa-err');
+  try {
+    const res = await fetch('/api/whatsapp/link/confirm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) { if (err) err.textContent = d.error || 'That did not work.'; return; }
+    await loadWhatsAppLink();
+  } catch { if (err) err.textContent = 'Could not reach Criba.'; }
+}
+
+async function unlinkWhatsApp() {
+  if (!(await cribaConfirm('Unlink this number? Forwards from it will stop reaching Criba.',
+    { confirmLabel: 'Unlink' }))) return;
+  try {
+    await fetch('/api/whatsapp/link', { method: 'DELETE' });
+    await loadWhatsAppLink();
+  } catch { cribaAlert('Could not do that just now.'); }
 }
 
 function renderPausedSenders() {
@@ -5381,7 +5531,7 @@ function showPage(page, btn) {
   if (page === 'today') loadToday();
   // renderSettingsPage returns early when there are no members, so the
   // recipient list is painted separately rather than chained onto it.
-  if (page === 'settings') { renderSettingsPage(); renderRecipients(); loadExclusions(); loadPausedSenders(); }
+  if (page === 'settings') { renderSettingsPage(); renderRecipients(); loadExclusions(); loadPausedSenders(); loadShareKey(); loadWhatsAppLink(); }
   // Always re-read on entry. A cached fortnight is exactly the stale snapshot
   // this screen exists to avoid.
   if (page === 'ahead') loadAhead(true);

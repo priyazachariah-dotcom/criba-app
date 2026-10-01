@@ -4241,6 +4241,361 @@ async function deleteEventEntries(email, calendar, entries) {
 //   3. Clears the rest of that sender's queued backlog in the same category.
 //      Muting answers "stop asking me this"; leaving nine already-queued copies
 //      on screen answers it nine more times.
+// ── Channel 1: a message shared from iOS ──────────────────────────────────
+//
+// Identity. A shared message carries no email address, so the Shortcut carries
+// a key instead: a 32-byte random token minted in Criba, pasted into the
+// Shortcut once at install, and sent on every share. Stored both ways --
+// shareKey:<token> -> email so a POST resolves in one read, and
+// shareKeyOf:<email> -> token so the settings page can show and rotate it.
+//
+// The token IS the credential, so it is treated like one: rotating replaces it
+// and immediately invalidates the old one, and it is rate limited per token
+// rather than per account, so a leaked key cannot spend the account's Claude
+// budget faster than a person could share messages.
+// The origin this request arrived on, so the settings page shows the URL that
+// actually works for whoever is reading it (production or the staging alias)
+// rather than a constant that is wrong on one of them.
+function appOrigin(req) {
+  const host = req.headers['x-forwarded-host'] || req.headers.host || '';
+  const proto = String(req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http')).split(',')[0].trim();
+  return host ? `${proto}://${host}` : 'https://app.criba.app';
+}
+
+async function shareKeyFor(email) {
+  const existing = await redis.get(`shareKeyOf:${email}`);
+  if (existing) return existing;
+  return null;
+}
+
+async function mintShareKey(email) {
+  const old = await redis.get(`shareKeyOf:${email}`);
+  const token = randomBytes(24).toString('base64url');
+  await redis.set(`shareKey:${token}`, email);
+  await redis.set(`shareKeyOf:${email}`, token);
+  // Rotation has to actually revoke, or "rotate" is decoration.
+  if (old) await redis.del(`shareKey:${old}`);
+  return token;
+}
+
+app.get('/api/share/key', requireAuth, async (req, res) => {
+  const key = await shareKeyFor(req.user.email);
+  res.json({ key, shortcutUrl: `${appOrigin(req)}/api/share/text` });
+});
+
+app.post('/api/share/key', requireAuth, async (req, res) => {
+  const key = await mintShareKey(req.user.email);
+  console.log(`[share] key minted for ${req.user.email}`);
+  res.json({ key, shortcutUrl: `${appOrigin(req)}/api/share/text`, rotated: true });
+});
+
+app.delete('/api/share/key', requireAuth, async (req, res) => {
+  const old = await redis.get(`shareKeyOf:${req.user.email}`);
+  if (old) await redis.del(`shareKey:${old}`);
+  await redis.del(`shareKeyOf:${req.user.email}`);
+  res.json({ ok: true });
+});
+
+// POST /api/share/text — the Shortcut's endpoint. Deliberately NOT behind
+// requireAuth: there is no browser session on a phone's share sheet. The key
+// is the whole of the authentication, which is why it is long, revocable and
+// rate limited.
+app.post('/api/share/text', async (req, res) => {
+  const key = String(req.get('x-criba-key') || req.body?.key || '').trim();
+  if (!key) return res.status(401).json({ error: 'Missing Criba key' });
+  const email = await redis.get(`shareKey:${key}`);
+  // Identical response for a bad key and a revoked one: a 401 that distinguishes
+  // them is a way to test keys.
+  if (!email) return res.status(401).json({ error: 'That Criba key is not recognised' });
+
+  if (!(await shareRateOk(key))) {
+    return res.status(429).json({ error: 'That is a lot of messages at once. Try again shortly.' });
+  }
+
+  const text = String(req.body?.text || req.body?.content || '').trim();
+  if (!text) return res.status(400).json({ error: 'Nothing was shared' });
+
+  try {
+    const r = await ingestSharedText(email, {
+      text, channel: 'ios-share',
+      fromLabel: req.body?.from ? String(req.body.from).slice(0, 120) : null,
+    });
+    // The Shortcut shows this string verbatim, so it has to read as a sentence.
+    const msg = r.stored
+      ? `Criba found ${r.stored} thing${r.stored > 1 ? 's' : ''} to review: ${r.titles.slice(0, 3).join(', ')}`
+      : 'Criba read that and found nothing to add.';
+    res.json({ ok: true, ...r, message: msg });
+  } catch (err) {
+    console.error('[share] ingest failed:', err.message);
+    res.status(500).json({ error: 'Criba could not read that just now.' });
+  }
+});
+
+// ── Channel 2: WhatsApp via Twilio ────────────────────────────────────────
+//
+// Identity is the phone number, which means the number has to be proved before
+// it is trusted: anyone can put any From on a webhook they can reach. Two
+// defences, both required.
+//
+//   1. Twilio's request signature. Computed over the full URL plus every POST
+//      field, sorted, HMAC-SHA1 with the account's auth token. Without this the
+//      endpoint accepts any POST claiming to be from any number.
+//   2. The user registers their own number in Criba and confirms a code sent to
+//      it, so waPhone:<e164> -> email only ever exists because the person
+//      holding that phone put it there.
+function twilioSignatureValid(req) {
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  // Refuse rather than fall open. An unverifiable webhook is an open endpoint
+  // that writes to people's review queues.
+  if (!token) return false;
+  const sig = req.get('x-twilio-signature');
+  if (!sig) return false;
+  const url = `${req.get('x-forwarded-proto') || 'https'}://${req.get('x-forwarded-host') || req.get('host')}${req.originalUrl}`;
+  const body = req.body || {};
+  const data = Object.keys(body).sort().reduce((acc, k) => acc + k + body[k], url);
+  const expected = crypto.createHmac('sha1', token).update(Buffer.from(data, 'utf-8')).digest('base64');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  } catch { return false; }
+}
+
+function normalisePhone(raw) {
+  const digits = String(raw || '').replace(/[^0-9+]/g, '');
+  if (!digits) return null;
+  return digits.startsWith('+') ? digits : `+${digits}`;
+}
+
+app.post('/api/whatsapp/inbound', async (req, res) => {
+  if (!twilioSignatureValid(req)) {
+    console.warn('[whatsapp] rejected: bad or missing Twilio signature');
+    return res.status(403).send('Forbidden');
+  }
+  // Twilio expects TwiML. An empty Response is "received, say nothing back".
+  const reply = (msg) => res.type('text/xml').send(
+    msg ? `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(msg)}</Message></Response>`
+        : `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`);
+
+  const from = normalisePhone(String(req.body?.From || '').replace(/^whatsapp:/, ''));
+  const text = String(req.body?.Body || '').trim();
+  if (!from) return reply(null);
+
+  const email = await redis.get(`waPhone:${from}`);
+  if (!email) {
+    return reply('This number is not linked to a Criba account yet. Add it under People and rules in Criba, and confirm the code it sends you.');
+  }
+  if (!(await shareRateOk(`wa:${from}`))) {
+    return reply('That is a lot of messages at once — try again shortly.');
+  }
+  if (!text) return reply('Criba can only read text messages at the moment.');
+
+  try {
+    const r = await ingestSharedText(email, {
+      text, channel: 'whatsapp',
+      fromLabel: String(req.body?.ProfileName || '').slice(0, 120) || null,
+    });
+    return reply(r.stored
+      ? `Added ${r.stored} to review: ${r.titles.slice(0, 3).join(', ')}. Open Criba to approve.`
+      : 'Read that — nothing to add.');
+  } catch (err) {
+    console.error('[whatsapp] ingest failed:', err.message);
+    return reply('Criba could not read that just now.');
+  }
+});
+
+// Linking a WhatsApp number. Two steps on purpose: typing a number into a form
+// proves nothing about holding the phone, and waPhone:<e164> -> email is what
+// the inbound webhook trusts to decide whose calendar a message reaches.
+//
+// The code is sent via Twilio to that number, so only the handset can complete
+// it. Pending links expire; a confirmed one is exclusive -- a number already
+// linked to another account is refused rather than silently reassigned.
+app.post('/api/whatsapp/link/start', requireAuth, async (req, res) => {
+  const phone = normalisePhone(req.body?.phone);
+  if (!phone || phone.length < 8) return res.status(400).json({ error: 'That does not look like a phone number.' });
+
+  const owner = await redis.get(`waPhone:${phone}`);
+  if (owner && owner !== req.user.email) {
+    return res.status(409).json({ error: 'That number is already linked to another Criba account.' });
+  }
+  if (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN || !process.env.TWILIO_WHATSAPP_FROM) {
+    return res.status(503).json({ error: 'WhatsApp is not switched on for this Criba yet.' });
+  }
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  await redis.set(`waLink:${req.user.email}`, JSON.stringify({ phone, code }), 'EX', 900);
+
+  try {
+    const sid = process.env.TWILIO_ACCOUNT_SID;
+    const auth = Buffer.from(`${sid}:${process.env.TWILIO_AUTH_TOKEN}`).toString('base64');
+    const body = new URLSearchParams({
+      From: process.env.TWILIO_WHATSAPP_FROM,
+      To: `whatsapp:${phone}`,
+      Body: `Your Criba code is ${code}. It expires in 15 minutes.`,
+    });
+    const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+    });
+    if (!r.ok) {
+      const detail = await r.text().catch(() => '');
+      console.error('[whatsapp] send code failed:', r.status, detail.slice(0, 300));
+      // The sandbox refuses numbers that have not joined it. That is the single
+      // most likely failure during the beta, so it is named rather than hidden
+      // behind "could not send".
+      return res.status(502).json({ error: 'Could not send the code. On the Twilio sandbox, send the join phrase from WhatsApp to the sandbox number first.' });
+    }
+  } catch (err) {
+    console.error('[whatsapp] send code error:', err.message);
+    return res.status(502).json({ error: 'Could not send the code just now.' });
+  }
+  res.json({ ok: true, phone });
+});
+
+app.post('/api/whatsapp/link/confirm', requireAuth, async (req, res) => {
+  const raw = await redis.get(`waLink:${req.user.email}`);
+  if (!raw) return res.status(400).json({ error: 'That code has expired. Start again.' });
+  let pending;
+  try { pending = JSON.parse(raw); } catch { return res.status(400).json({ error: 'Start again.' }); }
+  if (String(req.body?.code || '').trim() !== pending.code) {
+    return res.status(400).json({ error: 'That code does not match.' });
+  }
+  await redis.set(`waPhone:${pending.phone}`, req.user.email);
+  await redis.set(`waPhoneOf:${req.user.email}`, pending.phone);
+  await redis.del(`waLink:${req.user.email}`);
+  console.log(`[whatsapp] linked ${pending.phone} to ${req.user.email}`);
+  res.json({ ok: true, phone: pending.phone });
+});
+
+app.get('/api/whatsapp/link', requireAuth, async (req, res) => {
+  const phone = await redis.get(`waPhoneOf:${req.user.email}`);
+  res.json({ phone: phone || null,
+    configured: !!(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_WHATSAPP_FROM) });
+});
+
+app.delete('/api/whatsapp/link', requireAuth, async (req, res) => {
+  const phone = await redis.get(`waPhoneOf:${req.user.email}`);
+  if (phone) await redis.del(`waPhone:${phone}`);
+  await redis.del(`waPhoneOf:${req.user.email}`);
+  res.json({ ok: true });
+});
+
+function escapeXml(s) {
+  return String(s).replace(/[<>&'"]/g, c => (
+    { '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
+}
+
+// ── Shared-message inbox ──────────────────────────────────────────────────
+//
+// Two new ways in -- a message shared from iOS, and a WhatsApp forward -- and
+// one function behind both. The channels differ only in how they prove who the
+// sender is; everything after that is identical, because a second extraction
+// path is a second place for the fabrication guard and the dedup to drift out
+// of step with the first.
+//
+// DELIBERATELY NEVER AUTO-WRITES. Gmail earns the right to write straight to
+// the calendar: a school's newsletter is addressed to the user by an institution
+// they signed up with. A forwarded message is someone saying "can you do pickup
+// Thursday?" -- the user shared it to ASK, not to instruct, and the cost of
+// being wrong is an event they never agreed to. Everything from these channels
+// lands in Not reviewed with Add / Edit / Dismiss. Flipping that is one branch
+// below, and should be a decision, not a default.
+const SHARE_TEXT_MAX = 20000;
+const SHARE_RATE_PER_HOUR = 30;
+
+async function shareRateOk(key) {
+  const k = `shareRate:${key}:${new Date().toISOString().slice(0, 13)}`;
+  try {
+    const n = await redis.incr(k);
+    if (n === 1) await redis.expire(k, 3700);
+    return n <= SHARE_RATE_PER_HOUR;
+  } catch { return true; } // a broken counter must not break the channel
+}
+
+// email -> the one function both channels call.
+async function ingestSharedText(email, { text, channel, fromLabel = null }) {
+  const body = String(text || '').trim().slice(0, SHARE_TEXT_MAX);
+  if (!body) return { stored: 0, skipped: 0, titles: [], reason: 'nothing to read' };
+
+  const today = new Date().toISOString().slice(0, 10);
+  const framing = `A message the user shared with Criba from ${channel === 'whatsapp' ? 'WhatsApp' : 'their phone'}`
+    + `${fromLabel ? ` (from ${fromLabel})` : ''}. Today is ${today}. Only include events from today onward; `
+    + `if a date is named without a year, choose the next occurrence after today.\n\nMessage:\n${body}`;
+
+  // Same model and token budget as Gmail extraction, read from the same
+  // per-user override. A new channel must not quietly become a new cost
+  // decision -- that routes through the owner, not through a feature.
+  const cfg = await gmailExtractModelFor(email);
+  const response = await callClaude(email, {
+    model: cfg.model, max_tokens: cfg.maxTokens,
+    messages: [{ role: 'user', content: [
+      { type: 'text', text: FULL_EXTRACTION_PROMPT, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: framing },
+    ] }],
+  }, 'share-extract');
+
+  let events = [];
+  try {
+    const raw = getResponseText(response).trim();
+    const m = raw.match(/\[[\s\S]*\]/);
+    events = m ? JSON.parse(m[0]) : [];
+  } catch (err) {
+    console.error(`[share] parse failed for ${email}:`, err.message);
+    return { stored: 0, skipped: 0, titles: [], reason: 'could not read that' };
+  }
+  if (!Array.isArray(events)) events = [];
+
+  const store = getUserEvents(email);
+  const family = await getUserFamily(email).values();
+  const exclusions = await getUserExclusions(email).values();
+  let stored = 0, skipped = 0;
+  const titles = [];
+
+  for (const ev of events) {
+    if (!ev || !ev.title || !ev.date) { skipped++; continue; }
+
+    // The same gates Gmail runs, in the same order: a prior "no" is consulted
+    // before dedup so a ruling can never become a silent drop.
+    const refusal = await priorRefusal(email, ev.date, ev.title);
+    if (!refusal && await isDuplicateEvent(store, ev.title, ev.date,
+        { time: ev.start_time || '', recurrence: ev.recurrence })) {
+      skipped++;
+      await traceEmail(email, { stage: 'SKIP-DUPLICATE', via: channel, title: ev.title, date: ev.date });
+      continue;
+    }
+
+    const relevance = eventRelevance(
+      [ev.title, ev.notes].filter(Boolean).join(' '), family, exclusions, null, ev.audience);
+    const hold = refusal ? refusalHold(refusal) : (relevance.relevant ? null : relevance);
+
+    const id = randomUUID();
+    await store.set(id, {
+      id, title: ev.title, date: ev.date, end_date: ev.end_date || '',
+      time: ev.start_time || '', end_time: ev.end_time || '',
+      location: ev.location || '', is_all_day: !ev.start_time,
+      attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
+      notes: ev.notes || null,
+      recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
+      source_type: ev.source_type || null,
+      source: 'shared', share_channel: channel,
+      sender_name: fromLabel || null, sender_email: null,
+      subject: null,
+      held_reason: hold ? (hold.held_reason || hold.reason || null) : null,
+      held_kind: hold ? (hold.held_kind || null) : null,
+      held_key: hold ? (hold.held_key || null) : null,
+      // Never 'added'. See the note above: a forward is a question.
+      status: 'pending', reviewed: false,
+      calEventId: null,
+      created_at: new Date().toISOString(),
+    });
+    stored++;
+    titles.push(ev.title);
+  }
+
+  console.log(`[share] ${channel} ${email} stored=${stored} skipped=${skipped}`);
+  return { stored, skipped, titles };
+}
+
 app.post('/api/events/mute-newsletter', requireAuth, async (req, res) => {
   const email = req.user.email;
   const events = getUserEvents(email);

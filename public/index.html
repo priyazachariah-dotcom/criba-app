@@ -2054,11 +2054,6 @@ async function evDismissProposal(id, ctx) {
   <div class="page" id="page-calendars">
     <h1 class="src-title">Sources</h1>
     <p class="src-lead">Where Criba looks, and the tools for fixing what it found.</p>
-    <!-- Moved here from the top bar and from the old queue: this is the page
-         about where events come from, which is where the controls over them
-         belong. -->
-    <div id="sources-tools"></div>
-    <div id="sources-receipt"></div>
     <!-- Always open. Adding a calendar is the entire purpose of this page, so
          hiding it behind a "+ Add calendar" button made the first thing a new
          user needs the one thing they had to go looking for. -->
@@ -2116,6 +2111,13 @@ async function evDismissProposal(id, ctx) {
     <h2 class="src-section">Calendars you’re subscribed to</h2>
     <div id="cal-list"></div>
     <div id="sources-cancelled"></div>
+    <!-- Maintenance is everything you do to a calendar that already exists:
+         scanning for more, seeing what Criba put there, and undoing it. Adding
+         a calendar is the reason you came to this page, so it goes first and
+         these sit underneath. -->
+    <h2 class="src-section">Maintenance</h2>
+    <div id="sources-tools"></div>
+    <div id="sources-receipt"></div>
     <div id="sources-maintenance"></div>
   </div>
 
@@ -4113,18 +4115,25 @@ function evTimeLabel(ev) {
   return ev.end_time ? `${ev.time} – ${ev.end_time}` : ev.time;
 }
 
+// Today in the user's own timezone. toISOString() is UTC, which is a day out
+// for anyone west of Greenwich for part of every day.
+function localDateStr() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
 // Past events are struck through rather than hidden: the day's shape is easier
 // to read when what has already happened is still visible in place.
 function evIsPast(ev) {
   if (ev.is_all_day || !ev.time) return false;
-  const now = new Date();
-  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const today = localDateStr();
   // The date has to be checked, not only the clock. Comparing times alone
   // struck through every morning event on every future day: at 13:34 the whole
   // of tomorrow before 13:34 read as already over.
   if (!ev.date) return false;
   if (ev.date > today) return false;
   if (ev.date < today) return true;
+  const now = new Date();
   const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   return (ev.end_time || ev.time) < hhmm;
 }
@@ -4168,8 +4177,12 @@ function renderSources() {
 
   const canc = document.getElementById('sources-cancelled');
   if (canc) {
+    // Only what is still ahead. A removal you can still undo is useful; a list
+    // of things you took off a day that has already been and gone is just a
+    // long receipt for decisions that no longer matter.
+    const today = localDateStr();
     const rows = (typeof recentEvents !== 'undefined' && Array.isArray(recentEvents) ? recentEvents : [])
-      .filter(e => e.status === 'cancelled').slice(0, 12);
+      .filter(e => e.status === 'cancelled' && e.date && e.date >= today).slice(0, 12);
     canc.innerHTML = rows.length ? `<h2 class="src-section">Removed from your calendar</h2>
       <div class="src-rows">${rows.map(e => `<div class="src-row"><span>${escHtml(e.title || '')}</span>
         <span class="src-row-meta">${e.date ? escHtml(formatDate(e.date)) : ''}</span></div>`).join('')}</div>` : '';
@@ -4180,7 +4193,6 @@ function renderSources() {
   const maint = document.getElementById('sources-maintenance');
   if (maint) {
     maint.innerHTML = `<div class="src-card src-maint">
-      <h2 class="src-card-head">Maintenance</h2>
       <div class="src-maint-row">
         <div class="src-maint-title">Clean up duplicates</div>
         <div class="src-maint-desc">If the same event was added to your calendar more than once, this finds the extra copies and removes them, keeping one of each. Events you created yourself and events from calendars you subscribe to are never touched.</div>
@@ -4318,6 +4330,11 @@ function renderWhatsAhead() {
     </div>`;
   }).join('');
 }
+
+// renderCalendars() rebuilds this <details> from scratch, and a fresh one is
+// closed. Deleting an event repaints the page, so every delete slammed the
+// list shut and you had to expand it again to delete the next one.
+let uploadsOpen = false;
 
 let waNrOpen = {};
 function waToggleNr(date) {
@@ -7543,7 +7560,8 @@ function renderCalendars() {
 
   if (uploads.length) {
     out.push(`
-      <details class="cal-section cal-section-collapsible">
+      <details class="cal-section cal-section-collapsible" ${uploadsOpen ? 'open' : ''}
+        ontoggle="uploadsOpen = this.open">
         <summary class="cal-section-head">
           <h3 class="cal-section-title">Uploaded files <span class="cal-section-count">${uploads.length}</span></h3>
           <p class="cal-section-sub">Read once from a PDF or screenshot. You approve these before they reach your calendar. <span class="cal-section-hint">(Expand to view them.)</span></p>

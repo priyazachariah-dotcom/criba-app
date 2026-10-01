@@ -4422,16 +4422,83 @@ app.post('/api/whatsapp/inbound', async (req, res) => {
   }
   if (!text) return reply('Criba can only read text messages at the moment.');
 
+  // A decline is unambiguous and costs no extraction, so it is handled first.
+  const pendingRaw = await redis.get(`waAsk:${from}`);
+  if (pendingRaw) {
+    const answer = looksLikeDecline(text) ? { decline: true } : null;
+    if (answer) {
+      await redis.del(`waAsk:${from}`);
+      if (answer.decline) {
+        // A one-time no, honoured permanently. Asking again after being told
+        // not to is what makes people stop using a thing.
+        await redis.set(`waNoAsk:${from}`, '1');
+        return reply('Understood — Criba will not ask about this number again.');
+      }
+    }
+  }
+
   try {
+    const known = await redis.get(`waName:${from}`);
     const r = await ingestSharedText(email, {
       text, channel: 'whatsapp',
       fromLabel: String(req.body?.ProfileName || '').slice(0, 120) || null,
+      participant: known || null,
     });
-    return reply(r.stored
-      ? `Added to your calendar: ${r.titles.slice(0, 3).join(', ')}`
-        + (r.titles.length > 3 ? ` and ${r.titles.length - 3} more` : '')
-        + '. Delete anything that is wrong and Criba will learn from it.'
-      : 'Read that — nothing to add.');
+    if (!r.stored) {
+      // Nothing extracted. NOW it can safely be read as the answer: a forward
+      // that produced an event has already been kept above, so nothing can be
+      // lost here.
+      if (pendingRaw && looksLikeName(text)) {
+        await redis.del(`waAsk:${from}`);
+        await redis.set(`waName:${from}`, text.trim());
+        let pending = { ids: [] };
+        try { pending = JSON.parse(pendingRaw); } catch {}
+        const store = getUserEvents(email);
+        const fixed = [];
+        for (const id of (pending.ids || [])) {
+          const ev = await store.get(id);
+          if (!ev) continue;
+          ev.title = withParticipant(ev.title, text.trim());
+          ev.attendees = [...(Array.isArray(ev.attendees) ? ev.attendees : []), text.trim()];
+          await store.set(id, ev);
+          if (ev.calEventId) {
+            try {
+              const auth = await getUserOAuthClient({ email });
+              await google.calendar({ version: 'v3', auth }).events.patch({
+                calendarId: ev.gcalId || await resolveTargetCalendar(email),
+                eventId: ev.calEventId, requestBody: { summary: ev.title },
+              });
+            } catch (err) { console.error('[whatsapp] title patch failed:', err.message); }
+          }
+          fixed.push(ev.title);
+        }
+        return reply(fixed.length
+          ? `Thanks — updated to "${fixed[0]}". Criba will use ${text.trim()} for this number from now on.`
+          : `Thanks — Criba will use ${text.trim()} for this number from now on.`);
+      }
+      return reply('Read that — nothing to add.');
+    }
+
+    let msg = `Added to your calendar: ${r.titles.slice(0, 3).join(', ')}`
+      + (r.titles.length > 3 ? ` and ${r.titles.length - 3} more` : '')
+      + '. Delete anything that is wrong and Criba will learn from it.';
+
+    // Asked on EVERY forward, not on a guess about whether it is needed.
+    //
+    // There was a heuristic here that decided whether an event already named
+    // someone. It cannot be made reliable -- nothing short of understanding the
+    // sentence separates a person from a place in three words -- and a wrong
+    // guess either asks a pointless question or silently skips one that
+    // mattered. Asking always is worse for nobody and wrong for nothing.
+    //
+    // Still suppressed by the two things the USER said, rather than by anything
+    // Criba inferred: a name already known for this number, or a decline.
+    if (!known && !(await redis.get(`waNoAsk:${from}`))) {
+      await redis.set(`waAsk:${from}`,
+        JSON.stringify({ ids: (r.events || []).map(e => e.id), at: Date.now() }), 'EX', 604800);
+      msg += `\n\nWho is this with? (I will remember this number as that name for next time — reply "na" if you would rather I did not.)`;
+    }
+    return reply(msg);
   } catch (err) {
     console.error('[whatsapp] ingest failed:', err.message);
     return reply('Criba could not read that just now.');
@@ -4565,9 +4632,52 @@ async function shareRateOk(key) {
 }
 
 // email -> the one function both channels call.
-async function ingestSharedText(email, { text, channel, fromLabel = null }) {
+function withParticipant(title, name) {
+  const t = String(title || '').trim();
+  if (!t) return name;
+  if (new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(t)) return t;
+  return `${t} with ${name}`;
+}
+
+// Is this inbound message an ANSWER, or a new forward?
+//
+// It cannot be told from the text. "Potluck", "Bake sale" and "Dentist" have
+// exactly the shape of "Asha" -- one capitalised word, no digits. Measured on
+// thirty realistic short forwards, a shape test read 28 of them as a name.
+//
+// That did not matter while the question was only asked about ambiguous
+// events, because a question was rarely outstanding. Asking on every forward
+// means one always is, so the next forward would be eaten as the answer.
+//
+// So the text no longer decides. Extraction does: a message that produces an
+// event was a forward, whatever it looked like. Only a message that produced
+// NOTHING can be an answer. The failure mode is now a junk contact name, which
+// is visible and changeable, instead of a lost forward, which is neither.
+const DECLINE_WORDS = /^(na|n\/a|no|nope|nah|skip|don'?t|dont|stop|never mind|nevermind)\.?$/i;
+
+function looksLikeDecline(text) {
+  return DECLINE_WORDS.test(String(text || '').trim());
+}
+
+// Shape only -- a last filter applied AFTER extraction found nothing, to keep
+// "Soccer practice moved" from being saved as somebody's name.
+function looksLikeName(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 32) return false;
+  if (/\d/.test(t)) return false;
+  const words = t.split(/\s+/);
+  if (words.length > 3) return false;
+  if (!/^[\p{L}][\p{L}\s'\u2019.-]*$/u.test(t)) return false;
+  // A name is not a sentence about a thing happening.
+  if (/\b(cancelled|moved|closed|night|day|sale|trip|meet|practice|party|club|house|concert|dismissal|morning|tea|lunch|dinner|drinks|game)\b/i.test(t)) return false;
+  return true;
+}
+
+
+
+async function ingestSharedText(email, { text, channel, fromLabel = null, participant = null }) {
   const body = String(text || '').trim().slice(0, SHARE_TEXT_MAX);
-  if (!body) return { stored: 0, skipped: 0, titles: [], reason: 'nothing to read' };
+  if (!body) return { stored: 0, skipped: 0, titles: [], events: [], reason: 'nothing to read' };
 
   const today = new Date().toISOString().slice(0, 10);
   // The forwarder's name is deliberately NOT in this prompt.
@@ -4603,7 +4713,7 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
     events = m ? JSON.parse(m[0]) : [];
   } catch (err) {
     console.error(`[share] parse failed for ${email}:`, err.message);
-    return { stored: 0, skipped: 0, titles: [], reason: 'could not read that' };
+    return { stored: 0, skipped: 0, titles: [], events: [], reason: 'could not read that' };
   }
   if (!Array.isArray(events)) events = [];
 
@@ -4614,6 +4724,7 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
   const timezone = await getUserTimezone(email);
   let stored = 0, skipped = 0, failed = 0;
   const titles = [];
+  const made = [];
 
   for (const ev of events) {
     if (!ev || !ev.title || !ev.date) { skipped++; continue; }
@@ -4634,6 +4745,16 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
       skipped++;
       await traceEmail(email, { stage: 'SKIP-REFUSED', via: channel, title: ev.title, date: ev.date });
       continue;
+    }
+
+    // A name already learned for this sender is applied before the write, so
+    // the calendar entry says who it is with rather than being corrected after.
+    // withParticipant is the only guard: it will not add a name the title
+    // already carries. There is deliberately no test for whether the title
+    // names somebody ELSE -- that was the heuristic that was removed.
+    if (participant) {
+      ev.title = withParticipant(ev.title, participant);
+      ev.attendees = [...(Array.isArray(ev.attendees) ? ev.attendees : []), participant];
     }
 
     const startTime = ev.start_time || '';
@@ -4681,10 +4802,11 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
     });
     stored++;
     titles.push(ev.title);
+    made.push({ id, title: ev.title });
   }
 
   console.log(`[share] ${channel} ${email} stored=${stored} skipped=${skipped} failed=${failed}`);
-  return { stored, skipped, failed, titles };
+  return { stored, skipped, failed, titles, events: made };
 }
 
 app.post('/api/events/mute-newsletter', requireAuth, async (req, res) => {

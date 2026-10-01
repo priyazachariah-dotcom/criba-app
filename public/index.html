@@ -1092,9 +1092,7 @@
   .today-peek:first-of-type { border-top: 1px solid var(--line); }
   .today-peek-time { color: var(--muted); font-size: 13px; margin-right: 12px; font-variant-numeric: tabular-nums; }
   .today-clear { font-size: 15px; color: var(--muted); margin-bottom: 48px; }
-  /* Wraps: it is a sentence, not a verb, and truncating it would leave
-     "Don't show me events from this..." which reads as a different promise. */
-  .ev-menu-mute { white-space: normal; line-height: 1.35; max-width: 260px; }
+
   .src-maint-last { font-size: 12px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
@@ -4523,8 +4521,8 @@ function renderEventRow(ev, ctx = 'today') {
         <button class="ev-menu-item" role="menuitem" onclick="evAdd('${escHtml(id)}','${ctx}')">Add</button>
         <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
         <button class="ev-menu-item" role="menuitem" onclick="evDismissProposal('${escHtml(id)}','${ctx}')">Dismiss</button>
-        ${ev.sender_email ? `<button class="ev-menu-item ev-menu-mute" role="menuitem"
-          onclick="evMuteNewsletter('${escHtml(id)}','${ctx}')">Don\u2019t show me events from this newsletter again</button>` : ''}`
+        <button class="ev-menu-item ev-menu-mute" role="menuitem"
+          onclick="evMuteNewsletter('${escHtml(id)}','${ctx}')">Mute sender</button>`
         : `
         <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
         <button class="ev-menu-item" role="menuitem" onclick="evKeep('${escHtml(id)}','${ctx}')">Keep</button>
@@ -4685,6 +4683,12 @@ function evActionError(id, ctx, msg) {
 // version (muted but the backlog still on screen) is worse than either end.
 async function evMuteNewsletter(id, ctx) {
   const ev = evGet(id);
+  // Deliberately NOT hidden when the row carries no sender.
+  //
+  // It used to render only when ev.sender_email was set, so on a row without
+  // one the item silently was not there -- which looks exactly like the
+  // feature being broken, and cost an afternoon proving which it was. The
+  // server knows whether a sender can be muted; let it answer, in words.
   const sender = ev && (ev.sender_name || ev.sender_email);
   const ok = await cribaConfirm(
     `Stop showing events from ${sender || 'this sender'}?\n\n`

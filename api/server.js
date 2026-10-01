@@ -4422,16 +4422,76 @@ app.post('/api/whatsapp/inbound', async (req, res) => {
   }
   if (!text) return reply('Criba can only read text messages at the moment.');
 
+  // A reply to "Who is this with?" is answered, not read as a new message.
+  // Only while a question is outstanding, and only for text that could not be
+  // a forward -- see readAnswer.
+  const pendingRaw = await redis.get(`waAsk:${from}`);
+  if (pendingRaw) {
+    const answer = readAnswer(text);
+    if (answer) {
+      await redis.del(`waAsk:${from}`);
+      if (answer.decline) {
+        // A one-time no, honoured permanently. Asking again after being told
+        // not to is what makes people stop using a thing.
+        await redis.set(`waNoAsk:${from}`, '1');
+        return reply('Understood — Criba will not ask about this number again.');
+      }
+      await redis.set(`waName:${from}`, answer.name);
+      let pending = { ids: [] };
+      try { pending = JSON.parse(pendingRaw); } catch {}
+      const store = getUserEvents(email);
+      const fixed = [];
+      for (const id of (pending.ids || [])) {
+        const ev = await store.get(id);
+        if (!ev) continue;
+        ev.title = withParticipant(ev.title, answer.name);
+        ev.attendees = [...(Array.isArray(ev.attendees) ? ev.attendees : []), answer.name];
+        await store.set(id, ev);
+        // The calendar entry is the one the user actually looks at, so the
+        // correction has to reach it, not just Criba's own copy.
+        if (ev.calEventId) {
+          try {
+            const auth = await getUserOAuthClient({ email });
+            await google.calendar({ version: 'v3', auth }).events.patch({
+              calendarId: ev.gcalId || await resolveTargetCalendar(email),
+              eventId: ev.calEventId, requestBody: { summary: ev.title },
+            });
+          } catch (err) { console.error('[whatsapp] title patch failed:', err.message); }
+        }
+        fixed.push(ev.title);
+      }
+      return reply(fixed.length
+        ? `Thanks — updated to "${fixed[0]}". Criba will use ${answer.name} for this number from now on.`
+        : `Thanks — Criba will use ${answer.name} for this number from now on.`);
+    }
+    // Not an answer. Drop the question rather than letting it sit and catch a
+    // later message that happens to look like a name.
+    await redis.del(`waAsk:${from}`);
+  }
+
   try {
+    const known = await redis.get(`waName:${from}`);
     const r = await ingestSharedText(email, {
       text, channel: 'whatsapp',
       fromLabel: String(req.body?.ProfileName || '').slice(0, 120) || null,
+      participant: known || null,
     });
-    return reply(r.stored
-      ? `Added to your calendar: ${r.titles.slice(0, 3).join(', ')}`
-        + (r.titles.length > 3 ? ` and ${r.titles.length - 3} more` : '')
-        + '. Delete anything that is wrong and Criba will learn from it.'
-      : 'Read that — nothing to add.');
+    if (!r.stored) return reply('Read that — nothing to add.');
+
+    let msg = `Added to your calendar: ${r.titles.slice(0, 3).join(', ')}`
+      + (r.titles.length > 3 ? ` and ${r.titles.length - 3} more` : '')
+      + '. Delete anything that is wrong and Criba will learn from it.';
+
+    // Asked on CONTENT ambiguity, never on sender recurrence: a first message
+    // with an unnamed event is asked about, a tenth with "Lunch with Mom" is
+    // not. Suppressed once a name is known for the number, or once declined.
+    const unnamed = (r.events || []).filter(e => !e.namesSomeone);
+    if (unnamed.length && !known && !(await redis.get(`waNoAsk:${from}`))) {
+      await redis.set(`waAsk:${from}`,
+        JSON.stringify({ ids: unnamed.map(e => e.id), at: Date.now() }), 'EX', 604800);
+      msg += `\n\nWho is this with? (I will remember this number as that name for next time — reply "na" if you would rather I did not.)`;
+    }
+    return reply(msg);
   } catch (err) {
     console.error('[whatsapp] ingest failed:', err.message);
     return reply('Criba could not read that just now.');
@@ -4565,9 +4625,59 @@ async function shareRateOk(key) {
 }
 
 // email -> the one function both channels call.
-async function ingestSharedText(email, { text, channel, fromLabel = null }) {
+// Does this event already say who it is with?
+//
+// Content, not sender. "Lunch with Mom" names someone on the first message
+// from a stranger's number; "yes to tea" names nobody on the tenth from a
+// familiar one. Asking is a property of the event, so recurrence never
+// enters into it.
+//
+// A heuristic, and an admitted one: there is no reliable way to tell a person
+// from a place in a short phrase. It errs toward NOT asking -- a question
+// nobody needed is more annoying than an event that could have been clearer.
+const PARTICIPANT_PREPS = /\b(?:with|w\/|and|&)\s+([A-Z][\w'\u2019-]+)/;
+function eventNamesSomeone(ev) {
+  if (Array.isArray(ev?.attendees) && ev.attendees.length) return true;
+  const text = [ev?.title, ev?.notes].filter(Boolean).join(' ');
+  if (!text) return false;
+  if (PARTICIPANT_PREPS.test(text)) return true;
+  // A bare capitalised name used as the subject -- "Mom's birthday",
+  // "Dr Mason follow-up". Checked after the preposition case because it is
+  // much weaker: any proper noun trips it, including a venue.
+  return /\b[A-Z][\w'\u2019-]+(?:\u2019s|'s)\b/.test(text);
+}
+
+function withParticipant(title, name) {
+  const t = String(title || '').trim();
+  if (!t) return name;
+  if (new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(t)) return t;
+  return `${t} with ${name}`;
+}
+
+// Is this inbound message an ANSWER to the question Criba asked, or a new
+// thing to read?
+//
+// Deliberately strict. Treating a forward as an answer would both lose the
+// forward and save nonsense as a contact name, so anything carrying a digit,
+// a date word, or more than four words is read as content. A name that fails
+// this test costs one unanswered question; a forward that fails it costs the
+// forward.
+const DECLINE_WORDS = /^(na|n\/a|no|nope|nah|skip|don'?t|dont|stop|never mind|nevermind)\.?$/i;
+function readAnswer(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 40) return null;
+  if (DECLINE_WORDS.test(t)) return { decline: true };
+  if (/\d/.test(t)) return null;
+  if (/\b(mon|tue|wed|thu|fri|sat|sun|today|tomorrow|tonight|am|pm|at)\b/i.test(t)) return null;
+  const words = t.split(/\s+/);
+  if (words.length > 4) return null;
+  if (!/^[\p{L}][\p{L}\s'\u2019.-]*$/u.test(t)) return null;
+  return { name: t.replace(/\s+/g, ' ').trim() };
+}
+
+async function ingestSharedText(email, { text, channel, fromLabel = null, participant = null }) {
   const body = String(text || '').trim().slice(0, SHARE_TEXT_MAX);
-  if (!body) return { stored: 0, skipped: 0, titles: [], reason: 'nothing to read' };
+  if (!body) return { stored: 0, skipped: 0, titles: [], events: [], reason: 'nothing to read' };
 
   const today = new Date().toISOString().slice(0, 10);
   // The forwarder's name is deliberately NOT in this prompt.
@@ -4603,7 +4713,7 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
     events = m ? JSON.parse(m[0]) : [];
   } catch (err) {
     console.error(`[share] parse failed for ${email}:`, err.message);
-    return { stored: 0, skipped: 0, titles: [], reason: 'could not read that' };
+    return { stored: 0, skipped: 0, titles: [], events: [], reason: 'could not read that' };
   }
   if (!Array.isArray(events)) events = [];
 
@@ -4614,6 +4724,7 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
   const timezone = await getUserTimezone(email);
   let stored = 0, skipped = 0, failed = 0;
   const titles = [];
+  const made = [];
 
   for (const ev of events) {
     if (!ev || !ev.title || !ev.date) { skipped++; continue; }
@@ -4634,6 +4745,13 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
       skipped++;
       await traceEmail(email, { stage: 'SKIP-REFUSED', via: channel, title: ev.title, date: ev.date });
       continue;
+    }
+
+    // A name already learned for this sender is applied before the write, so
+    // the calendar entry says who it is with rather than being corrected after.
+    if (participant && !eventNamesSomeone(ev)) {
+      ev.title = withParticipant(ev.title, participant);
+      ev.attendees = [...(Array.isArray(ev.attendees) ? ev.attendees : []), participant];
     }
 
     const startTime = ev.start_time || '';
@@ -4681,10 +4799,11 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
     });
     stored++;
     titles.push(ev.title);
+    made.push({ id, title: ev.title, namesSomeone: eventNamesSomeone(ev) });
   }
 
   console.log(`[share] ${channel} ${email} stored=${stored} skipped=${skipped} failed=${failed}`);
-  return { stored, skipped, failed, titles };
+  return { stored, skipped, failed, titles, events: made };
 }
 
 app.post('/api/events/mute-newsletter', requireAuth, async (req, res) => {

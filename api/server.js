@@ -4322,7 +4322,8 @@ app.post('/api/share/text', async (req, res) => {
     });
     // The Shortcut shows this string verbatim, so it has to read as a sentence.
     const msg = r.stored
-      ? `Criba found ${r.stored} thing${r.stored > 1 ? 's' : ''} to review: ${r.titles.slice(0, 3).join(', ')}`
+      ? `Added to your calendar: ${r.titles.slice(0, 3).join(', ')}`
+        + (r.titles.length > 3 ? ` and ${r.titles.length - 3} more` : '')
       : 'Criba read that and found nothing to add.';
     res.json({ ok: true, ...r, message: msg });
   } catch (err) {
@@ -4394,7 +4395,9 @@ app.post('/api/whatsapp/inbound', async (req, res) => {
       fromLabel: String(req.body?.ProfileName || '').slice(0, 120) || null,
     });
     return reply(r.stored
-      ? `Added ${r.stored} to review: ${r.titles.slice(0, 3).join(', ')}. Open Criba to approve.`
+      ? `Added to your calendar: ${r.titles.slice(0, 3).join(', ')}`
+        + (r.titles.length > 3 ? ` and ${r.titles.length - 3} more` : '')
+        + '. Delete anything that is wrong and Criba will learn from it.'
       : 'Read that — nothing to add.');
   } catch (err) {
     console.error('[whatsapp] ingest failed:', err.message);
@@ -4493,13 +4496,25 @@ function escapeXml(s) {
 // path is a second place for the fabrication guard and the dedup to drift out
 // of step with the first.
 //
-// DELIBERATELY NEVER AUTO-WRITES. Gmail earns the right to write straight to
-// the calendar: a school's newsletter is addressed to the user by an institution
-// they signed up with. A forwarded message is someone saying "can you do pickup
-// Thursday?" -- the user shared it to ASK, not to instruct, and the cost of
-// being wrong is an event they never agreed to. Everything from these channels
-// lands in Not reviewed with Add / Edit / Dismiss. Flipping that is one branch
-// below, and should be a decision, not a default.
+// These channels WRITE. No review queue, no held state, no ask-first branch.
+//
+// Decided deliberately. Forwarding a message is not like receiving one: the
+// user picked this message out of a thread and sent it here, and that choosing
+// is the confirmation. Asking again afterwards would be asking twice. The
+// correction mechanism is the same one every other calendar event has --
+// delete it -- and a real "is this right?" step needs push notifications that
+// do not exist yet (#30).
+//
+// What is kept from Gmail's path, and why:
+//   * the extraction prompt and its fabrication guard -- identical, same model
+//   * dedup, both the store check and autoWriteToCalendar's own -- this is not
+//     an ask-first gate, it is the thing that stops two copies of one event
+//   * a prior refusal -- the user already ruled "no" on this exact event; this
+//     skips rather than holds, because holding is the branch being removed
+//
+// What is dropped: eventRelevance's third-party / opportunity / promotion
+// holds. Those exist to judge whether a BROADCAST was meant for the reader. A
+// message the user forwarded by hand was, by definition.
 const SHARE_TEXT_MAX = 20000;
 const SHARE_RATE_PER_HOUR = 30;
 
@@ -4546,9 +4561,11 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
   if (!Array.isArray(events)) events = [];
 
   const store = getUserEvents(email);
-  const family = await getUserFamily(email).values();
-  const exclusions = await getUserExclusions(email).values();
-  let stored = 0, skipped = 0;
+  const auth = await getUserOAuthClient({ email });
+  const calendarApi = google.calendar({ version: 'v3', auth });
+  const targetCalId = await resolveTargetCalendar(email);
+  const timezone = await getUserTimezone(email);
+  let stored = 0, skipped = 0, failed = 0;
   const titles = [];
 
   for (const ev of events) {
@@ -4564,9 +4581,37 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
       continue;
     }
 
-    const relevance = eventRelevance(
-      [ev.title, ev.notes].filter(Boolean).join(' '), family, exclusions, null, ev.audience);
-    const hold = refusal ? refusalHold(refusal) : (relevance.relevant ? null : relevance);
+    // A prior "no" is honoured by not writing it again. Skipped, not held --
+    // holding is the branch this channel does not have.
+    if (refusal) {
+      skipped++;
+      await traceEmail(email, { stage: 'SKIP-REFUSED', via: channel, title: ev.title, date: ev.date });
+      continue;
+    }
+
+    const startTime = ev.start_time || '';
+    const endTime = ev.end_time || '';
+    const evObj = {
+      title: ev.title, date: ev.date, end_date: ev.end_date || '',
+      time: startTime, end_time: endTime, location: ev.location || '',
+      recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
+      recurring_note: ev.recurring_note || null, attendees: [],
+      notes: ev.notes || null, sender_name: fromLabel || null, sender_email: null, subject: null,
+    };
+    const colorId = await resolveEventColorByNames(email,
+      Array.isArray(ev.attendees) ? ev.attendees : [],
+      [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
+
+    // The same chokepoint Gmail writes through: it dedups against every
+    // calendar the user subscribes to and holds a per-user write guard, so a
+    // second forward of the same message cannot land a second copy.
+    let calEventId = null;
+    try {
+      calEventId = await autoWriteToCalendar(calendarApi, targetCalId, evObj, colorId, { timezone, email });
+    } catch (err) {
+      console.error(`[share] calendar write failed for "${ev.title}":`, err.message);
+      failed++;
+    }
 
     const id = randomUUID();
     await store.set(id, {
@@ -4580,20 +4625,19 @@ async function ingestSharedText(email, { text, channel, fromLabel = null }) {
       source: 'shared', share_channel: channel,
       sender_name: fromLabel || null, sender_email: null,
       subject: null,
-      held_reason: hold ? (hold.held_reason || hold.reason || null) : null,
-      held_kind: hold ? (hold.held_kind || null) : null,
-      held_key: hold ? (hold.held_key || null) : null,
-      // Never 'added'. See the note above: a forward is a question.
-      status: 'pending', reviewed: false,
-      calEventId: null,
+      // A write that failed is stored without a calEventId rather than thrown
+      // away, so a Google outage leaves something the user can still see and
+      // add by hand instead of a message that silently went nowhere.
+      status: calEventId ? 'added' : 'pending', reviewed: false,
+      calEventId,
       created_at: new Date().toISOString(),
     });
     stored++;
     titles.push(ev.title);
   }
 
-  console.log(`[share] ${channel} ${email} stored=${stored} skipped=${skipped}`);
-  return { stored, skipped, titles };
+  console.log(`[share] ${channel} ${email} stored=${stored} skipped=${skipped} failed=${failed}`);
+  return { stored, skipped, failed, titles };
 }
 
 app.post('/api/events/mute-newsletter', requireAuth, async (req, res) => {

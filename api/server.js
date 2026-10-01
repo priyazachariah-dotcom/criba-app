@@ -4360,10 +4360,20 @@ function twilioSignatureValid(req) {
   } catch { return false; }
 }
 
+// E.164 or nothing: a leading +, a country code that cannot start with 0, and
+// 7 to 15 digits in total.
+//
+// It used to prepend a + to whatever it was given, so a bare "5551234567"
+// became "+5551234567" -- a number in no country, which would never match the
+// "+15551234567" Twilio reports. The link would report success and then
+// silently never deliver anything, which is the worst of both.
+//
+// Deliberately does NOT guess a country code. A bare local number is valid in
+// dozens of countries and Criba has no basis to choose; guessing wrong fails
+// exactly as silently as before, just less obviously.
 function normalisePhone(raw) {
-  const digits = String(raw || '').replace(/[^0-9+]/g, '');
-  if (!digits) return null;
-  return digits.startsWith('+') ? digits : `+${digits}`;
+  const s = String(raw || '').trim().replace(/[\s()\-.\u2010-\u2015]/g, '');
+  return /^\+[1-9]\d{6,14}$/.test(s) ? s : null;
 }
 
 app.post('/api/whatsapp/inbound', async (req, res) => {
@@ -4414,7 +4424,11 @@ app.post('/api/whatsapp/inbound', async (req, res) => {
 // linked to another account is refused rather than silently reassigned.
 app.post('/api/whatsapp/link/start', requireAuth, async (req, res) => {
   const phone = normalisePhone(req.body?.phone);
-  if (!phone || phone.length < 8) return res.status(400).json({ error: 'That does not look like a phone number.' });
+  if (!phone) {
+    // Names the missing piece rather than "invalid": the country code is what
+    // people leave off, and WhatsApp identifies them by the full number.
+    return res.status(400).json({ error: 'Include your country code, starting with + — for example +1 555 123 4567.' });
+  }
 
   const owner = await redis.get(`waPhone:${phone}`);
   if (owner && owner !== req.user.email) {

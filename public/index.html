@@ -1,26 +1,3 @@
-async function evDismissProposal(id, ctx) {
-  const row = document.getElementById(`ev-${ctx}-${id}`);
-  if (row) row.style.opacity = '0.45';
-  try {
-    const res = await fetch('/api/events/dismiss', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    });
-    if (!res.ok) {
-      if (row) row.style.opacity = '';
-      evActionError(id, ctx, 'Could not dismiss that.');
-      return;
-    }
-  } catch {
-    if (row) row.style.opacity = '';
-    evActionError(id, ctx, 'Could not reach Criba.');
-    return;
-  }
-  evRegistry.delete(id);
-  if (typeof pendingEvents !== 'undefined') pendingEvents = pendingEvents.filter(e => e.id !== id);
-  if (row) row.remove();
-}
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -4660,12 +4637,22 @@ async function evDismissProposal(id, ctx) {
   const row = document.getElementById(`ev-${ctx}-${id}`);
   if (row) row.style.opacity = '0.45';
   try {
-    await fetch('/api/events/dismiss', {
+    const res = await fetch('/api/events/dismiss', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id }),
     });
-  } catch {}
+    if (!res.ok) {
+      if (row) row.style.opacity = '';
+      evActionError(id, ctx, 'Could not dismiss that.');
+      return;
+    }
+  } catch {
+    if (row) row.style.opacity = '';
+    evActionError(id, ctx, 'Could not reach Criba.');
+    return;
+  }
   evRegistry.delete(id);
+  if (typeof pendingEvents !== 'undefined') pendingEvents = pendingEvents.filter(e => e.id !== id);
   if (row) row.remove();
 }
 

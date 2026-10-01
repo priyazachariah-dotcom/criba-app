@@ -6872,10 +6872,11 @@ async function fetchCalendarWindow(calendarApi, cal, timeMin, timeMax) {
 function dedupeAheadEvents(events) {
   const out = [];
   for (const ev of events) {
-    const twin = out.find(x => x.date === ev.date
-      && x.is_all_day === ev.is_all_day
-      && titlesLooselyMatch(x.title, ev.title)
-      && (!x.time || !ev.time || Math.abs(timeToMinutes(x.time) - timeToMinutes(ev.time)) <= 30));
+    const twin = out.find(x => sameEventByFacts(x, ev)
+      || (x.date === ev.date
+        && x.is_all_day === ev.is_all_day
+        && titlesLooselyMatch(x.title, ev.title)
+        && (!x.time || !ev.time || Math.abs(timeToMinutes(x.time) - timeToMinutes(ev.time)) <= 30)));
     if (!twin) { out.push({ ...ev, alsoOn: [] }); continue; }
     // Prefer the copy that carries a colour: that is the one Criba attributed,
     // and it is the only copy that can be shown against a person. Identity has
@@ -6973,6 +6974,7 @@ function findAheadConflicts(events) {
           // unmanageable, and nothing on the screen says which of the 41 to
           // believe.
           if (a.memberId && b.memberId && a.memberId !== b.memberId) continue;
+          if (sameEventByFacts(a, b)) continue;
           if (titlesLooselyMatch(a.title, b.title)) continue;
           out.push({ date, a: { id: a.id, title: a.title, time: a.time, memberId: a.memberId },
                             b: { id: b.id, title: b.title, time: b.time, memberId: b.memberId } });
@@ -7002,8 +7004,11 @@ async function buildAheadView(user, days) {
   const stored = await getUserEvents(user.email).values();
   const storedByCalEventId = new Map(stored.filter(e => e.calEventId).map(e => [e.calEventId, e]));
 
-  const events = dedupeAheadEvents(raw)
-    .map(ev => ({ ...ev, ...attributeCalendarEvent(ev, members, storedByCalEventId) }))
+  // Attribution first: dedupe now asks who an event belongs to, and it used to
+  // run before anybody had been attributed. attributeCalendarEvent is pure and
+  // per-event, so moving it earlier changes nothing about who gets what.
+  const events = dedupeAheadEvents(
+    raw.map(ev => ({ ...ev, ...attributeCalendarEvent(ev, members, storedByCalEventId) })))
     .sort((a, b) => (a.date + (a.is_all_day ? '' : a.time)).localeCompare(b.date + (b.is_all_day ? '' : b.time)));
 
   const people = members.map(m => ({
@@ -8474,6 +8479,81 @@ function titlesShareDistinctiveTokens(a, b) {
   const extraA = [...da].some(w => !db.has(w));
   const extraB = [...db].some(w => !da.has(w));
   return !(extraA && extraB);
+}
+
+// ── Same event, different words ─────────────────────────────
+//
+// titlesLooselyMatch only merges when one title is the other plus boilerplate.
+// Two sources describing one event almost always each add their own detail, so
+// that rule misses the common case. A real pair this missed:
+//
+//   "Lunch Crew Volunteer Shift at West"        -> crew, volunteer, shift, west
+//   "Lunch Crew Volunteer Shift \u2014 Priya Zachariah"  -> crew, volunteer, shift, priya, zachariah
+//
+// Each side names something the other doesn't -- a venue and a person -- so the
+// rule called them different events, and the user saw the same shift twice.
+//
+// But every structured field agreed: same date, same 11:50, same 12:45, same
+// venue, same person. When the facts already agree the title should not get a
+// vote. Titles stay as the fallback for events whose fields are too thin to
+// decide (no location recorded, nobody attributed).
+function normPlace(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+// Grade ranges named in a title: "K-2nd", "3rd-5th", "Grades 6-8", "9th grade".
+function gradeRangesIn(text) {
+  const s = String(text || '').toLowerCase();
+  const out = new Set();
+  let m;
+  const range = /\b(k|\d{1,2})(?:st|nd|rd|th)?\s*(?:-|\u2013|\u2014|to|through)\s*(\d{1,2})(?:st|nd|rd|th)?\b/g;
+  while ((m = range.exec(s))) out.add(`${m[1]}-${m[2]}`);
+  const single = /\bgrades?\s*(k|\d{1,2})(?:st|nd|rd|th)?\b/g;
+  while ((m = single.exec(s))) out.add(String(m[1]));
+  return out;
+}
+
+// The guard on the facts rule. "What to Expect Night 3rd-5th" and "... K-2nd"
+// can share a day, a room and a parent and still be two different evenings --
+// and so can a frosh game and a varsity game. Those titles differ on WHO the
+// event is for, which is the one kind of difference that outranks the facts.
+function titlesDifferOnAudience(a, b) {
+  const ta = tiersMentionedIn(a), tb = tiersMentionedIn(b);
+  if (ta.size && tb.size) {
+    const compatible = [...ta].some(x => tb.has(x)
+      || TIER_COMPATIBLE.some(g => g.has(x) && [...tb].some(y => g.has(y))));
+    if (!compatible) return true;
+  }
+  const ga = gradeRangesIn(a), gb = gradeRangesIn(b);
+  if (ga.size && gb.size && ![...ga].some(x => gb.has(x))) return true;
+  return false;
+}
+
+// Same date, same start, same end, same place, same person -> one event,
+// whatever the titles say. Every one of those must be positively known on both
+// sides: a missing location or an unattributed event falls through to the title
+// test rather than being merged on thin evidence. Erring toward keeping both is
+// the safe direction -- a school event must never vanish silently.
+function sameEventByFacts(a, b) {
+  if (!a || !b) return false;
+  if (!a.date || a.date !== b.date) return false;
+
+  const aAll = !!(a.is_all_day !== undefined ? a.is_all_day : a.isAllDay);
+  const bAll = !!(b.is_all_day !== undefined ? b.is_all_day : b.isAllDay);
+  if (aAll !== bAll) return false;
+  if (!aAll) {
+    const aEnd = a.end_time !== undefined ? a.end_time : a.endTime;
+    const bEnd = b.end_time !== undefined ? b.end_time : b.endTime;
+    if (!a.time || !b.time || a.time !== b.time) return false;
+    if (!aEnd || !bEnd || aEnd !== bEnd) return false;
+  }
+
+  const pa = normPlace(a.location), pb = normPlace(b.location);
+  if (!pa || !pb || pa !== pb) return false;
+
+  if (!a.memberId || !b.memberId || a.memberId !== b.memberId) return false;
+
+  return !titlesDifferOnAudience(a.title, b.title);
 }
 
 function titlesLooselyMatch(a, b) {

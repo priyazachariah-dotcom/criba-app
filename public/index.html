@@ -1092,6 +1092,9 @@
   .today-peek:first-of-type { border-top: 1px solid var(--line); }
   .today-peek-time { color: var(--muted); font-size: 13px; margin-right: 12px; font-variant-numeric: tabular-nums; }
   .today-clear { font-size: 15px; color: var(--muted); margin-bottom: 48px; }
+  /* Wraps: it is a sentence, not a verb, and truncating it would leave
+     "Don't show me events from this..." which reads as a different promise. */
+  .ev-menu-mute { white-space: normal; line-height: 1.35; max-width: 260px; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
      housekeeping that already happened, not something to act on. */
@@ -4488,7 +4491,9 @@ function renderEventRow(ev, ctx = 'today') {
         ${waiting ? `
         <button class="ev-menu-item" role="menuitem" onclick="evAdd('${escHtml(id)}','${ctx}')">Add</button>
         <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
-        <button class="ev-menu-item" role="menuitem" onclick="evDismissProposal('${escHtml(id)}','${ctx}')">Dismiss</button>`
+        <button class="ev-menu-item" role="menuitem" onclick="evDismissProposal('${escHtml(id)}','${ctx}')">Dismiss</button>
+        ${ev.sender_email ? `<button class="ev-menu-item ev-menu-mute" role="menuitem"
+          onclick="evMuteNewsletter('${escHtml(id)}','${ctx}')">Don\u2019t show me events from this newsletter again</button>` : ''}`
         : `
         <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
         <button class="ev-menu-item" role="menuitem" onclick="evKeep('${escHtml(id)}','${ctx}')">Keep</button>
@@ -4640,6 +4645,60 @@ function evActionError(id, ctx, msg) {
     (row.querySelector('.ev-main') || row).appendChild(el);
   }
   el.textContent = msg;
+}
+
+// "Don't show me events from this newsletter again."
+//
+// Dismiss answers one item; this answers the sender. One request does all of
+// it -- mute, record the reason, clear the backlog -- because a half-applied
+// version (muted but the backlog still on screen) is worse than either end.
+async function evMuteNewsletter(id, ctx) {
+  const ev = evGet(id);
+  const sender = ev && (ev.sender_name || ev.sender_email);
+  const ok = await cribaConfirm(
+    `Stop showing events from ${sender || 'this sender'}?\n\n`
+    + `Criba will stop adding them and stop asking about them, and anything already waiting from this sender is cleared.\n\n`
+    + `Nothing already on your calendar is removed. You can turn this sender back on under People and rules.`,
+    { confirmLabel: 'Stop showing these' });
+  if (!ok) return;
+
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  let data;
+  try {
+    const res = await fetch('/api/events/mute-newsletter', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (row) row.style.opacity = '';
+      evActionError(id, ctx, data.error || 'Could not mute that sender.');
+      return;
+    }
+  } catch {
+    if (row) row.style.opacity = '';
+    evActionError(id, ctx, 'Could not reach Criba.');
+    return;
+  }
+
+  // The backlog went with it, so the local copy has to as well -- otherwise the
+  // next repaint puts every one of them back.
+  const gone = new Set([id]);
+  if (typeof pendingEvents !== 'undefined') {
+    for (const p of pendingEvents) {
+      if (p.sender_email && ev && p.sender_email === ev.sender_email) gone.add(p.id);
+    }
+    pendingEvents = pendingEvents.filter(p => !gone.has(p.id));
+  }
+  for (const g of gone) evRegistry.delete(g);
+
+  const n = data.cleared || 0;
+  cribaAlert(n
+    ? `Criba will stop showing events from ${escHtml(data.sender)}. ${n} more ${n === 1 ? 'was' : 'were'} already waiting \u2014 cleared too.`
+    : `Criba will stop showing events from ${escHtml(data.sender)}.`);
+
+  if (ctx === 'today') loadToday(); else loadWhatsAhead();
 }
 
 async function evDismissProposal(id, ctx) {

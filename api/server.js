@@ -1227,6 +1227,17 @@ function matchedLearnedMuteKey(mutes, domain, cat, senderEmail = null) {
 function isLearnedMuted(mutes, domain, cat, senderEmail = null) {
   return !!matchedLearnedMuteKey(mutes, domain, cat, senderEmail);
 }
+// An explicit mute is a different statement from a learned one.
+//
+// A learned pause still reaches Review carrying its reason -- that is a promise
+// the Settings copy makes out loud ("paused events still reach Review"), and it
+// is right, because Criba inferred the pause and could be wrong.
+//
+// "Don't show me events from this newsletter again" is not an inference. The
+// user said it about a sender they can name. Holding the write but still
+// queueing the item answers that with the same question again, every week.
+function isExplicitMute(m) { return !!m && m.source === 'explicit'; }
+
 function learnedMuteHold(m, key = null) {
   const n = m?.deleted || m?.removed || 0;
   return {
@@ -4213,6 +4224,83 @@ async function deleteEventEntries(email, calendar, entries) {
 // Writes the SAME explicit mute the bulk remove-by-source tool writes, so there
 // is one registry rather than a second one that drifts. Address-scoped: muting
 // a newsletter must never silence a person writing from the same domain.
+// POST /api/events/mute-newsletter — "Don't show me events from this newsletter
+// again", from one button press on one queued item.
+//
+// Three effects, deliberately in one request rather than three from the client:
+// a half-applied version of this (muted but backlog still showing, or backlog
+// cleared but not muted) is worse than either end state, and three round trips
+// from a phone on a train is how you get one.
+//
+//   1. Mutes the sender going forward. Address-scoped and source:'explicit' --
+//      the same shape /api/today/mute-sender writes, so there is one registry
+//      rather than a second that drifts. No threshold, no tally: the user said
+//      it about a sender they can name.
+//   2. Records the refusal with reason 'newsletter'. Until now the reason field
+//      existed and nothing ever populated it.
+//   3. Clears the rest of that sender's queued backlog in the same category.
+//      Muting answers "stop asking me this"; leaving nine already-queued copies
+//      on screen answers it nine more times.
+app.post('/api/events/mute-newsletter', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const events = getUserEvents(email);
+  const event = await events.get(req.body?.id);
+  if (!event) return res.status(404).json({ error: 'Not found' });
+
+  const sender = String(event.sender_email || '').toLowerCase().trim();
+  if (!sender || !sender.includes('@')) {
+    return res.status(400).json({ error: 'This one has no sender to mute — Criba found it in a file or a feed.' });
+  }
+  const category = learningCategoryOf({ source_type: event.source_type });
+
+  // Trusted wins, exactly as it does for every other mute path: silencing a
+  // school the user named is far likelier to be a misclick than a decision.
+  const trusted = await getTrustedDomains(email);
+  if (domainMatches(trusted, sender)) {
+    return res.status(409).json({ trusted: true,
+      error: `${sender} is on your trusted list as a school or club, so Criba will keep reading it. Remove it from trusted senders first if you really want to stop.` });
+  }
+
+  const mutes = await getLearnedMutes(email);
+  const key = learnedMuteAddressKey(sender, category);
+  mutes[key] = { since: new Date().toISOString(), source: 'explicit', scope: 'address',
+                 target: sender, category, via: 'newsletter-dismiss' };
+  await saveLearnedMutes(email, mutes);
+
+  // The reason is the point. A dismissal that records 'newsletter' is the only
+  // one where the sender IS the judgement, and it has been recording null.
+  await recordRefusal(email, event, 'dismiss-newsletter', 'newsletter');
+
+  // Clear what is already queued from this sender in this category. Marked
+  // 'muted' rather than deleted: the rows stay auditable, and 'muted' is in no
+  // feed's status filter so none of them come back.
+  const QUEUEABLE = new Set(['pending', 'draft', 'duplicate', 'added']);
+  let cleared = 0;
+  for (const [id, ev] of await events.entries()) {
+    if (!ev || id === event.id) continue;
+    if (String(ev.sender_email || '').toLowerCase().trim() !== sender) continue;
+    if (learningCategoryOf({ source_type: ev.source_type }) !== category) continue;
+    // Anything already on the calendar is left alone. The user asked to stop
+    // being ASKED, not to have events removed from their calendar -- that is a
+    // different, destructive action with its own button.
+    if (ev.calEventId) continue;
+    if (!QUEUEABLE.has(ev.status) || ev.reviewed) continue;
+    ev.status = 'muted';
+    ev.held_kind = 'learned_mute';
+    ev.held_key = key;
+    ev.held_reason = 'you asked Criba to stop showing this newsletter';
+    await events.set(id, ev);
+    cleared++;
+  }
+
+  event.status = 'muted';
+  event.held_key = key;
+  await events.set(event.id, event);
+
+  console.log(`[newsletter-dismiss] ${email} muted ${sender} cat=${category} cleared=${cleared}`);
+  res.json({ ok: true, sender, category, key, cleared });
+});
+
 app.post('/api/today/mute-sender', requireAuth, async (req, res) => {
   const email = req.user.email;
   const sender = String(req.body?.sender || '').toLowerCase().trim();
@@ -4253,7 +4341,9 @@ const TODAY_EXCLUDED_STATUSES = new Set([
   // duplicate_removed is excluded from the plan and shown in its own line
   // instead: it is not something happening today, it is something Criba did
   // to today overnight.
-  'cancelled', 'duplicate', 'deleted', 'duplicate_removed',
+  // 'muted' is an explicit "stop showing me this sender". It stays in the store
+  // so the suppression is auditable, and must appear in no feed at all.
+  'cancelled', 'duplicate', 'deleted', 'duplicate_removed', 'muted',
   'pending_cancellation', 'pending_reschedule', 'pending_invite',
 ]);
 
@@ -9113,7 +9203,10 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           // card read "you deleted the last 0 like this". Use the key that
           // actually matched.
           const lmKey = matchedLearnedMuteKey(gpLearnedMutes, lmDomain, lmCat, senderEmail);
-          if (lmKey) hold = learnedMuteHold(gpLearnedMutes[lmKey], lmKey);
+          if (lmKey) {
+            hold = learnedMuteHold(gpLearnedMutes[lmKey], lmKey);
+            hold.suppress = isExplicitMute(gpLearnedMutes[lmKey]);
+          }
         }
         let calEventId = null;
         if (hold) {
@@ -9166,7 +9259,10 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           sender_name: senderName,
           sender_email: senderEmail,
           subject,
-          status: calEventId ? 'added' : (calDup ? 'duplicate' : 'pending'),
+          // 'muted' is in no feed's status filter, so it never reaches the
+          // queue -- but the row still exists, so a suppression is auditable
+          // rather than a silent disappearance.
+          status: hold?.suppress ? 'muted' : (calEventId ? 'added' : (calDup ? 'duplicate' : 'pending')),
           reviewed: false,
           calEventId: calEventId || null,
           gcalId: calEventId ? targetCalId : null,
@@ -9176,7 +9272,7 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         });
         console.log(`[gmail-process] STORED event "${ev.title}" on ${ev.date} for ${email} status=${calEventId ? 'added' : (calDup ? 'duplicate' : 'pending')} (id=${evId})`);
         await traceEmail(email, { stage: 'STORED', via: 'webhook', messageId, subject, title: ev.title, date: ev.date,
-          status: calEventId ? 'added' : (calDup ? 'duplicate' : 'pending') });
+          status: hold?.suppress ? 'muted' : (calEventId ? 'added' : (calDup ? 'duplicate' : 'pending')) });
       }
       completed = true;
     } catch (err) {
@@ -12204,6 +12300,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             const lmCat = learningCategoryOf({ source_type: ev.source_type });
             const bfLmKey = matchedLearnedMuteKey(bfLearnedMutes, lmDomain, lmCat, senderEmail);
             if (bfLmKey) hold = learnedMuteHold(bfLearnedMutes[bfLmKey], bfLmKey);
+            if (hold) hold.suppress = isExplicitMute(bfLearnedMutes[bfLmKey]);
           }
           if (hold) {
             await traceEmail(email, { runId, stage: refusal ? 'HELD-REFUSAL' : 'HELD-LEARNED-MUTE', messageId, subject, from,
@@ -12237,7 +12334,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
             source: 'gmail', gmail_message_id: messageId, thread_id: threadId || null,
             sender_name: senderName, sender_email: senderEmail, subject,
-            status: calEventId ? 'added' : (otherCalDup ? 'duplicate' : 'pending'), reviewed: false,
+            status: hold?.suppress ? 'muted' : (calEventId ? 'added' : (otherCalDup ? 'duplicate' : 'pending')), reviewed: false,
             calEventId: calEventId || null, gcalId: calEventId ? bfCalId : null,
             approved_at: calEventId ? new Date().toISOString() : null,
             type: ev.is_all_day ? 'other' : 'timed', created_at: new Date().toISOString(),

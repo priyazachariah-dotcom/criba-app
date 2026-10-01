@@ -10346,6 +10346,21 @@ app.get('/api/cron/ical', async (req, res) => {
 
 // GET /api/cron/gmail — Vercel cron job (daily at 2am UTC).
 // Renews expiring Gmail watches and sends evening notification emails.
+// GET /api/dedupe/status — when the midnight sweep last ran for this user, and
+// what it did. Exists because a job that runs unattended and leaves no trace
+// cannot be told apart from a job that never ran.
+app.get('/api/dedupe/status', requireAuth, async (req, res) => {
+  try {
+    const raw = await redis.get(`dedupeLastRun:${req.user.email}`);
+    if (!raw) return res.json({ ran: false });
+    const r = JSON.parse(raw);
+    res.json({ ran: true, at: r.at, localDate: r.localDate, timezone: r.tz,
+      removed: r.removed || [], leftAlone: r.leftAlone || [] });
+  } catch (err) {
+    res.status(500).json({ error: 'could not read the last run', detail: err.message });
+  }
+});
+
 // GET /api/cron/dedupe — Vercel cron, hourly.
 //
 // Runs at MIDNIGHT IN EACH USER'S OWN TIMEZONE, which is why the schedule is
@@ -10405,6 +10420,19 @@ app.get('/api/cron/dedupe', async (req, res) => {
       out.users++;
       out.deleted += r.deleted.length;
       out.skipped += r.skipped.length;
+
+      // Write down that it ran, even when it removed nothing. "Found nothing"
+      // and "never fired" look identical from outside, and the first morning
+      // after this shipped the question could not be answered at all.
+      try {
+        await redis.set(`dedupeLastRun:${email}`, JSON.stringify({
+          at: new Date().toISOString(), localDate, tz,
+          removed: r.deleted.map(d => ({ title: d.title, kept: d.keepingTitle || null })),
+          leftAlone: r.skipped.map(x => ({ title: x.title, reason: x.reason })),
+        }), 'EX', 2592000);
+      } catch (err) {
+        console.error(`[cron/dedupe] could not record run for ${email}:`, err.message);
+      }
       if (r.deleted.length) {
         out.perUser.push({ email, tz, deleted: r.deleted.map(d => d.title) });
         console.log(`[cron/dedupe] ${email} (${tz}) removed ${r.deleted.length}: `

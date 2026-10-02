@@ -1752,8 +1752,20 @@ time for the main event, and never a longer block that swallows it.
   "Jersey Handout" 15:00-15:30, and "Practice" 15:30-16:30.
 - Never extend an event backwards past its stated start time. If the source
   states a start time, that is the start time.
-- If the prep instruction names no distinct activity, do not create a second
-  event — put it in the main event's notes instead.
+- If the prep instruction names no distinct ACTIVITY, do not create a second
+  event. Put it in the main event's notes instead. This is the common case and
+  it is skipped far too often.
+  A distinct activity is something that happens and has its own name: a jersey
+  handout, a team photo, a pre-game meal, a sound check. Simply arriving is not
+  an activity, however it is phrased.
+  - "Check in 15 minutes before your appointment" -> ONE event, the appointment,
+    with "Check in 15 minutes early" in notes. NOT a separate "Check-in" event.
+  - "Please arrive 20 minutes early" -> ONE event, note the arrival time.
+  - "Doors open at 6, concert at 7" -> ONE event, the concert, note the doors.
+  - "Arrive 30 minutes early for jersey handout" -> TWO events, because the
+    jersey handout is a named thing that happens.
+  The test is whether the earlier slot has a name you would recognise on a
+  calendar a week later. "Check-in", "Arrival" and "Doors" do not.
 
 8. Never miss an event because it seems minor. "Return library books" is on the calendar. "Submit grad photo" is on the calendar. "Verify card is current" is on the calendar. Busy people miss these exactly because they seem small.
 
@@ -1766,6 +1778,20 @@ time for the main event, and never a longer block that swallows it.
 
 For each extracted item return a JSON object with:
 - title (clear, specific — not generic)
+  The title names the EVENT, never the message that announced it. A subject
+  line is how a school's office described sending you something; it is not
+  what is happening. Strip the administrative wrapper and keep the thing:
+  - "Conference Schedule Email Sent - Sign Up for Parent-Teacher Conference"
+    -> "Parent-Teacher Conference Sign-Up"
+  - "Reminder: Picture Day is Tuesday" -> "Picture Day"
+  - "Notification: Your appointment is confirmed" -> use the appointment's own
+    name, e.g. "Dentist Appointment"
+  - "Email About Spring Concert Tickets" -> "Spring Concert Tickets"
+  Never begin a title with, or build one around, "Email", "Notification",
+  "Reminder", "Alert", "Update", "FYI", "Action Required", "Sent", "Received"
+  or "Confirmation" when those words describe the MESSAGE rather than the
+  event. If stripping them leaves nothing, the title is whatever the event
+  actually is -- and if the source never names an event, do not invent one.
 - date (YYYY-MM-DD)
 - end_date (YYYY-MM-DD, only if multi-day, else null)
 - start_time (HH:MM 24hr format, null if all-day)

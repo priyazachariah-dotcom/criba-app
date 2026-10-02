@@ -8985,7 +8985,11 @@ async function fetchExistingCalendarEvents(calendarApi, calendarId, dates) {
       maxResults: 2500,            // weekly series matches on each date
       // id/recurringEventId let a caller that finds a duplicate act on the
       // existing event (update it) rather than only knowing one exists.
-      fields: 'items(id,summary,start,end,recurringEventId)',
+      // eventType and source identify Google's own "events from Gmail"; the
+      // rest let the native-duplicate check corroborate on something other
+      // than the title, which is the one thing those entries never share with
+      // Criba's wording.
+      fields: 'items(id,summary,start,end,recurringEventId,eventType,source,location,description,attendees(email,responseStatus))',
     });
     return (resp.data.items || []).map(it => ({
       id: it.id,
@@ -8995,6 +8999,11 @@ async function fetchExistingCalendarEvents(calendarApi, calendarId, dates) {
       time: it.start?.dateTime ? it.start.dateTime.slice(11, 16) : '',
       end_time: it.end?.dateTime ? it.end.dateTime.slice(11, 16) : '',
       is_all_day: !!it.start?.date,
+      eventType: it.eventType || null,
+      sourceUrl: it.source?.url || null,
+      location: it.location || '',
+      description: it.description || '',
+      attendeeCount: Array.isArray(it.attendees) ? it.attendees.length : 0,
     })).filter(e => e.date);
   } catch (err) {
     // Never let this break a scan. Failing to read the calendar should mean
@@ -9070,6 +9079,56 @@ function noteWrittenToCache(ownerEmail, calId, date, written) {
 }
 
 // Is this event already on ANY calendar the user can see?
+// ── Google's own "events from Gmail" ──────────────────────────────────────
+//
+// Google Calendar detects bookings in Gmail and creates entries by itself,
+// independently of Criba. When both fire on one email the user gets two rows
+// for one thing -- confirmed on a restaurant reservation and a college
+// advising appointment.
+//
+// The existing dedup cannot catch these, and not by oversight: it compares
+// titles, and a Google-native entry is titled from the booking's own metadata
+// while Criba's is written from the email's prose. "Shiok Kitchen Catering"
+// and "Dinner at Shiok Kitchen" are the same evening and titlesLooselyMatch
+// rejects them, because each names something the other does not.
+//
+// So this is a separate pass with a different question: not "is this the same
+// wording" but "did Google already make an entry from this same booking".
+function isGoogleNativeEvent(e) {
+  if (!e) return false;
+  // eventType 'fromGmail' is the explicit marker. The source URL is the older
+  // and still-present signal: Google links these back to the message.
+  if (e.eventType === 'fromGmail') return true;
+  const url = String(e.sourceUrl || '');
+  return /mail\.google\.com/i.test(url);
+}
+
+// Minutes apart, treating all-day on either side as "same day is enough".
+function startsCloseEnough(a, b, withinMin) {
+  if (a.is_all_day || b.is_all_day || !a.time || !b.time) return true;
+  return Math.abs(timeToMinutes(a.time) - timeToMinutes(b.time)) <= withinMin;
+}
+
+// A Google-native entry for the same booking, or null.
+//
+// Deliberately requires corroboration beyond the clock. A native entry that
+// merely shares a start time with an unrelated event would otherwise suppress
+// a real write, and a missed event is the one failure this product cannot
+// have. One shared distinctive token, or a compatible location, is enough --
+// both sides came from the same email, so something in them agrees.
+function findGoogleNativeMatch(existing, ev) {
+  if (!ev?.date) return null;
+  for (const e of existing || []) {
+    if (!isGoogleNativeEvent(e)) continue;
+    if (e.date !== ev.date) continue;
+    if (!startsCloseEnough(e, { time: ev.time || '', is_all_day: !ev.time }, 30)) continue;
+    const sharesWords = sharedDistinctiveCount(e.title, ev.title) >= 1;
+    const samePlace = placesCompatible(e.location, ev.location);
+    if (sharesWords || samePlace) return e;
+  }
+  return null;
+}
+
 async function findExistingOnAnyCalendar(ownerEmail, calendarApi, targetCalId, ev) {
   if (!ev?.date || !ev?.title) return null;
   try {
@@ -9078,6 +9137,14 @@ async function findExistingOnAnyCalendar(ownerEmail, calendarApi, targetCalId, e
       const existing = await eventsOnDate(ownerEmail, calendarApi, cal.id, ev.date);
       const dup = findCalendarDuplicate(existing, ev.title, ev.date, ev.time || '');
       if (dup) return { ...dup, calendarId: cal.id, calendarName: cal.name };
+      // Second, separate pass. Kept apart from the one above on purpose: it
+      // asks a different question and must not loosen the title comparison
+      // that everything else depends on.
+      const native = findGoogleNativeMatch(existing, ev);
+      if (native) {
+        console.log(`[calendar-dedup] SKIP "${ev.title}" on ${ev.date} — Google already made an entry from this email ("${native.title}")`);
+        return { ...native, calendarId: cal.id, calendarName: cal.name, googleNative: true };
+      }
     }
   } catch (err) {
     // A failed lookup must never block a write. Missing an event is worse than

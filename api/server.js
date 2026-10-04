@@ -4273,6 +4273,69 @@ async function deleteEventEntries(email, calendar, entries) {
 // Writes the SAME explicit mute the bulk remove-by-source tool writes, so there
 // is one registry rather than a second one that drifts. Address-scoped: muting
 // a newsletter must never silence a person writing from the same domain.
+// Server-side "today". Dates on events are plain YYYY-MM-DD in the user's own
+// day, so comparing them against a UTC date is a day out for anyone west of
+// Greenwich for part of every day.
+function localDateOnServer(tz = DEFAULT_TZ) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .format(new Date());
+  } catch { return new Date().toISOString().slice(0, 10); }
+}
+
+// GET /api/mutes/cleanup-preview — DRY RUN. Lists, for every sender already
+// muted, the upcoming events Criba wrote that are still on the calendar.
+//
+// Reads only. Nothing is deleted here and there is no confirm parameter: the
+// delete path is Mute sender itself, and a backfill that could fire from a URL
+// is a backfill that fires by accident.
+app.get('/api/mutes/cleanup-preview', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const todayStr = localDateOnServer();
+
+  // Both registries. mutedDomains is domain-scoped and hand-typed; learnedMutes
+  // holds the address-scoped ones written by Mute sender and by bulk removal.
+  const mutedDomains = await getMutedDomains(email);
+  const learned = await getLearnedMutes(email);
+  const mutedAddresses = new Set();
+  const mutedDomainSet = new Set();
+  for (const [key, m] of Object.entries(learned || {})) {
+    const parsed = parseLearnedMuteKey(key);
+    if (!parsed?.target) continue;
+    if (parsed.scope === 'address') mutedAddresses.add(String(parsed.target).toLowerCase());
+    else mutedDomainSet.add(String(parsed.target).toLowerCase());
+  }
+  for (const d of (mutedDomains || [])) mutedDomainSet.add(String(d).toLowerCase());
+
+  const bySender = new Map();
+  let total = 0;
+  for (const [, ev] of await getUserEvents(email).entries()) {
+    if (!ev || !ev.calEventId) continue;                       // Criba wrote it
+    if (!CLEANUP_STATUSES.has(ev.status)) continue;
+    if (String(ev.date || '') < todayStr) continue;            // upcoming only
+    const sender = String(ev.sender_email || '').toLowerCase().trim();
+    if (!sender) continue;
+    const dom = domainOf(sender);
+    if (!mutedAddresses.has(sender) && !(dom && mutedDomainSet.has(dom))) continue;
+    if (!bySender.has(sender)) bySender.set(sender, []);
+    bySender.get(sender).push({
+      title: ev.title || '(untitled)', date: ev.date || null, time: ev.time || null,
+      sender, recurring: !!ev.recurrence_rule, id: ev.id,
+    });
+    total++;
+  }
+
+  const senders = [...bySender.entries()]
+    .map(([sender, events]) => ({
+      sender, count: events.length,
+      events: events.sort((a, b) => String(a.date).localeCompare(String(b.date))),
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  res.json({ dryRun: true, today: todayStr, total, senders,
+    note: 'Nothing was deleted. This endpoint only reads.' });
+});
+
 // POST /api/events/mute-newsletter — "Don't show me events from this newsletter
 // again", from one button press on one queued item.
 //
@@ -4886,6 +4949,48 @@ app.post('/api/events/mute-newsletter', requireAuth, async (req, res) => {
   // one where the sender IS the judgement, and it has been recording null.
   await recordRefusal(email, event, 'dismiss-newsletter', 'newsletter');
 
+  // Everything this sender already put on the calendar, from today forward.
+  //
+  // Selected on the stored sender and calEventId, never on titles: an event
+  // Criba wrote carries a calEventId, and nothing the user or Google created
+  // does. That is the whole guard for "only delete what Criba made".
+  //
+  // Past events are left alone. Removing something that already happened
+  // rewrites history for no benefit -- the point is to stop the calendar
+  // filling up ahead.
+  //
+  // Not category-scoped, deliberately, because the instruction was every event
+  // from this sender. Note the mute itself IS category-scoped, so a different
+  // category from the same address can still arrive later.
+  const todayStr = localDateOnServer();
+  const calEntries = (await events.entries()).filter(([, ev]) => {
+    if (!ev || !ev.calEventId) return false;                     // Criba wrote it
+    if (!CLEANUP_STATUSES.has(ev.status)) return false;
+    if (String(ev.date || '') < todayStr) return false;          // upcoming only
+    return String(ev.sender_email || '').toLowerCase().trim() === sender;
+  });
+
+  let removed = 0, failed = 0;
+  if (calEntries.length) {
+    try {
+      const auth = await getUserOAuthClient(req.user);
+      const calendar = google.calendar({ version: 'v3', auth });
+      // Deleting a recurring event by the id Criba wrote removes the series,
+      // because Criba writes the series master and stores that id -- not an
+      // instance id. deleteEventEntries also hdels every row it touched, which
+      // is what keeps these out of Home, the week ahead and Today, and out of
+      // the learning tally: learnFromCalendar only considers rows that still
+      // exist and still carry a calEventId. Same treatment as duplicate
+      // cleanup, and for the same reason -- Criba removed these, not the user.
+      const out = await deleteEventEntries(email, calendar, calEntries);
+      removed = out.deleted;
+      failed = out.total - out.deleted;
+    } catch (err) {
+      console.error('[newsletter-dismiss] calendar cleanup failed:', err.message);
+      failed = calEntries.length;
+    }
+  }
+
   // Clear what is already queued from this sender in this category. Marked
   // 'muted' rather than deleted: the rows stay auditable, and 'muted' is in no
   // feed's status filter so none of them come back.
@@ -4912,8 +5017,8 @@ app.post('/api/events/mute-newsletter', requireAuth, async (req, res) => {
   event.held_key = key;
   await events.set(event.id, event);
 
-  console.log(`[newsletter-dismiss] ${email} muted ${sender} cat=${category} cleared=${cleared}`);
-  res.json({ ok: true, sender, category, key, cleared });
+  console.log(`[newsletter-dismiss] ${email} muted ${sender} cat=${category} cleared=${cleared} removed=${removed} failed=${failed}`);
+  res.json({ ok: true, sender, category, key, cleared, removed, failed });
 });
 
 app.post('/api/today/mute-sender', requireAuth, async (req, res) => {

@@ -4863,20 +4863,8 @@ function evActionError(id, ctx, msg) {
 // version (muted but the backlog still on screen) is worse than either end.
 async function evMuteNewsletter(id, ctx) {
   const ev = evGet(id);
-  // Deliberately NOT hidden when the row carries no sender.
-  //
-  // It used to render only when ev.sender_email was set, so on a row without
-  // one the item silently was not there -- which looks exactly like the
-  // feature being broken, and cost an afternoon proving which it was. The
-  // server knows whether a sender can be muted; let it answer, in words.
-  const sender = ev && (ev.sender_name || ev.sender_email);
-  const ok = await cribaConfirm(
-    `Stop showing events from ${sender || 'this sender'}?\n\n`
-    + `Criba will stop adding them and stop asking about them, and anything already waiting from this sender is cleared.\n\n`
-    + `Nothing already on your calendar is removed. You can turn this sender back on under People and rules.`,
-    { confirmLabel: 'Stop showing these' });
-  if (!ok) return;
-
+  // No confirmation dialog, by decision. The menu item says what it does and
+  // the result line says what it did, including when some of it failed.
   const row = document.getElementById(`ev-${ctx}-${id}`);
   if (row) row.style.opacity = '0.45';
   let data;
@@ -4897,8 +4885,8 @@ async function evMuteNewsletter(id, ctx) {
     return;
   }
 
-  // The backlog went with it, so the local copy has to as well -- otherwise the
-  // next repaint puts every one of them back.
+  // The backlog and the calendar events went with it, so the local copies have
+  // to as well -- otherwise the next repaint puts every one of them back.
   const gone = new Set([id]);
   if (typeof pendingEvents !== 'undefined') {
     for (const p of pendingEvents) {
@@ -4908,10 +4896,13 @@ async function evMuteNewsletter(id, ctx) {
   }
   for (const g of gone) evRegistry.delete(g);
 
-  const n = data.cleared || 0;
-  cribaAlert(n
-    ? `Criba will stop showing events from ${escHtml(data.sender)}. ${n} more ${n === 1 ? 'was' : 'were'} already waiting \u2014 cleared too.`
-    : `Criba will stop showing events from ${escHtml(data.sender)}.`);
+  // Say what happened, and never claim a clean sweep when some deletes failed.
+  const bits = ['Muted.'];
+  if (data.removed) bits.push(`Removed ${data.removed} event${data.removed === 1 ? '' : 's'} from your calendar.`);
+  if (data.failed) bits.push(`${data.failed} could not be removed \u2014 try again or delete ${data.failed === 1 ? 'it' : 'them'} in Google Calendar.`);
+  if (!data.removed && !data.failed) bits.push('Nothing was on your calendar from this sender.');
+  if (data.cleared) bits.push(`${data.cleared} more cleared from your review list.`);
+  cribaAlert(bits.join(' '));
 
   if (ctx === 'today') loadToday(); else loadWhatsAhead();
 }

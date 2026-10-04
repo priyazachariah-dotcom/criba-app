@@ -9101,11 +9101,26 @@ async function isDuplicateEvent(eventsStore, title, date, opts = {}) {
 //
 // A confirmation number is the strongest signal there is -- it identifies one
 // booking, not one kind of booking -- so it is looked for first.
-const CONFIRMATION_RE = /(?:confirmation|booking|reservation|conf\.?)\s*(?:number|no\.?|#|id)?\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{3,})/i;
+// Global, and every candidate is checked for a digit before it is accepted.
+// Without that, "Your reservation confirmation #1601" matched on "reservation"
+// and captured the word "confirmation" -- a confirmation number that is a word
+// matches every other email from that vendor.
+// Two passes, and the captured token must contain a digit.
+//
+// A single pattern matched "reservation" in "Your reservation confirmation
+// #1601" and captured the word "confirmation" -- a confirmation number that is
+// a word matches every other email from that vendor, which would make it the
+// most dangerous signal here rather than the strongest.
 function confirmationNumberIn(text) {
-  const m = CONFIRMATION_RE.exec(String(text || ''));
-  return m ? m[1].toUpperCase() : null;
+  const str = String(text || '');
+  // Explicit separator first: "confirmation: ABC123", "booking #1601".
+  const m1 = /(?:confirmation|booking|reservation|conf|ref)\.?\s*(?:number|no\.?|id|ref)?\s*[:#]\s*([A-Za-z0-9][A-Za-z0-9-]{1,})/i.exec(str);
+  if (m1 && /\d/.test(m1[1])) return m1[1].toUpperCase();
+  // Then a keyword followed by a token that contains a digit.
+  const m2 = /(?:confirmation|booking|reservation|conf|ref)\.?\s*(?:number|no\.?|id|ref)?\s*[:#]?\s*([A-Za-z0-9-]*\d[A-Za-z0-9-]*)/i.exec(str);
+  return m2 ? m2[1].toUpperCase() : null;
 }
+
 
 // "Confident" is deliberately narrow: same DAY is required, and then one of
 // three corroborating facts. A deletion has no confirmation dialog, so the bar

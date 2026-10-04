@@ -1191,8 +1191,27 @@ function learnedMuteKey(domain, cat) { return `${domain}|${cat}`; }
 // are both plausible map keys and a parser that has to tell them apart by
 // looking for "@" would break on the first odd address.
 const MUTE_ADDR_PREFIX = 'addr:';
-function learnedMuteAddressKey(address, cat) {
-  return `${MUTE_ADDR_PREFIX}${String(address || '').toLowerCase().trim()}|${cat}`;
+// Address mutes carry no category.
+//
+// "Mute sender" removes every upcoming event that address wrote, of any
+// category. A mute that then only blocked ONE category would let the same
+// address start filling the calendar again the next week under a different
+// one -- the delete and the block have to mean the same thing.
+//
+// The category is still in the key shape for DOMAIN mutes, which are a
+// different and narrower statement.
+function learnedMuteAddressKey(address) {
+  return `${MUTE_ADDR_PREFIX}${String(address || '').toLowerCase().trim()}`;
+}
+
+// Every key in the store that mutes this address, including the
+// "addr:someone@x.com|newsletter" shape written before the category was
+// dropped. Without this, changing the key format would silently un-mute every
+// sender the user had already muted -- the exact failure a format change is
+// most likely to cause and least likely to be noticed.
+function addressMuteKeysIn(mutes, address) {
+  const want = `${MUTE_ADDR_PREFIX}${String(address || '').toLowerCase().trim()}`;
+  return Object.keys(mutes || {}).filter(k => k === want || k.startsWith(`${want}|`));
 }
 function parseLearnedMuteKey(key) {
   const [lhs, category = ''] = String(key || '').split('|');
@@ -1218,8 +1237,12 @@ function matchedLearnedMuteKey(mutes, domain, cat, senderEmail = null) {
   if (!mutes) return null;
   // Exact address first: it is the narrower statement, so it decides.
   const addr = String(senderEmail || '').toLowerCase().trim();
-  const addrKey = addr ? learnedMuteAddressKey(addr, cat) : null;
-  if (addrKey && mutes[addrKey]) return addrKey;
+  // Any address mute matches, whatever category it was written under: the
+  // address is the statement now.
+  if (addr) {
+    const hits = addressMuteKeysIn(mutes, addr);
+    if (hits.length) return hits[0];
+  }
   const domKey = domain ? learnedMuteKey(domain, cat) : null;
   return (domKey && mutes[domKey]) ? domKey : null;
 }
@@ -3571,11 +3594,14 @@ app.post('/api/learn/unmute', requireAuth, async (req, res) => {
   // Clear whichever scope holds it. The Circles control sends back whatever it
   // was shown, so an address arrives in the same field a domain does.
   const domainKey = learnedMuteKey(domain, category);
-  const addressKey = learnedMuteAddressKey(domain, category);
   try {
     const mutes = await getLearnedMutes(email);
+    // Address mutes are category-free now, but older ones in the store still
+    // carry a category. Unmuting has to clear every shape or the sender stays
+    // muted with nothing left on screen to explain why.
+    const addressKeys = addressMuteKeysIn(mutes, domain);
     let changed = false;
-    for (const k of [domainKey, addressKey]) if (mutes[k]) { delete mutes[k]; changed = true; }
+    for (const k of [domainKey, ...addressKeys]) if (mutes[k]) { delete mutes[k]; changed = true; }
     if (changed) await saveLearnedMutes(email, mutes);
     // #22: the backlog this mute was holding is unblocked too, not just future
     // mail. Both key shapes are swept because the caller sends back whatever it
@@ -4940,7 +4966,9 @@ app.post('/api/events/mute-newsletter', requireAuth, async (req, res) => {
   }
 
   const mutes = await getLearnedMutes(email);
-  const key = learnedMuteAddressKey(sender, category);
+  // Address-wide: no category in the key. Category is still recorded for the
+  // "why is this paused" line, but it no longer narrows what is blocked.
+  const key = learnedMuteAddressKey(sender);
   mutes[key] = { since: new Date().toISOString(), source: 'explicit', scope: 'address',
                  target: sender, category, via: 'newsletter-dismiss' };
   await saveLearnedMutes(email, mutes);
@@ -5034,7 +5062,9 @@ app.post('/api/today/mute-sender', requireAuth, async (req, res) => {
   }
 
   const mutes = await getLearnedMutes(email);
-  const key = learnedMuteAddressKey(sender, category);
+  // Address-wide: no category in the key. Category is still recorded for the
+  // "why is this paused" line, but it no longer narrows what is blocked.
+  const key = learnedMuteAddressKey(sender);
   mutes[key] = { since: new Date().toISOString(), source: 'explicit', scope: 'address',
                  target: sender, category, via: 'today' };
   await saveLearnedMutes(email, mutes);
@@ -5207,7 +5237,7 @@ app.get('/api/events/sources', requireAuth, async (req, res) => {
 
   const mutes = await getLearnedMutes(email);
   const groups = [...bySender.values()].map(g => ({ ...g, scope: 'address',
-    muted: !!mutes[learnedMuteAddressKey(g.sender, g.category)] }));
+    muted: addressMuteKeysIn(mutes, g.sender).length > 0 }));
 
   // Roll-up only where it buys something: a domain with several sending
   // addresses in the same category.
@@ -5271,7 +5301,7 @@ app.post('/api/events/remove-by-source', requireAuth, async (req, res) => {
   const out = await deleteEventEntries(email, calendar, entries);
 
   const mutes = await getLearnedMutes(email);
-  const key = scope === 'domain' ? learnedMuteKey(target, category) : learnedMuteAddressKey(target, category);
+  const key = scope === 'domain' ? learnedMuteKey(target, category) : learnedMuteAddressKey(target);
   mutes[key] = { since: new Date().toISOString(), source: 'explicit', scope, target, category,
                  removed: out.deleted };
   await saveLearnedMutes(email, mutes);

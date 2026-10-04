@@ -4867,7 +4867,8 @@ async function ingestSharedText(email, { text, channel, fromLabel = null, partic
     // before dedup so a ruling can never become a silent drop.
     const refusal = await priorRefusal(email, ev.date, ev.title);
     if (!refusal && await isDuplicateEvent(store, ev.title, ev.date,
-        { time: ev.start_time || '', recurrence: ev.recurrence })) {
+        { time: ev.start_time || '', end_time: ev.end_time || '', location: ev.location || '',
+          recurrence: ev.recurrence })) {
       skipped++;
       await traceEmail(email, { stage: 'SKIP-DUPLICATE', via: channel, title: ev.title, date: ev.date });
       continue;
@@ -7859,8 +7860,14 @@ async function buildAheadView(user, days) {
   // Attribution first: dedupe now asks who an event belongs to, and it used to
   // run before anybody had been attributed. attributeCalendarEvent is pure and
   // per-event, so moving it earlier changes nothing about who gets what.
+  // A club that renames a fixture to "CANCELLED: Practice..." instead of
+  // cancelling it leaves a live, timed, hour-long event on a feed Criba does
+  // not own and cannot delete. It was already excluded from clash detection;
+  // it is now excluded from the views too, so it stops taking up an afternoon
+  // on screen. It REMAINS on Google Calendar -- nothing here can change that.
   const events = dedupeAheadEvents(
-    raw.map(ev => ({ ...ev, ...attributeCalendarEvent(ev, members, storedByCalEventId) })))
+    raw.filter(ev => !aheadEventIsCancelled(ev))
+       .map(ev => ({ ...ev, ...attributeCalendarEvent(ev, members, storedByCalEventId) })))
     .sort((a, b) => (a.date + (a.is_all_day ? '' : a.time)).localeCompare(b.date + (b.is_all_day ? '' : b.time)));
 
   const people = members.map(m => ({
@@ -8794,13 +8801,34 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
   // cleaning up after. The sent date matters more than today's date: "this
   // Friday" means the Friday after the email was sent, not after the scan.
   const sentIso = dateSent ? new Date(dateSent) : null;
+  // Both lines in the USER'S timezone, not UTC.
+  //
+  // This was the whole of a real wrong-day bug. An email sent Saturday 5pm
+  // Pacific is 00:00 UTC on Sunday, so toISOString() reported it as "sent on
+  // 2026-10-04 (Sunday)". The prompt then says to resolve relative dates
+  // against the sent date, so "no practice tomorrow, Sunday" resolved to
+  // Monday and the game landed a day late. The model reasoned correctly from
+  // a premise this function had corrupted.
+  //
+  // Looked up here rather than threaded through every caller. Falls back to
+  // DEFAULT_TZ, which is what getUserTimezone returns for an account that has
+  // never reported one.
+  const userTz = await getUserTimezone(ownerEmail);
+  const fmtDate = d => new Intl.DateTimeFormat('en-CA',
+    { timeZone: userTz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  const fmtDay = d => new Intl.DateTimeFormat('en-US',
+    { timeZone: userTz, weekday: 'long' }).format(d);
+
   const sentLine = sentIso && !isNaN(sentIso)
-    ? `This email was sent on ${sentIso.toISOString().split('T')[0]} (${sentIso.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })}).`
+    ? `This email was sent on ${fmtDate(sentIso)} (${fmtDay(sentIso)}), in the reader's own timezone ${userTz}.`
     : '';
   const dateContext = [
-    `Today's date is ${new Date().toISOString().split('T')[0]}.`,
+    `Today's date is ${fmtDate(new Date())} in the reader's timezone (${userTz}).`,
     sentLine,
     'Resolve every relative date ("Monday", "this Friday", "next week", "the 12th") against the email\'s sent date. Always output a full YYYY-MM-DD with an explicit year — never omit the year or guess one.',
+    // The weekday is the author's own check on their arithmetic. When the two
+    // disagree the weekday is what they meant to say.
+    'If the text names a weekday as well as a relative word ("tomorrow, Sunday at 9am"), the NAMED WEEKDAY wins. Work out which date that weekday falls on and use it, even if the relative word points somewhere else.',
   ].filter(Boolean).join(' ');
 
   // The prompt asks for "family member name strings", but until now it never
@@ -8979,8 +9007,15 @@ function recurrenceShape(rule) {
 // Deliberately keyed on calEventId rather than status alone: status records
 // what we intended, calEventId records what actually happened, and the 132 rows
 // where those disagreed are the whole reason this exists.
+// 'added' and 'reviewed' were missing, which is why two identical FACTS tuition
+// payments were both written. A row reaches status 'added' with a null
+// calEventId whenever the Google write failed or the id was later cleared --
+// and such a row then blocked nothing, so the next email about the same thing
+// sailed through. The status says Criba already accepted this event; whether
+// the calendar write succeeded is a different question.
 const DEDUP_BLOCKING_STATUSES = new Set([
   'pending', 'duplicate', 'pending_cancellation', 'pending_reschedule',
+  'added', 'reviewed', 'approved',
 ]);
 
 function blocksDuplicate(ev) {
@@ -9026,6 +9061,24 @@ function isDuplicateEventIn(all, title, date, opts = {}) {
     // no more suppress mail via its thread than via its title.
     if (threadId && ev.thread_id === threadId && sameDayAndTime(ev, date, time)) return true;
 
+    // Facts before words. sameEventByFacts ran only in the display dedupe and
+    // the midnight sweep, so two emails describing one event were both WRITTEN
+    // and only merged afterwards on screen -- which is why the calendar itself
+    // kept filling with pairs the week-ahead view showed as one.
+    if (sameEventByFacts(ev, { title, date, time, end_time: opts.end_time || '',
+        location: opts.location || '', memberId: ev.memberId || null,
+        is_all_day: !time })) return true;
+
+    // Two sources an hour apart, same day, same place, words in common: one
+    // event, written twice. Separate from the facts rule above, which requires
+    // the start minute to agree -- this is the case where it does not.
+    if (date === ev.date
+        && time && ev.time
+        && Math.abs(timeToMinutes(time) - timeToMinutes(ev.time)) <= 60
+        && placesCompatible(ev.location, opts.location || '')
+        && sharedDistinctiveCount(ev.title, title) >= 2
+        && !titlesDifferOnAudience(ev.title, title)) return true;
+
     if (!titlesLooselyMatch(ev.title, title)) return false;
     if (sameDayAndTime(ev, date, time)) return true;
     if (!shape) return false;
@@ -9067,6 +9120,91 @@ async function isDuplicateEvent(eventsStore, title, date, opts = {}) {
 //   1. Fuzzy title match (one is a substring of the other, case-insensitive, or ≥60% word overlap)
 //   2. Optional date proximity (within 7 days of oldDate if provided)
 // Returns the best-matching event object, or null if nothing confident enough is found.
+// ── Acting on a cancellation ──────────────────────────────────────────────
+//
+// Until now a cancellation became a pending_cancellation row and nothing else.
+// The calendar kept the event. These decide when Criba may remove it instead.
+//
+// A confirmation number is the strongest signal there is -- it identifies one
+// booking, not one kind of booking -- so it is looked for first.
+// Global, and every candidate is checked for a digit before it is accepted.
+// Without that, "Your reservation confirmation #1601" matched on "reservation"
+// and captured the word "confirmation" -- a confirmation number that is a word
+// matches every other email from that vendor.
+// Two passes, and the captured token must contain a digit.
+//
+// A single pattern matched "reservation" in "Your reservation confirmation
+// #1601" and captured the word "confirmation" -- a confirmation number that is
+// a word matches every other email from that vendor, which would make it the
+// most dangerous signal here rather than the strongest.
+function confirmationNumberIn(text) {
+  const str = String(text || '');
+  // Explicit separator first: "confirmation: ABC123", "booking #1601".
+  const m1 = /(?:confirmation|booking|reservation|conf|ref)\.?\s*(?:number|no\.?|id|ref)?\s*[:#]\s*([A-Za-z0-9][A-Za-z0-9-]{1,})/i.exec(str);
+  if (m1 && /\d/.test(m1[1])) return m1[1].toUpperCase();
+  // Then a keyword followed by a token that contains a digit.
+  const m2 = /(?:confirmation|booking|reservation|conf|ref)\.?\s*(?:number|no\.?|id|ref)?\s*[:#]?\s*([A-Za-z0-9-]*\d[A-Za-z0-9-]*)/i.exec(str);
+  return m2 ? m2[1].toUpperCase() : null;
+}
+
+
+// "Confident" is deliberately narrow: same DAY is required, and then one of
+// three corroborating facts. A deletion has no confirmation dialog, so the bar
+// is what it would take to convince a person reading both entries side by side.
+//
+// One guard beyond the stated rule, and it is stated here because it is a
+// deviation: a match on start time ALONE, with no word in common, is not
+// treated as confident. "Practice cancelled, 9am" would otherwise delete a
+// dentist appointment that happens to be at 9am. Those cases fall back to the
+// queue rather than deleting something unrelated.
+function confidentCancellationMatch(candidates, cancel) {
+  const date = cancel.old_date || cancel.date || '';
+  const time = cancel.old_time || cancel.time || '';
+  const title = cancel.old_title || cancel.title || '';
+  const conf = confirmationNumberIn([title, cancel.notes, cancel.subject].filter(Boolean).join(' '));
+
+  for (const c of candidates || []) {
+    if (!c?.calEventId) continue;                       // only what Criba wrote
+    if (String(c.date || '') !== String(date)) continue;  // same day, always
+
+    const otherConf = confirmationNumberIn([c.title, c.notes].filter(Boolean).join(' '));
+    if (conf && otherConf && conf === otherConf) {
+      return { event: c, why: `confirmation number ${conf}` };
+    }
+    const sharesWords = sharedDistinctiveCount(c.title, title) >= 1;
+    if (placesCompatible(c.location, cancel.location)) {
+      return { event: c, why: 'same place on the same day' };
+    }
+    if (time && c.time && c.time === time && sharesWords) {
+      return { event: c, why: 'same start time and matching words' };
+    }
+  }
+  return null;
+}
+
+// Remove ONE occurrence. A weekly practice cancelled for one Sunday is one
+// Sunday off, not the end of the series -- and Criba stores the series master
+// id, so deleting what it stored would take the whole thing.
+async function deleteOneOccurrence(calendar, calendarId, ev, date) {
+  if (!ev?.calEventId) return { deleted: false, reason: 'no calendar id' };
+  if (!ev.recurrence_rule) {
+    await calendar.events.delete({ calendarId, eventId: ev.calEventId, sendUpdates: 'none' });
+    return { deleted: true, scope: 'single event' };
+  }
+  // Recurring: find the instance on that date and delete only it.
+  const timeMin = new Date(`${date}T00:00:00.000Z`);
+  const timeMax = new Date(`${date}T23:59:59.999Z`);
+  const resp = await calendar.events.instances({
+    calendarId, eventId: ev.calEventId,
+    timeMin: timeMin.toISOString(), timeMax: timeMax.toISOString(), maxResults: 10,
+  });
+  const inst = (resp.data.items || []).find(i =>
+    (i.start?.date || (i.start?.dateTime || '').slice(0, 10)) === date);
+  if (!inst) return { deleted: false, reason: 'no instance on that date' };
+  await calendar.events.delete({ calendarId, eventId: inst.id, sendUpdates: 'none' });
+  return { deleted: true, scope: 'one occurrence of a repeating event' };
+}
+
 async function findMatchingApprovedEvent(eventsStore, oldTitle, oldDate) {
   if (!oldTitle) return null;
   const all = await eventsStore.values();
@@ -9988,6 +10126,59 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           const matchResult = await findMatchingApprovedEvent(eventsStore, ev.old_title || ev.title, ev.old_date || ev.date);
           const matchedEvent = matchResult?.event || null;
           const matchedScore = matchResult?.score ?? null;
+
+          // A cancellation Criba is confident about is acted on, not queued.
+          // Leaving a cancelled practice on the calendar and a card in a list
+          // is two chores where there should be none.
+          let cancelDeleted = null, cancelNative = null, cancelWhy = null;
+          if (intent === 'cancellation') {
+            const approved = (await eventsStore.values()).filter(e =>
+              e && e.calEventId && CLEANUP_STATUSES.has(e.status));
+            const confident = confidentCancellationMatch(approved, {
+              ...ev, old_date: ev.old_date, old_time: ev.old_time, old_title: ev.old_title,
+              subject, notes: ev.notes,
+            });
+            if (confident) {
+              cancelWhy = confident.why;
+              const day = confident.event.date;
+              try {
+                const calId = confident.event.gcalId || targetCalId;
+                const r = await deleteOneOccurrence(calendarApi, calId, confident.event, day);
+                if (r.deleted) {
+                  cancelDeleted = { title: confident.event.title, date: day, scope: r.scope };
+                  console.log(`[gmail-process] CANCELLED-DELETE "${confident.event.title}" on ${day} (${r.scope}) — matched by ${confident.why}`);
+                  // The store row has to stop pointing at an event that is gone,
+                  // or Edit and the learning pass both act on a ghost. Cleared
+                  // rather than deleted so the cancellation stays visible.
+                  const gone = await eventsStore.get(confident.event.id);
+                  if (gone) {
+                    gone.status = 'cancelled';
+                    gone.calEventId = null;
+                    gone.learn_checked = true;   // Criba removed this, not the user
+                    await eventsStore.set(gone.id, gone);
+                  }
+                }
+                // A booking cancelled in Gmail is often on the calendar twice:
+                // Criba's copy and Google's own "from Gmail" entry. The user
+                // asked for both to go.
+                const sameDay = await eventsOnDate(email, calendarApi, calId, day, { fresh: true });
+                const native = findGoogleNativeMatch(sameDay, {
+                  title: ev.old_title || ev.title, date: day,
+                  time: ev.old_time || ev.start_time || '', location: ev.location || '',
+                });
+                if (native) {
+                  await calendarApi.events.delete({ calendarId: calId, eventId: native.id, sendUpdates: 'none' });
+                  cancelNative = { title: native.title, date: day };
+                  console.log(`[gmail-process] CANCELLED-DELETE (Google-native) "${native.title}" on ${day}`);
+                }
+              } catch (err) {
+                console.error(`[gmail-process] cancellation delete failed for "${confident.event.title}":`, err.message);
+              }
+            } else {
+              console.log(`[gmail-process] CANCELLATION not confident for "${ev.old_title || ev.title}" on ${ev.old_date || ev.date} — queued instead`);
+            }
+          }
+
           const evId = randomUUID();
           const status = intent === 'cancellation' ? 'pending_cancellation' : 'pending_reschedule';
           await eventsStore.set(evId, {
@@ -10000,6 +10191,9 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
             old_title: ev.old_title || null, old_date: ev.old_date || null, old_time: ev.old_time || null,
             matched_event_id: matchedEvent?.id || null, matched_event_title: matchedEvent?.title || null,
             matched_event_confidence: matchedScore,
+            // What Criba actually did, so the card can say "removed" rather
+            // than asking the user to do something already done.
+            cancel_deleted: cancelDeleted, cancel_deleted_native: cancelNative, cancel_match_reason: cancelWhy,
             source: 'gmail', gmail_message_id: messageId, thread_id: threadId || null,
             sender_name: senderName, sender_email: senderEmail, subject,
             status, type: ev.is_all_day ? 'other' : 'timed',
@@ -10015,7 +10209,9 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         // extraction. Gate first, dedup second: a prior "no" can never become
         // a silent drop.
         const refusal = await priorRefusal(email, ev.date, ev.title);
-        if (!refusal && await isDuplicateEvent(eventsStore, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) {
+        if (!refusal && await isDuplicateEvent(eventsStore, ev.title, ev.date,
+            { time: ev.start_time || '', end_time: ev.end_time || '', location: ev.location || '',
+              recurrence: ev.recurrence, threadId })) {
           console.log(`[gmail-process] msg=${messageId} DEDUP SKIP event "${ev.title}" on ${ev.date} already exists`);
           // A skip that only exists in a log line is a skip nobody can audit.
           // This is the path that once ate real school mail, so every drop now

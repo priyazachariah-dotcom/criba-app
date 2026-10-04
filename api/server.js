@@ -4867,7 +4867,8 @@ async function ingestSharedText(email, { text, channel, fromLabel = null, partic
     // before dedup so a ruling can never become a silent drop.
     const refusal = await priorRefusal(email, ev.date, ev.title);
     if (!refusal && await isDuplicateEvent(store, ev.title, ev.date,
-        { time: ev.start_time || '', recurrence: ev.recurrence })) {
+        { time: ev.start_time || '', end_time: ev.end_time || '', location: ev.location || '',
+          recurrence: ev.recurrence })) {
       skipped++;
       await traceEmail(email, { stage: 'SKIP-DUPLICATE', via: channel, title: ev.title, date: ev.date });
       continue;
@@ -9006,8 +9007,15 @@ function recurrenceShape(rule) {
 // Deliberately keyed on calEventId rather than status alone: status records
 // what we intended, calEventId records what actually happened, and the 132 rows
 // where those disagreed are the whole reason this exists.
+// 'added' and 'reviewed' were missing, which is why two identical FACTS tuition
+// payments were both written. A row reaches status 'added' with a null
+// calEventId whenever the Google write failed or the id was later cleared --
+// and such a row then blocked nothing, so the next email about the same thing
+// sailed through. The status says Criba already accepted this event; whether
+// the calendar write succeeded is a different question.
 const DEDUP_BLOCKING_STATUSES = new Set([
   'pending', 'duplicate', 'pending_cancellation', 'pending_reschedule',
+  'added', 'reviewed', 'approved',
 ]);
 
 function blocksDuplicate(ev) {
@@ -9052,6 +9060,24 @@ function isDuplicateEventIn(all, title, date, opts = {}) {
     // Runs behind blocksDuplicate like every other clause, so a dead record can
     // no more suppress mail via its thread than via its title.
     if (threadId && ev.thread_id === threadId && sameDayAndTime(ev, date, time)) return true;
+
+    // Facts before words. sameEventByFacts ran only in the display dedupe and
+    // the midnight sweep, so two emails describing one event were both WRITTEN
+    // and only merged afterwards on screen -- which is why the calendar itself
+    // kept filling with pairs the week-ahead view showed as one.
+    if (sameEventByFacts(ev, { title, date, time, end_time: opts.end_time || '',
+        location: opts.location || '', memberId: ev.memberId || null,
+        is_all_day: !time })) return true;
+
+    // Two sources an hour apart, same day, same place, words in common: one
+    // event, written twice. Separate from the facts rule above, which requires
+    // the start minute to agree -- this is the case where it does not.
+    if (date === ev.date
+        && time && ev.time
+        && Math.abs(timeToMinutes(time) - timeToMinutes(ev.time)) <= 60
+        && placesCompatible(ev.location, opts.location || '')
+        && sharedDistinctiveCount(ev.title, title) >= 2
+        && !titlesDifferOnAudience(ev.title, title)) return true;
 
     if (!titlesLooselyMatch(ev.title, title)) return false;
     if (sameDayAndTime(ev, date, time)) return true;
@@ -10183,7 +10209,9 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         // extraction. Gate first, dedup second: a prior "no" can never become
         // a silent drop.
         const refusal = await priorRefusal(email, ev.date, ev.title);
-        if (!refusal && await isDuplicateEvent(eventsStore, ev.title, ev.date, { time: ev.start_time || '', recurrence: ev.recurrence, threadId })) {
+        if (!refusal && await isDuplicateEvent(eventsStore, ev.title, ev.date,
+            { time: ev.start_time || '', end_time: ev.end_time || '', location: ev.location || '',
+              recurrence: ev.recurrence, threadId })) {
           console.log(`[gmail-process] msg=${messageId} DEDUP SKIP event "${ev.title}" on ${ev.date} already exists`);
           // A skip that only exists in a log line is a skip nobody can audit.
           // This is the path that once ate real school mail, so every drop now

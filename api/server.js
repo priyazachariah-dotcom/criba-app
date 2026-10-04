@@ -8800,13 +8800,34 @@ async function extractGmailEvents(body, senderName, senderEmail, subject, images
   // cleaning up after. The sent date matters more than today's date: "this
   // Friday" means the Friday after the email was sent, not after the scan.
   const sentIso = dateSent ? new Date(dateSent) : null;
+  // Both lines in the USER'S timezone, not UTC.
+  //
+  // This was the whole of a real wrong-day bug. An email sent Saturday 5pm
+  // Pacific is 00:00 UTC on Sunday, so toISOString() reported it as "sent on
+  // 2026-10-04 (Sunday)". The prompt then says to resolve relative dates
+  // against the sent date, so "no practice tomorrow, Sunday" resolved to
+  // Monday and the game landed a day late. The model reasoned correctly from
+  // a premise this function had corrupted.
+  //
+  // Looked up here rather than threaded through every caller. Falls back to
+  // DEFAULT_TZ, which is what getUserTimezone returns for an account that has
+  // never reported one.
+  const userTz = await getUserTimezone(ownerEmail);
+  const fmtDate = d => new Intl.DateTimeFormat('en-CA',
+    { timeZone: userTz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  const fmtDay = d => new Intl.DateTimeFormat('en-US',
+    { timeZone: userTz, weekday: 'long' }).format(d);
+
   const sentLine = sentIso && !isNaN(sentIso)
-    ? `This email was sent on ${sentIso.toISOString().split('T')[0]} (${sentIso.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' })}).`
+    ? `This email was sent on ${fmtDate(sentIso)} (${fmtDay(sentIso)}), in the reader's own timezone ${userTz}.`
     : '';
   const dateContext = [
-    `Today's date is ${new Date().toISOString().split('T')[0]}.`,
+    `Today's date is ${fmtDate(new Date())} in the reader's timezone (${userTz}).`,
     sentLine,
     'Resolve every relative date ("Monday", "this Friday", "next week", "the 12th") against the email\'s sent date. Always output a full YYYY-MM-DD with an explicit year — never omit the year or guess one.',
+    // The weekday is the author's own check on their arithmetic. When the two
+    // disagree the weekday is what they meant to say.
+    'If the text names a weekday as well as a relative word ("tomorrow, Sunday at 9am"), the NAMED WEEKDAY wins. Work out which date that weekday falls on and use it, even if the relative word points somewhere else.',
   ].filter(Boolean).join(' ');
 
   // The prompt asks for "family member name strings", but until now it never

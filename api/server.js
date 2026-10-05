@@ -12819,6 +12819,52 @@ app.delete('/api/gmail/fingerprints', requireAuth, async (req, res) => {
 // Dry-run (?dryRun=true): full pipeline, no Claude calls, no Redis writes.
 //   Returns per-message verdict table. Non-Primary messages are summarized,
 //   not listed individually (Part 1 display rule).
+// POST /api/admin/replay-message — forget ONE message, so the next scan reads
+// it again through the real pipeline.
+//
+// Deliberately does not reprocess anything itself. A second code path that
+// "replays" an email is a second place for the pipeline to drift, and the whole
+// point of a replay is to exercise the path that actually runs. So this only
+// clears the two keys that make a scan skip the message; pressing Scan then
+// does the real work, and every other message in the window stays fingerprinted
+// and untouched.
+//
+// Both keys must go. processedMsg is checked before any fetch; processedEmail
+// is the content fingerprint checked after. Clearing one leaves the other to
+// skip the message anyway.
+app.post('/api/admin/replay-message', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const messageId = String(req.body?.messageId || '').trim();
+  if (!messageId) return res.status(400).json({ error: 'messageId is required' });
+
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const gmail = google.gmail({ version: 'v1', auth });
+    const meta = await gmail.users.messages.get({
+      userId: 'me', id: messageId, format: 'metadata',
+      metadataHeaders: ['Subject', 'From', 'Date'],
+    });
+    const headers = meta.data.payload?.headers || [];
+    const h = n => (headers.find(x => x.name?.toLowerCase() === n) || {}).value || '';
+    const subject = h('subject'), from = h('from'), dateSent = h('date');
+    const senderEmail = parseFrom(from).senderEmail;
+
+    const msgKey = processedMessageKey(email, messageId);
+    const fpKey = emailFingerprintKey(senderEmail, subject, dateSent);
+    const had = { message: !!(await redis.exists(msgKey)), fingerprint: !!(await redis.exists(fpKey)) };
+    await redis.del(msgKey);
+    await redis.del(fpKey);
+
+    console.log(`[replay] ${email} cleared ${messageId} "${subject}" (had msg=${had.message} fp=${had.fingerprint})`);
+    res.json({ ok: true, messageId, subject, from, dateSent,
+      cleared: had,
+      next: 'Press "Scan last 48 hours" on Sources. Only this message is unfingerprinted, so only this message is re-read.' });
+  } catch (err) {
+    console.error('[replay] failed:', err.message);
+    res.status(502).json({ error: 'Could not read that message', detail: err.message });
+  }
+});
+
 app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
   const email = req.user.email;
   // Backfill is user-initiated and does not go through processNewGmailEmails,

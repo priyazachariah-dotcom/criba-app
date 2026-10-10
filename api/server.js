@@ -5563,6 +5563,31 @@ app.post('/api/events/dismiss-reschedule', requireAuth, async (req, res) => {
 app.get('/api/calendars', requireAuth, async (req, res) => {
   const cals = getUserCalendars(req.user.email);
   const list = (await cals.values()).sort((a,b) => b.created_at > a.created_at ? 1 : -1);
+
+  // Counts per upload, so a row can say what actually happened to it.
+  //
+  // event_count only ever counted APPROVED events, so a file read perfectly
+  // and never approved and a file nothing could be read from both showed the
+  // same thing. They are different answers and the row now gives the right
+  // one. Computed in one pass over the store rather than a call per row.
+  try {
+    const byCal = new Map();
+    for (const ev of await getUserEvents(req.user.email).values()) {
+      if (!ev?.calendar_id) continue;
+      if (!byCal.has(ev.calendar_id)) byCal.set(ev.calendar_id, { added: 0, notReviewed: 0, skipped: 0, duplicates: 0 });
+      const c = byCal.get(ev.calendar_id);
+      if (ev.status === 'added' || ev.status === 'approved' || ev.status === 'reviewed') c.added++;
+      else if (ev.status === 'draft' || ev.status === 'pending') c.notReviewed++;
+      else if (ev.status === 'duplicate') { c.skipped++; c.duplicates++; }
+      else c.skipped++;
+    }
+    for (const cal of list) {
+      const c = byCal.get(cal.id) || { added: 0, notReviewed: 0, skipped: 0, duplicates: 0 };
+      cal.counts = { ...c, total: c.added + c.notReviewed + c.skipped };
+    }
+  } catch (err) {
+    console.error('[calendars] counts failed:', err.message);
+  }
   // Self-healing enrolment: feeds added before nightly sync existed are not in
   // the subscriber set, so they would never be re-read. Loading the page is
   // enough to enrol them rather than needing a one-off migration script.

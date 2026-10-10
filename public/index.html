@@ -1109,6 +1109,16 @@
   .adopted-list { margin-top: 8px; }
   .adopted-row { font-size: 13px; color: var(--text2); padding: 4px 0; line-height: 1.5; }
   .adopted-why { display: block; font-size: 12px; color: var(--muted); }
+  .cal-list-item-open { padding: 0; }
+  .cal-open {
+    flex: 1; display: block; text-align: left; background: none; border: none;
+    font: inherit; color: inherit; cursor: pointer; padding: 14px 0; min-width: 0;
+  }
+  .cal-open:hover .cal-list-name { color: var(--primary); }
+  .cat-back {
+    font-family: var(--font-body); font-size: 14px; color: var(--primary);
+    background: none; border: none; padding: 0 0 12px; cursor: pointer;
+  }
   .src-maint-last { font-size: 12px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
@@ -2112,7 +2122,6 @@
         </div>
       </div>
     </div>
-    <h2 class="src-section">Calendars you’re subscribed to</h2>
     <div id="cal-list"></div>
     <div id="sources-cancelled"></div>
     <!-- Maintenance is everything you do to a calendar that already exists:
@@ -2280,6 +2289,7 @@
         Back to Sources
       </button>
       <div style="display:flex;align-items:flex-end;justify-content:space-between;width:100%;gap:1rem;flex-wrap:wrap">
+        <button class="cat-back" id="cat-back" hidden onclick="showPage('calendars')">← Sources</button>
         <h1 class="src-title" id="cat-page-title">Review this upload</h1>
         <button class="btn-apricot" id="cat-add-all-btn" onclick="catAddAllGroups()">Add all to calendar</button>
       </div>
@@ -7813,18 +7823,60 @@ function syncedLabel(cal) {
   return `updated ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
 }
 
-function calRow(cal, i, meta) {
-  return `
-    <div class="cal-list-item">
+// What this upload actually produced, in words rather than a bare count.
+//
+// "read — nothing approved yet" was shown whenever event_count was 0, which
+// conflated a file read perfectly and never approved with a file nothing could
+// be read from. Those are different answers and deserve different sentences.
+function uploadStatusLine(cal) {
+  const c = cal.counts || {};
+  const total = c.total || 0;
+  if (!total) return 'No events found';
+  const bits = [];
+  if (c.added) bits.push(`${c.added} added`);
+  if (c.notReviewed) bits.push(`${c.notReviewed} not reviewed`);
+  if (c.skipped) bits.push(`${c.skipped} skipped`);
+  const line = bits.join(' · ');
+  return c.duplicates
+    ? `${line} — ${c.duplicates} already on your calendar`
+    : line;
+}
+
+function uploadedOn(cal) {
+  if (!cal.created_at) return '';
+  const d = new Date(cal.created_at);
+  return isNaN(d) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function calRow(cal, i, meta, opts = {}) {
+  // An uploaded file opens its own review screen. The events it read were
+  // reachable for exactly as long as the import screen stayed open and never
+  // again, which is why thirteen files sat unapproved.
+  const openable = !!opts.openable;
+  const body = `
       <div style="display:flex;align-items:center;min-width:0">
         <div class="cal-dot" style="background:${CAL_COLORS[i % CAL_COLORS.length]}"></div>
         <div style="min-width:0">
           <div class="cal-list-name">${escHtml(cal.name)}</div>
           <div class="cal-list-meta">${meta}</div>
         </div>
-      </div>
-      <button class="cal-delete" onclick="deleteCalendar('${cal.id}')">×</button>
+      </div>`;
+  return `
+    <div class="cal-list-item${openable ? ' cal-list-item-open' : ''}">
+      ${openable
+        ? `<button class="cal-open" onclick="openUploadReview('${cal.id}')"
+             aria-label="Review ${escHtml(cal.name)}">${body}</button>`
+        : body}
+      <button class="cal-delete" onclick="event.stopPropagation(); deleteCalendar('${cal.id}')">×</button>
     </div>`;
+}
+
+// Reopen the review screen for an upload that was imported earlier.
+async function openUploadReview(calId) {
+  const cal = (calendars || []).find(c => String(c.id) === String(calId));
+  if (!cal) return;
+  const total = (cal.counts && cal.counts.total) || 0;
+  await loadCategoryGroups(calId, cal.name, total, cal.memberId || null, []);
 }
 
 function renderCalendars() {
@@ -7876,14 +7928,13 @@ function renderCalendars() {
           <h3 class="cal-section-title">Uploaded files <span class="cal-section-count">${uploads.length}</span></h3>
           <p class="cal-section-sub">Read once from a PDF or screenshot. You approve these before they reach your calendar. <span class="cal-section-hint">(Expand to view them.)</span></p>
         </summary>
-        ${uploads.map((cal, i) => calRow(cal, i, `${cal.event_count
-          ? `${cal.event_count} events`
-          // event_count only counts events the user has APPROVED. A file that
-          // was read perfectly but never approved showed "0 events", which is
-          // the same words a file Criba could not read would show — except
-          // that case creates no row at all. The count was being read as
-          // "Criba found nothing" when it meant "nothing approved yet".
-          : 'read — nothing approved yet'} · ${escHtml(memberNameFor(cal.memberId))}`)).join('')}
+        ${uploads.map((cal, i) => {
+          const when = uploadedOn(cal);
+          const meta = [uploadStatusLine(cal), when ? `uploaded ${when}` : '', escHtml(memberNameFor(cal.memberId))]
+            .filter(Boolean).join(' · ');
+          return calRow(cal, i, meta, { openable: true });
+        }).join('')}
+        <p class="cal-section-sub" style="margin-top:8px">Tap a file to review what Criba read from it.</p>
       </details>`);
   }
 
@@ -8252,6 +8303,8 @@ async function loadCategoryGroups(calendarId, calName, totalEvents, memberId, re
   groupsState = base;
   cedPeople = {};
   document.getElementById('cat-page-title').textContent = groupsState.calName;
+  const backEl = document.getElementById('cat-back');
+  if (backEl) backEl.hidden = false;
   const member = memberId && familyMembers.find(m => m.id === memberId);
   const memberBadge = member
     ? ` <span style="display:inline-flex;align-items:center;gap:5px;font-size:0.8rem;background:white;border:1px solid var(--line);border-radius:20px;padding:2px 9px;vertical-align:middle"><span style="width:9px;height:9px;border-radius:50%;background:${memberColor(member.color)};display:inline-block"></span>${member.name}</span>`

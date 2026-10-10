@@ -6417,6 +6417,8 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
 
   const events = getUserEvents(req.user.email);
   const all = await events.entries();
+  let duplicateCount = 0;
+  const adopted = [];
   const groupEvents = all.filter(([, ev]) => ev.calendar_id === calendarId && ev.category === category && ev.status === 'draft');
   if (!groupEvents.length) return res.status(404).json({ error: 'No draft events found for this category' });
 
@@ -6463,7 +6465,20 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
         ev.gcalId = already.calendarId || targetCalId;
         ev.approved_at = new Date().toISOString();
         updates.push([id, ev]);
-        console.log(`[calendar-dedup] SKIP (group-approve) "${ev.title}" on ${ev.date}`);
+        // Counted and reported. This used to increment nothing and push to
+        // nothing, so the response was {addedCount: 0, failed: []} and the UI
+        // rendered a green "✓ Added 0" and threw the group away -- a success
+        // message for an action that added nothing.
+        duplicateCount++;
+        adopted.push({
+          title: ev.title, date: ev.date, endDate: ev.end_date || ev.date,
+          matchedCalendar: already.calendarName || already.calendarId || targetCalId,
+          matchedEventId: already.recurringEventId || already.id,
+          matchedTitle: already.title || '', matchedDate: already.date || '',
+        });
+        console.log(`[calendar-dedup] SKIP (group-approve) "${ev.title}" ${ev.date}-${ev.end_date || ev.date}`
+          + ` matched ${already.calendarId || targetCalId}/${already.recurringEventId || already.id}`
+          + ` "${already.title}" ${already.date}-${existingLastDay(already) || already.date}`);
         continue;
       }
       const calEvent = await calendar.events.insert({ calendarId: targetCalId, sendUpdates, resource });
@@ -6488,7 +6503,7 @@ app.post('/api/calendars/group-approve', requireAuth, async (req, res) => {
     const cal = await cals.get(calendarId);
     if (cal) { cal.event_count = (cal.event_count || 0) + addedCount; await cals.set(calendarId, cal); }
   }
-  res.json({ ok: true, addedCount, failed });
+  res.json({ ok: true, addedCount, failed, duplicateCount, adopted });
 });
 
 // group-review now writes to calendar immediately (same as group-approve) —
@@ -9298,6 +9313,10 @@ async function fetchExistingCalendarEvents(calendarApi, calendarId, dates) {
       time: it.start?.dateTime ? it.start.dateTime.slice(11, 16) : '',
       end_time: it.end?.dateTime ? it.end.dateTime.slice(11, 16) : '',
       is_all_day: !!it.start?.date,
+      // Google's all-day end date is EXCLUSIVE: a Nov 23-27 break ends 11-28.
+      // Stored raw here and converted where it is compared, so the exclusive
+      // convention lives in one place rather than being re-derived.
+      end_date_exclusive: it.end?.date || null,
       eventType: it.eventType || null,
       sourceUrl: it.source?.url || null,
       location: it.location || '',
@@ -9428,13 +9447,35 @@ function findGoogleNativeMatch(existing, ev) {
   return null;
 }
 
+// Is adopting this match safe?
+//
+// Adoption makes Criba's row point at an event it did not write. On the user's
+// own target calendar that is right -- it is the same event, written twice. On
+// a SUBSCRIBED calendar it is not: the row then owns a fixture the school
+// controls, Edit acts on someone else's event, and deleting the subscription
+// takes Criba's record with it. So a match off the target calendar has to be
+// exact, not loose.
+function adoptionAllowed(dup, ev, calId, targetCalId) {
+  if (!dup) return false;
+  if (calId === (targetCalId || 'primary')) return true;
+  const sameTitle = String(dup.title || '').trim().toLowerCase()
+    === String(ev.title || '').trim().toLowerCase();
+  const wantEnd = ev.end_date || ev.date;
+  const gotEnd = existingLastDay(dup) || dup.date;
+  return sameTitle && String(dup.date) === String(ev.date) && String(gotEnd) === String(wantEnd);
+}
+
 async function findExistingOnAnyCalendar(ownerEmail, calendarApi, targetCalId, ev) {
   if (!ev?.date || !ev?.title) return null;
   try {
     const cals = await visibleCalendars(ownerEmail, calendarApi, targetCalId);
     for (const cal of cals) {
       const existing = await eventsOnDate(ownerEmail, calendarApi, cal.id, ev.date);
-      const dup = findCalendarDuplicate(existing, ev.title, ev.date, ev.time || '');
+      const dup = findCalendarDuplicate(existing, ev.title, ev.date, ev.time || '', { endDate: ev.end_date || '' });
+      if (dup && !adoptionAllowed(dup, ev, cal.id, targetCalId)) {
+        console.log(`[calendar-dedup] NOT adopting "${ev.title}" ${ev.date} — match "${dup.title}" is on ${cal.name} (${cal.id}), not the target calendar, and is not an exact range match`);
+        continue;
+      }
       if (dup) return { ...dup, calendarId: cal.id, calendarName: cal.name };
       // Second, separate pass. Kept apart from the one above on purpose: it
       // asks a different question and must not loosen the title comparison
@@ -9696,10 +9737,25 @@ function titlesLooselyMatch(a, b) {
 // Is this event already on the calendar, put there by something other than us?
 // Same day, similar title, and either the same start time or one of the two
 // being all-day.
-function findCalendarDuplicate(existing, title, date, time) {
+// The inclusive last day of an existing all-day event. Google's end.date is
+// exclusive, so a Nov 23-27 break comes back as end 2026-11-28.
+function existingLastDay(ex) {
+  if (!ex?.is_all_day || !ex.end_date_exclusive) return ex?.date || null;
+  return addDaysToDateStr(ex.end_date_exclusive, -1);
+}
+
+function findCalendarDuplicate(existing, title, date, time, opts = {}) {
+  const wantEnd = opts.endDate || date;
   for (const ex of existing) {
     if (ex.date !== date) continue;
     if (!titlesLooselyMatch(ex.title, title)) continue;
+    // A five-day break is not the same thing as a one-day event that happens
+    // to start on the same morning. Adopting one as the other pointed Criba's
+    // row at a single day and the other four never appeared.
+    if (!time && !ex.time) {
+      const exEnd = existingLastDay(ex) || ex.date;
+      if (String(exEnd) !== String(wantEnd)) continue;
+    }
     if (!time || !ex.time || ex.is_all_day) return ex;
     if (ex.time === time) return ex;
     // Within 30 minutes counts as the same fixture described slightly

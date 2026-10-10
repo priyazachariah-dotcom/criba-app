@@ -1106,6 +1106,9 @@
   .share-steps { margin-top: 10px; font-size: 13px; color: var(--text2); }
   .share-steps ol { padding-left: 20px; line-height: 1.7; }
   .share-steps code { font-size: 12px; background: var(--card); padding: 1px 5px; border-radius: 4px; }
+  .adopted-list { margin-top: 8px; }
+  .adopted-row { font-size: 13px; color: var(--text2); padding: 4px 0; line-height: 1.5; }
+  .adopted-why { display: block; font-size: 12px; color: var(--muted); }
   .src-maint-last { font-size: 12px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
@@ -8718,6 +8721,18 @@ async function catAddAllGroups() {
 }
 
 // "Add all" — bulk-approves every remaining draft event in the category.
+// What was adopted instead of added, and onto what. Named explicitly because
+// "already on your calendar" is only reassuring when you can see WHICH event
+// it matched -- on a subscribed school calendar it may not be yours at all.
+function adoptedListHtml(adopted) {
+  if (!Array.isArray(adopted) || !adopted.length) return '';
+  return `<div class="adopted-list">${adopted.map(a => `
+    <div class="adopted-row">${escHtml(a.title)}
+      <span class="adopted-why">already on ${escHtml(a.matchedCalendar || 'your calendar')}
+        as \u201c${escHtml(a.matchedTitle || a.title)}\u201d${a.matchedDate ? ' on ' + escHtml(a.matchedDate) : ''}</span>
+    </div>`).join('')}</div>`;
+}
+
 async function catAddAll(ci) {
   const cat = groupsState.categories[ci];
   if (!cat || !cat.events.length) return;
@@ -8736,16 +8751,23 @@ async function catAddAll(ci) {
     if (res.ok) {
       const nFailed = (data.failed?.length || 0) + (data.failedCount || 0);
       const nDup = data.duplicateCount || 0;
-      // Green with a tick regardless of how many failed, and the group removed
-      // from the page either way — so a partial failure looked like a clean
-      // success and the events that did not make it were gone from view.
-      const msg = `${nFailed ? '' : '✓ '}Added ${data.addedCount}`
+      const nAdded = data.addedCount || 0;
+      // Green means "the thing you pressed happened". Added 0 is not that,
+      // however it came about -- and a tick on Added 0 is exactly what hid a
+      // whole group being adopted onto events Criba never wrote.
+      const clean = nAdded > 0 && !nFailed && !nDup;
+      const msg = `${clean ? '✓ ' : ''}Added ${nAdded}`
         + (nDup ? ` · ${nDup} already on your calendar` : '')
         + (nFailed ? ` · ${nFailed} failed` : '');
-      if (statusEl) statusEl.innerHTML = `<span style="color:${nFailed ? 'var(--red)' : 'var(--green)'}">${msg}</span>`
+      if (statusEl) statusEl.innerHTML =
+        `<span style="color:${clean ? 'var(--green)' : 'var(--red)'}">${escHtml(msg)}</span>`
+        + adoptedListHtml(data.adopted)
         + (nFailed && data.lastWriteError ? `<div class="error-msg">${escHtml(data.lastWriteError)}</div>` : '');
       await loadCalendars();
-      if (nFailed) {
+      // The group only leaves the page when everything in it was genuinely
+      // added. Anything else stays, so the user can read what happened and
+      // decide, rather than watching the evidence disappear.
+      if (!clean) {
         if (addBtn) addBtn.disabled = false;
         if (disBtn) disBtn.disabled = false;
       } else {

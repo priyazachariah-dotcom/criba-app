@@ -8426,8 +8426,15 @@ function renderCatCard(cat, ci) {
 
 function renderCatEventRow(ev, ei, ci) {
   // Date summary shown inline (no year — keeps rows compact)
+  //
+  // Gated on the event being all-day and actually spanning days, NOT on
+  // type === 'break'. FULL_EXTRACTION_PROMPT returns no "type" field, so every
+  // event from an upload normalises to 'other' and could never be a break --
+  // which is why a school calendar's Thanksgiving Break 23-27 showed as a bare
+  // Nov 23 while the same span from an email showed correctly.
+  const spansDays = !ev.time && ev.end_date && ev.end_date !== ev.date;
   let dateSummary;
-  if (ev.type === 'break') {
+  if (ev.type === 'break' || spansDays) {
     dateSummary = `${shortDate(ev.date)} → ${shortDate(ev.end_date || ev.date)}`;
   } else if ((ev.type === 'timed' || ev.type === 'minimum_day') && ev.time) {
     dateSummary = `${shortDate(ev.date)} · ${formatTime(ev.time)}`;
@@ -8461,10 +8468,17 @@ function renderInlineEditor(ev, ci, ei) {
   const isTimed    = ev.type === 'timed' || ev.type === 'minimum_day';
   const isRecurring = ev.type === 'recurring';
 
-  const dateFields = isBreak
+  // Anything all-day can run across days, exactly as anything with a start
+  // time can have an end time -- the same correction, one field over. Gating
+  // this on type === 'break' meant no upload could ever offer it, because
+  // uploads have no type, so a wrong end date could be seen and not fixed.
+  const canSpanDays = isBreak || (!isTimed && !isRecurring && !ev.time);
+
+  const dateFields = canSpanDays
     ? `<input type="date" class="gcal-input gcal-input-date" id="ced-date-${key}" value="${ev.date || ''}" />
        <span class="gcal-sep">→</span>
-       <input type="date" class="gcal-input gcal-input-date" id="ced-enddate-${key}" value="${ev.end_date || ''}" />`
+       <input type="date" class="gcal-input gcal-input-date" id="ced-enddate-${key}" value="${ev.end_date || ''}"
+         title="End date — leave blank for a single-day event" />`
     : `<input type="date" class="gcal-input gcal-input-date" id="ced-date-${key}" value="${ev.date || ''}" />`;
 
   // The end time used to render only for type 'timed'/'minimum_day', so an

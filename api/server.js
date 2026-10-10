@@ -1816,12 +1816,23 @@ For each extracted item return a JSON object with:
   event. If stripping them leaves nothing, the title is whatever the event
   actually is -- and if the source never names an event, do not invent one.
 - date (YYYY-MM-DD)
-- end_date (YYYY-MM-DD, only if multi-day, else null)
+- end_date (YYYY-MM-DD, the LAST day of a multi-day item, else null)
+  A break, vacation, camp or closure that covers several days is ONE item with
+  date = the first day and end_date = the last day. Never output one item per
+  day, and never leave end_date null on something the source states as a range.
+  - "Thanksgiving Break Nov 23-27" -> date 2026-11-23, end_date 2026-11-27
+  - "Winter Break Dec 21-31" plus a later line "Winter Break Continued Jan 1"
+    -> ONE item, date 2026-12-21, end_date 2027-01-01. A line whose title says
+    "Continued" is the same break carried over a month boundary, not a new one.
+  School calendars often list only school days, so a break can appear as two
+  blocks with a weekend between them. That is still one break.
 - start_time (HH:MM 24hr format, null if all-day)
 - end_time (HH:MM 24hr format, null if all-day or unknown — default 1 hour after start if timed)
 - timezone (IANA name, e.g. "America/New_York", ONLY when the content explicitly states a timezone that the time is given in — "10pm ET", "3pm Eastern", "14:00 GMT". Report the time exactly as written along with the zone it was written in; do NOT convert it yourself. Use null when no timezone is stated, which is the normal case for local school and club events.)
 - location (full address if available, venue name if not, null if none)
-- is_all_day (boolean)
+- is_all_day (boolean) — true for anything with no clock time: breaks,
+  holidays, closures, minimum days, deadlines and whole-day school events.
+  A multi-day item is always all-day.
 - attendees (array of family member name strings tagged to this event, empty array if none specified)
 - notes (all relevant details — attire, what to bring, action required, financial amounts, RSVP info; null if nothing extra)
 - source_type ("event", "deadline", "action_item", or "financial_reminder")
@@ -2070,10 +2081,37 @@ function matchClosuresToEvents(closures, events) {
 // so two genuinely separate occurrences of the same thing stay separate.
 function collapseMultiDayRuns(events) {
   const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
-  const key = ev => String(ev.title || '').trim().toLowerCase();
+  // The key is the BASE break, not the exact wording.
+  //
+  // A district calendar writes "Winter Break - No School" in December and
+  // "Winter Break Continued" in January. Keying on the exact lowercase title
+  // put them in different groups, so they were never candidates to merge and
+  // the break arrived as two events -- one of which looked like a one-day
+  // holiday on Jan 1.
+  //
+  // Stripped: a trailing "continued" in any punctuation, "no school", and all
+  // punctuation. Everything left is the name of the thing, so two spellings of
+  // one break meet and two different breaks still do not.
+  const key = ev => String(ev.title || '')
+    .toLowerCase()
+    .replace(/[\u2010-\u2015]/g, '-')
+    .replace(/[(\[]\s*cont(?:inued|\.)?\s*[)\]]/g, ' ')
+    .replace(/[-–—:,]?\s*cont(?:inued|\.)?\s*$/g, ' ')
+    .replace(/\bno school\b/g, ' ')
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   // Only span-like entries are candidates. A timed event repeating on
   // consecutive days is a real series, not one long event.
-  const mergeable = ev => (ev.type === 'break' || ev.type === 'holiday' || ev.type === 'other') && !ev.time && isDate(ev.date);
+  // A MISSING type counts.
+  //
+  // This runs on raw model output, before normalizeExtractedEvent assigns a
+  // type -- and FULL_EXTRACTION_PROMPT returns no type field at all. So every
+  // event from an upload arrived here with type undefined, failed this test,
+  // and nothing was ever merged. The collapser has been dead code on the
+  // upload path, which is the path school calendars come in on.
+  const mergeable = ev => (!ev.type || ev.type === 'break' || ev.type === 'holiday' || ev.type === 'other')
+    && !ev.time && !ev.start_time && isDate(ev.date);
 
   // School calendars list only school days, so a break that runs across a
   // weekend arrives as Dec 21-25 and Dec 28-Jan 1 with a hole in between.
@@ -2104,11 +2142,18 @@ function collapseMultiDayRuns(events) {
     for (const ev of group) {
       const last = run ? (run.ev.end_date || run.lastDate) : null;
       if (run && (ev.date === last || bridges(last, ev.date))) {
-        run.lastDate = ev.date;
-        run.ev.end_date = ev.date;
+        // The joining block has its own span. Taking ev.date dropped it:
+        // "Spring Break Mar 29-31" plus "Continued Apr 1-2" ended on Apr 1 and
+        // Apr 2 was lost.
+        const joinedEnd = ev.end_date || ev.date;
+        run.lastDate = joinedEnd;
+        run.ev.end_date = joinedEnd;
         continue;
       }
       flush();
+      // The first block's title is the one a person recognises. A merged break
+      // called "Winter Break Continued" would be accurate about the second
+      // half and wrong about the event.
       run = { ev: { ...ev, end_date: ev.end_date || ev.date }, lastDate: ev.end_date || ev.date };
     }
     flush();

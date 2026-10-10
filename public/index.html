@@ -2788,7 +2788,7 @@ async function loadShareKey() {
       <input type="text" id="share-key-val" readonly value="${escHtml(d.key)}" onclick="this.select()"></div>
     <div class="share-field"><label>URL</label>
       <input type="text" readonly value="${escHtml(d.shortcutUrl || '')}" onclick="this.select()"></div>
-    <div class="share-note">Treat the key like a password &mdash; anyone with it can put things in your review queue. Replacing it stops the old one working immediately.</div>
+    <div class="share-note">Treat the key like a password &mdash; anyone with it can put events straight onto your calendar. Replacing it stops the old one working immediately.</div>
     <button class="btn-secondary btn-sm" onclick="rotateShareKey(true)">Replace key</button>
     <button class="btn-text" onclick="toggleShortcutSteps()">How do I set up the shortcut?</button>
     <div id="shortcut-steps" hidden class="share-steps">
@@ -2835,7 +2835,7 @@ async function loadWhatsAppLink() {
     return;
   }
   if (d.phone) {
-    el.innerHTML = `<div class="share-note">Forwards from <strong>${escHtml(d.phone)}</strong> reach your review queue.</div>
+    el.innerHTML = `<div class="share-note">Forwards from <strong>${escHtml(d.phone)}</strong> go straight onto your calendar &mdash; you already chose to send them, so Criba doesn&rsquo;t ask again. Delete anything that&rsquo;s wrong, the same as any other event.</div>
       <button class="btn-secondary btn-sm" onclick="unlinkWhatsApp()">Unlink this number</button>`;
     return;
   }

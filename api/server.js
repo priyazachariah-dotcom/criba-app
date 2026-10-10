@@ -3641,7 +3641,15 @@ app.post('/api/events/approve', requireAuth, async (req, res) => {
     // ago; this endpoint kept the `||` fallbacks, so the same edit made on the
     // review screen instead of the edit screen silently reverted.
     const has = k => Object.prototype.hasOwnProperty.call(req.body, k);
-    const finalEndDate = has('endDate') ? (endDate || '') : (event.end_date || '');
+    // A blank end date is ambiguous: it means "the user emptied the field" and
+    // also "this client had no end date to send". Treating both as a clear
+    // erased real spans -- Today's rows carried no end_date at all, so Add sent
+    // '' and a five-day break landed as one day. Only an explicit clear erases
+    // now; a blank with no clear flag leaves the stored value alone.
+    const explicitlyCleared = req.body?.endDateCleared === true;
+    const finalEndDate = has('endDate') && (endDate || explicitlyCleared)
+      ? (endDate || '')
+      : (event.end_date || '');
     const finalEndTime = has('endTime') ? (endTime || '') : (event.end_time || '');
     const finalLocation = has('location') ? (location || '') : (event.location || '');
     const userTz = await getUserTimezone(req.user.email);
@@ -5137,7 +5145,8 @@ async function buildTodayPayload(user) {
     // Carried so the shared event row can open the same inline editor the
     // review queue uses, instead of a second editor fed by a thinner payload.
     // Read-only additions: nothing about how events are written changes.
-    date: e.date || null, notes: e.notes || null, status: e.status || null,
+    date: e.date || null, end_date: e.end_date || null,
+    notes: e.notes || null, status: e.status || null,
     attendees: Array.isArray(e.attendees) ? e.attendees : [],
     recurrence_rule: e.recurrence_rule || null,
     suggested_color: e.suggested_color || null,

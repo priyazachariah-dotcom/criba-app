@@ -4672,6 +4672,21 @@ async function loadHome() {
   renderHome();
 }
 
+// A value only when the user actually changed it. defaultValue is whatever was
+// rendered into the input, so this is exact rather than a guess, and it keeps
+// an untouched field from being re-sent as an edit.
+function valIfChanged(elId) {
+  const el = document.getElementById(elId);
+  if (!el) return undefined;
+  return el.value !== el.defaultValue ? el.value : undefined;
+}
+
+// True only when a field that HAD a value has been emptied by hand.
+function wasCleared(elId) {
+  const el = document.getElementById(elId);
+  return !!el && el.defaultValue !== '' && el.value === '';
+}
+
 function renderEventRow(ev, ctx = 'today') {
   evRemember(ev);
   const id = ev.id;
@@ -4817,7 +4832,10 @@ async function evAdd(id, ctx) {
     title: ev.title || '',
     time: ev.is_all_day ? '' : (ev.time || ''),
     endTime: ev.is_all_day ? '' : (ev.end_time || ''),
-    endDate: ev.end_date || '',
+    // Only sent when there is one. A blank from here is not the user clearing
+    // a field, it is this row not knowing -- and the server cannot tell the
+    // difference, so it must not be asked to.
+    ...(ev.end_date ? { endDate: ev.end_date } : {}),
     location: ev.location || '',
     attendees: Array.isArray(ev.attendees) ? ev.attendees : [],
     recurrenceRule: ev.recurrence_rule || null,
@@ -7339,7 +7357,8 @@ async function approveReviewEvent(id) {
   };
   const setIf = (key, v) => { if (v !== undefined) payload[key] = v; };
   setIf('title', val(`rv-title-${id}`));
-  setIf('endDate', val(`rv-enddate-${id}`));
+  setIf('endDate', valIfChanged(`rv-enddate-${id}`));
+  if (wasCleared(`rv-enddate-${id}`)) payload.endDateCleared = true;
   setIf('location', val(`rv-loc-${id}`));
   if (allDay) { payload.time = ''; payload.endTime = ''; }
   else { setIf('time', val(`rv-time-${id}`)); setIf('endTime', val(`rv-endtime-${id}`)); }
@@ -8909,7 +8928,8 @@ async function cedApprove(evId, key, ci, ei) {
   const setIf = (k, v) => { if (v !== undefined) payload[k] = v; };
   setIf('time',     val(`ced-time-${key}`));
   setIf('endTime',  val(`ced-endtime-${key}`));
-  setIf('endDate',  val(`ced-enddate-${key}`));
+  setIf('endDate',  valIfChanged(`ced-enddate-${key}`));
+  if (wasCleared(`ced-enddate-${key}`)) payload.endDateCleared = true;
   setIf('location', val(`ced-loc-${key}`));
   const memberSel = document.getElementById(`ced-member-${key}`);
   if (memberSel) payload.targetMemberId = memberSel.value;

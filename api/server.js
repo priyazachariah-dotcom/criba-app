@@ -12185,7 +12185,13 @@ async function scanCalendarDuplicates(user, days) {
         if (used.has(j)) continue;
         // Facts first: identical date, start, end, place and person is one
         // event however the two sources worded it.
-        if (!sameEventByFacts(evs[i], evs[j])) {
+        // Already grouped by date above, so an all-day pair here is two
+        // all-day entries on one day: the Konstella/PDF closure case, where
+        // the two titles are the same label in a different order. Checked
+        // before the title test, which refuses that pair.
+        const bothAllDay = (evs[i].isAllDay || !evs[i].time) && (evs[j].isAllDay || !evs[j].time);
+        const allDayLabelMatch = bothAllDay && allDayTitlesMatch(evs[i].title, evs[j].title);
+        if (!allDayLabelMatch && !sameEventByFacts(evs[i], evs[j])) {
           if (!titlesLooselyMatch(evs[i].title, evs[j].title)) continue;
           const bothTimed = evs[i].time && evs[j].time && !evs[i].isAllDay && !evs[j].isAllDay;
           if (bothTimed && Math.abs(timeToMinutes(evs[i].time) - timeToMinutes(evs[j].time)) > 30) continue;

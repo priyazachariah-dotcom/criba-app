@@ -1586,10 +1586,31 @@ async function learnFromMemberAssignment(email, memberId, event) {
 }
 
 // Resolve event color by matching name strings (from Claude attendees) to family records
-async function resolveEventColorByNames(email, nameStrings, text = '') {
+// Whose colour should this event wear?
+//
+// This matched names in the text and nothing else, so anything that did not
+// spell a child out loud came through uncoloured -- PreACT, Testing Day, Book
+// Fair, a regatta trip. The sender is the obvious second answer and was going
+// unused: a member already carries a `senders` list of confirmed domains,
+// maintained per user through the family API, and resolveAttribution already
+// turns a domain into a member with proper handling for two children at one
+// school.
+//
+// Order is deliberate. A name written in the event is the strongest evidence
+// there is; the sender is a reliable fallback, not a replacement. Nothing is
+// hard-coded here -- which domain belongs to whom is the user's own data.
+async function resolveEventColorByNames(email, nameStrings, text = '', senderEmail = null) {
   const members = await getUserFamily(email).values();
   const match = matchFamilyMember(members, nameStrings, text);
-  return match?.eventColor || match?.color || null;
+  if (match) return match.eventColor || match.color || null;
+
+  if (!senderEmail) return null;
+  // Two children at one school is ambiguous, not a tie to break. Colouring it
+  // for either would be wrong half the time, so it stays uncoloured.
+  const act = resolveAttribution(members, text, senderEmail);
+  if (!act?.memberId || act.ambiguous) return null;
+  const m = members.find(x => String(x.id) === String(act.memberId));
+  return m ? (m.eventColor || m.color || null) : null;
 }
 
 // Shared helper: build GCal resource and insert event. Returns calEventId string,
@@ -10429,7 +10450,10 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         // single chokepoint that dedups before inserting — against every calendar
         // the user subscribes to, a late fresh re-check, AND a persistent
         // write-guard keyed per user — so auto-add never lands a second copy.
-        const colorId = await resolveEventColorByNames(email, Array.isArray(ev.attendees) ? ev.attendees : [], [ev.title, ev.location, ev.notes].filter(Boolean).join(' '));
+        const colorId = await resolveEventColorByNames(email,
+          Array.isArray(ev.attendees) ? ev.attendees : [],
+          [ev.title, ev.location, ev.notes].filter(Boolean).join(' '),
+          senderEmail);
         const evObj = { title: ev.title, date: ev.date, end_date: ev.end_date || '', time: startTime, end_time: endTime, location: ev.location || '', recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null, recurring_note: ev.recurring_note || null, attendees: [],
           // Carried purely so buildEventDescription can write the details and
           // the back-link to the source email into the calendar entry.

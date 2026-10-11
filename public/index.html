@@ -2709,6 +2709,13 @@ function renderMemberActivities(m) {
   return `<div class="member-acts">
     ${chips}${senders}
     <button class="act-add" onclick="toggleActivityForm('${m.id}')">+ Add activity</button>
+    <button class="act-add" onclick="toggleSenderForm('${m.id}')">+ Add sender</button>
+    <div class="act-form" id="sender-form-${m.id}" style="display:none">
+      <input class="member-grade act-in act-in-wide" id="snd-dom-${m.id}"
+             placeholder="theirschool.org" title="Mail from this domain belongs to this person" />
+      <button class="act-save" onclick="addMemberSender('${m.id}')">Save</button>
+      <button class="act-cancel" onclick="toggleSenderForm('${m.id}')">Cancel</button>
+    </div>
     <div class="act-form" id="act-form-${m.id}" style="display:none">
       <input class="member-grade act-in" id="act-type-${m.id}" placeholder="sport or activity" title="Activity or sport" />
       <input class="member-grade act-in" id="act-tier-${m.id}" placeholder="team level" title="Team tier — frosh, JV or varsity. Left blank, any tier matches." />
@@ -3019,6 +3026,51 @@ async function addMemberActivity(id) {
   // Typed in by hand is a statement of fact, not an inference.
   list.push({ sport_or_type: type, team_tier: val('tier'), org: val('org'), sender_domain: val('dom'), confidence: 'confirmed' });
   await saveMemberActivities(id, list, 'Could not save the activity');
+}
+
+// Adding a sender by hand. The chips could already be removed but never added,
+// so the only way a domain got onto a person was Criba inferring it -- and a
+// wrong inference could be deleted but a missing one could not be supplied.
+// This is what makes "mail from West belongs to Arin" the user's statement
+// rather than a guess, and it is what event colour now reads.
+function toggleSenderForm(id) {
+  const el = document.getElementById(`sender-form-${id}`);
+  if (!el) return;
+  const open = el.style.display !== 'none';
+  el.style.display = open ? 'none' : 'flex';
+  if (!open) document.getElementById(`snd-dom-${id}`)?.focus();
+}
+
+async function addMemberSender(id) {
+  const input = document.getElementById(`snd-dom-${id}`);
+  const raw = (input?.value || '').trim().toLowerCase().replace(/^@/, '');
+  const domain = raw.split('@').pop();
+  if (!domain || !domain.includes('.')) {
+    cribaAlert('Enter the part after the @ \u2014 for example west.hillsborough.org.');
+    return;
+  }
+  const member = familyMembers.find(m => m.id === id);
+  if (!member) return;
+  const list = (Array.isArray(member.senders) ? member.senders : []).slice();
+  if (list.some(x => x.domain === domain)) { toggleSenderForm(id); return; }
+  // Typed by the user, so confirmed: this is the statement, not an inference.
+  list.push({ domain, confidence: 'confirmed' });
+  const previous = (member.senders || []).slice();
+  member.senders = list;
+  renderSettingsPage();
+  try {
+    const res = await fetch(`/api/family/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ senders: list }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Failed');
+    Object.assign(member, await res.json());
+    renderSettingsPage();
+  } catch (e) {
+    member.senders = previous;
+    renderSettingsPage();
+    cribaAlert(`Could not add the sender: ${e.message}`);
+  }
 }
 
 async function removeMemberSender(id, index) {

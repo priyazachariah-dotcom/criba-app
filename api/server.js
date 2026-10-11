@@ -9186,6 +9186,11 @@ function isDuplicateEventIn(all, title, date, opts = {}) {
         && sharedDistinctiveCount(ev.title, title) >= 2
         && !titlesDifferOnAudience(ev.title, title)) return true;
 
+    // Same day, both all-day, same label written differently: one closure.
+    // Judged on the label rather than on word order, because for a dated
+    // all-day event the order carries nothing.
+    if (!time && !ev.time && ev.date === date && allDayTitlesMatch(ev.title, title)) return true;
+
     if (!titlesLooselyMatch(ev.title, title)) return false;
     if (sameDayAndTime(ev, date, time)) return true;
     if (!shape) return false;
@@ -9795,6 +9800,51 @@ function sameEventByFacts(a, b) {
   return signals >= 2;
 }
 
+// ── All-day titles ────────────────────────────────────────────────────────
+//
+// Two sources naming one closure agree on the day and disagree on everything
+// else. A school's feed says "No School - Indigenous People's Day"; the
+// district PDF says "Indigenous Peoples' Day - No School". Word order differs,
+// the apostrophe differs, and one writes the plural -- so distinctiveTokens
+// gave [no indigenous people] against [indigenous peoples no] and
+// titlesLooselyMatch refused the pair on a single letter.
+//
+// For a dated all-day event the title is a label, not a description: order
+// carries no meaning and "No School" is a category rather than a name. So the
+// comparison strips the label down to what it actually names.
+const ALLDAY_FILLER = /\b(no school|school closed|closed|school holiday|holiday|no classes|student holiday|staff development|non student day)\b/g;
+
+function allDayTitleTokens(title) {
+  const flat = String(title || '')
+    .toLowerCase()
+    .replace(/[\u2018\u2019\u02BC]/g, "'")          // curly apostrophes
+    .replace(/[\u2010-\u2015]/g, '-')                // dashes
+    .replace(ALLDAY_FILLER, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')                    // punctuation, incl. apostrophes
+    .replace(/\s+/g, ' ')
+    .trim();
+  const out = new Set();
+  for (const w of flat.split(' ')) {
+    if (!w || w.length < 3) continue;
+    if (TITLE_STOPWORDS.has(w) || GENERIC_TITLE_TOKENS.has(w)) continue;
+    // "people" and "peoples" are the same word for this purpose.
+    out.add(w.length > 4 && w.endsWith('s') ? w.slice(0, -1) : w);
+  }
+  return out;
+}
+
+// Same label, written two ways. Word order is ignored because a set has none.
+function allDayTitlesMatch(a, b) {
+  const ta = allDayTitleTokens(a), tb = allDayTitleTokens(b);
+  if (!ta.size || !tb.size) return false;
+  // A grade range or a tier still decides, before anything else is considered:
+  // "What to Expect Night 3rd-5th" and "K-2nd" are two evenings.
+  if (titlesDifferOnAudience(a, b)) return false;
+  const [small, big] = ta.size <= tb.size ? [ta, tb] : [tb, ta];
+  for (const w of small) if (!big.has(w)) return false;
+  return true;
+}
+
 function titlesLooselyMatch(a, b) {
   const ta = titleTokens(a), tb = titleTokens(b);
   // When both titles name something — a school, an opponent, a child, a grade
@@ -9848,6 +9898,7 @@ function findCalendarDuplicate(existing, title, date, time, opts = {}) {
       const exEnd = existingLastDay(ex) || ex.date;
       if (String(exEnd) !== String(wantEnd)) continue;
     }
+    if (!time && !ex.time && allDayTitlesMatch(ex.title, title)) return ex;
     if (!time || !ex.time || ex.is_all_day) return ex;
     if (ex.time === time) return ex;
     // Within 30 minutes counts as the same fixture described slightly
@@ -12422,6 +12473,34 @@ async function dedupeUserCalendar(user, days, opts = {}) {
   }
   return { dryRun: false, plan, skipped, deleted, failed, storeCleared };
 }
+
+// GET /api/calendar/duplicate-groups — DRY RUN. Lists duplicate groups already
+// on the calendar and deletes nothing. No confirm parameter and no write path:
+// cleanup-duplicates is where removal lives, and a list that could delete is a
+// list nobody can open safely.
+app.get('/api/calendar/duplicate-groups', requireAuth, async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 180, 1), 400);
+  let scan;
+  try {
+    scan = await scanCalendarDuplicates(req.user, days);
+  } catch (err) {
+    return res.status(502).json({ error: 'calendar scan failed', detail: err.message });
+  }
+  const groups = (scan.problems || []).map(p => ({
+    title: p.title, date: p.date, kind: p.kind,
+    occurrences: p.occurrences || 1,
+    copies: (p.copies || []).map(c => ({
+      title: c.title, calendar: c.calendar || c.calendarName || c.calendarId,
+      eventId: c.seriesId || c.eventId, fromCriba: !!c.fromCriba,
+      time: c.time || '', isAllDay: !!c.isAllDay,
+    })),
+  })).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+  res.json({ dryRun: true, days, groupCount: groups.length,
+    copyCount: groups.reduce((n, g) => n + g.copies.length, 0),
+    scopeLimited: !!scan.scopeLimited, calendarErrors: scan.calendarErrors || [],
+    groups, note: 'Nothing was deleted. This endpoint only reads.' });
+});
 
 // POST /api/calendar/cleanup-duplicates — dry run unless { confirm: "DELETE" }.
 app.post('/api/calendar/cleanup-duplicates', requireAuth, async (req, res) => {

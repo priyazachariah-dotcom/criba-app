@@ -1119,6 +1119,11 @@
     font-family: var(--font-body); font-size: 14px; color: var(--primary);
     background: none; border: none; padding: 0 0 12px; cursor: pointer;
   }
+  .rm-row { cursor: default; }
+  .rm-label { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; width: 100%; }
+  .rm-check { margin-top: 3px; flex-shrink: 0; }
+  .rm-note { font-size: 13px; color: var(--muted); padding: 10px 12px 0; line-height: 1.5; }
+  .rm-bulk { display: flex; gap: 14px; padding: 8px 12px 4px; }
   .src-maint-last { font-size: 12px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
@@ -8368,23 +8373,33 @@ function renderCategoryPage() {
 
 // The REMOVE group. Uploading a holiday/closure list proposes skipping the
 // specific dates it collides with on events that are already on the calendar.
-// Nothing is deleted until the user presses the button here.
+// Nothing is deleted until the user ticks something AND confirms.
+//
+// This used to be one "Remove all" button over a collapsed list of 228 dates,
+// firing immediately. The dates were visible only if you expanded the card
+// first, so the common path was a single tap that deleted 228 occurrences of
+// events the user had never seen listed.
 function renderRemovalsCard() {
   const removals = groupsState.removals || [];
   if (!removals.length) return '';
   const total = removals.reduce((n, r) => n + (r.dates ? r.dates.length : 0), 0);
   if (!total) return '';
-  const rows = removals.map(r => {
-    const dates = (r.dates || []).map(d => `
-      <div class="cat-event-row" style="cursor:default">
-        <div class="cer-info">
-          <span class="cer-title">${shortDate(d.date)}</span>
-          <span class="cer-date">${escHtml(d.reason || 'Closed')}</span>
-        </div>
+  const rows = removals.map((r, ri) => {
+    const dates = (r.dates || []).map((d, di) => `
+      <div class="cat-event-row rm-row">
+        <label class="rm-label">
+          <input type="checkbox" class="rm-check" id="rm-${ri}-${di}"
+                 data-event="${escHtml(r.eventId)}" data-date="${escHtml(d.date)}"
+                 onchange="updateRemovalCount()" />
+          <span class="cer-info">
+            <span class="cer-title">${shortDate(d.date)}</span>
+            <span class="cer-date">${escHtml(r.title)} — ${escHtml(d.reason || 'school closed')}</span>
+          </span>
+        </label>
       </div>`).join('');
     return `
     <div class="cat-event-item">
-      <div style="padding:0.5rem 0.75rem;font-weight:600">${escHtml(r.title)}${r.isSeries ? ' <span style="font-weight:400;opacity:0.6">🔁 series</span>' : ''}</div>
+      <div style="padding:0.5rem 0.75rem;font-weight:600">${escHtml(r.title)}${r.isSeries ? ' <span style="font-weight:400;opacity:0.6">\u{1F501} series</span>' : ''}</div>
       ${dates}
     </div>`;
   }).join('');
@@ -8397,17 +8412,39 @@ function renderRemovalsCard() {
       </div>
       <div class="cat-header-actions">
         <span class="cat-header-status" id="removals-status"></span>
-        <button class="btn-cat-dismiss" id="removals-btn" onclick="event.stopPropagation(); applyRemovals()">Remove all</button>
       </div>
     </div>
     <div class="cat-card-body" id="removals-body" style="display:none">
+      <div class="rm-note">Nothing here is ticked. Choose the dates you want removed \u2014 each one says which closure it matched.</div>
+      <div class="rm-bulk">
+        <button class="btn-text" onclick="setAllRemovals(true)">Tick all ${total}</button>
+        <button class="btn-text" onclick="setAllRemovals(false)">Untick all</button>
+      </div>
       ${rows}
       <div class="cat-body-footer">
-        <button class="btn-cat-dismiss" onclick="applyRemovals()">Remove these dates</button>
-        <button class="btn-secondary" onclick="skipRemovals()">Keep them</button>
+        <button class="btn-cat-dismiss" id="removals-btn" disabled onclick="applyRemovals()">Remove selected (0)</button>
+        <button class="btn-secondary" onclick="skipRemovals()">Keep them all</button>
       </div>
     </div>
   </div>`;
+}
+
+function removalChecks() {
+  return [...document.querySelectorAll('.rm-check')];
+}
+
+function setAllRemovals(on) {
+  removalChecks().forEach(c => { c.checked = !!on; });
+  updateRemovalCount();
+}
+
+function updateRemovalCount() {
+  const n = removalChecks().filter(c => c.checked).length;
+  const btn = document.getElementById('removals-btn');
+  if (btn) {
+    btn.disabled = n === 0;
+    btn.textContent = `Remove selected (${n})`;
+  }
 }
 
 function toggleRemovals() {
@@ -8424,7 +8461,41 @@ function skipRemovals() {
   renderCategoryPage();
 }
 
+// Only what is ticked, grouped back per event the way the server expects.
+function pickedRemovals() {
+  const byEvent = new Map();
+  for (const c of removalChecks()) {
+    if (!c.checked) continue;
+    const id = c.dataset.event;
+    if (!byEvent.has(id)) byEvent.set(id, []);
+    byEvent.get(id).push(c.dataset.date);
+  }
+  return [...byEvent.entries()].map(([eventId, dates]) => ({ eventId, dates }));
+}
+
 async function applyRemovals() {
+  const picked = pickedRemovals();
+  const count = picked.reduce((n, r) => n + r.dates.length, 0);
+  if (!count) return;
+
+  // Named, not just counted. A number alone does not tell you whether this is
+  // the week you meant or every practice in the season.
+  const titles = [];
+  for (const r of (groupsState.removals || [])) {
+    if (picked.some(p => String(p.eventId) === String(r.eventId))) titles.push(r.title);
+    if (titles.length >= 10) break;
+  }
+  const more = (groupsState.removals || []).filter(r =>
+    picked.some(p => String(p.eventId) === String(r.eventId))).length - titles.length;
+  const ok = await cribaConfirm(
+    `Remove ${count} date${count === 1 ? '' : 's'} from your calendar?\n\n`
+    + titles.map(t => `\u2022 ${t}`).join('\n')
+    + (more > 0 ? `\n\u2022 and ${more} more` : '')
+    + `\n\nThis only removes events Criba added. Anything you created yourself is left alone.`
+    + `\n\nThis cannot be undone.`,
+    { confirmLabel: `Remove ${count}`, danger: true });
+  if (!ok) return;
+
   const btn = document.getElementById('removals-btn');
   const status = document.getElementById('removals-status');
   if (btn) btn.disabled = true;
@@ -8433,12 +8504,7 @@ async function applyRemovals() {
     const res = await fetch('/api/calendars/apply-removals', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        removals: (groupsState.removals || []).map(r => ({
-          eventId: r.eventId,
-          dates: (r.dates || []).map(d => d.date),
-        })),
-      }),
+      body: JSON.stringify({ removals: pickedRemovals() }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Failed');

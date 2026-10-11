@@ -6313,12 +6313,25 @@ app.post('/api/calendars/apply-removals', requireAuth, async (req, res) => {
   const calendar = google.calendar({ version: 'v3', auth });
   const removalTz = await getUserTimezone(req.user.email);
 
+  const targetCalId = await resolveTargetCalendar(req.user.email);
   let skipped = 0;
   const failures = [];
+  const refused = [];
   for (const r of removals) {
     const ev = await store.get(r.eventId);
     if (!ev?.calEventId) { failures.push({ eventId: r.eventId, error: 'not on calendar' }); continue; }
     const calId = ev.gcalId || 'primary';
+    // Only events Criba wrote, on the calendar Criba writes to.
+    //
+    // A row whose gcalId is some other calendar is one Criba adopted rather
+    // than created -- a school or club feed it does not own. Deleting there
+    // removes someone else's fixture, and before the adoption guards landed a
+    // row could point at exactly that. Refused and reported, not attempted.
+    if (calId !== (targetCalId || 'primary')) {
+      refused.push({ title: ev.title, calendar: calId, reason: 'not on the calendar Criba writes to' });
+      console.log(`[removals] REFUSED "${ev.title}" — points at ${calId}, not ${targetCalId}`);
+      continue;
+    }
     const dates = (r.dates || []).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d));
 
     for (const date of dates) {
@@ -6344,7 +6357,7 @@ app.post('/api/calendars/apply-removals', requireAuth, async (req, res) => {
     }
     await store.set(r.eventId, ev);
   }
-  res.json({ ok: true, skipped, failures });
+  res.json({ ok: true, skipped, failures, refused });
 });
 
 app.post('/api/calendars/confirm-categories', requireAuth, async (req, res) => {

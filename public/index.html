@@ -1142,6 +1142,13 @@
     align-items: start; padding: 14px 0; border-bottom: 1px solid var(--line);
   }
   .ev-row:first-child { border-top: 1px solid var(--line); }
+  /* A grid item defaults to min-width:auto, so the 1fr column will not shrink
+     below its content and the whole track set overflows the row. At 390px the
+     columns resolved to 56 + 338 + 44 inside a 374px row, which pushed the
+     actions column -- the entire More menu -- off the right edge of the phone.
+     The menu was in the DOM and visible the whole time, just outside the
+     screen, which is why it read as "there are no actions on these rows". */
+  .ev-main { min-width: 0; }
   .ev-time {
     font-family: var(--font-body); font-size: 13px; color: var(--muted);
     font-variant-numeric: tabular-nums; white-space: nowrap;
@@ -1151,6 +1158,9 @@
   .ev-title {
     font-family: var(--font-body); font-size: 16px; font-weight: 500; color: var(--text);
     line-height: 1.4; display: flex; align-items: baseline; gap: 8px;
+    /* A title with no spaces to break at would otherwise set the column's
+       minimum width on its own and reopen the overflow above. */
+    flex-wrap: wrap; overflow-wrap: anywhere;
   }
   .ev-origin {
     width: 8px; height: 8px; border-radius: 50%; background: var(--apricot);
@@ -5076,7 +5086,22 @@ function todayUnreviewed(from, to) {
   const queue = (typeof pendingEvents !== 'undefined' && Array.isArray(pendingEvents) ? pendingEvents : [])
     .filter(e => (e.status === 'pending' || e.status === 'draft') && inRange(e));
   const proposed = ((todayData && todayData.newsletters) || []).filter(inRange);
-  return [...queue, ...proposed].sort((a, b) =>
+  // The two lists overlap. A held newsletter is stored with status 'pending',
+  // so /api/events/pending returns it AND buildTodayPayload's heldShown returns
+  // it -- the same row twice, with the same id, so both copies also shared
+  // every DOM id on the row. Tapping the second one's menu opened the first
+  // one's, because getElementById returns the first match.
+  const seen = new Set();
+  const merged = [];
+  for (const e of [...queue, ...proposed]) {
+    const key = e && e.id != null ? String(e.id) : null;
+    if (key) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    merged.push(e);
+  }
+  return merged.sort((a, b) =>
     String(a.date + (a.time || '')).localeCompare(String(b.date + (b.time || ''))));
 }
 

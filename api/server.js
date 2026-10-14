@@ -12779,6 +12779,138 @@ async function dedupeUserCalendar(user, days, opts = {}) {
   return { dryRun: false, plan, skipped, deleted, failed, storeCleared };
 }
 
+// GET /api/newsletters/sender-preview — DRY RUN, metadata only.
+//
+// Reads the last N days of Gmail HEADERS. No bodies, no model calls, no
+// writes, no preferences set. It answers one question: if the header rule were
+// switched on, which senders would it catch, and what would it miss.
+//
+// The pattern column is reported and deliberately NOT used as a signal. A
+// school mails through Mailchimp and a coach sends from a no-reply club
+// address; guessing a newsletter from shape is how real school mail gets
+// silently filtered. It is here so the gap in the header rule is visible
+// before anything depends on it.
+const NEWSLETTER_PATTERN_SUBJECT = /\b(newsletter|weekly (?:update|digest|bulletin|roundup)|digest|bulletin|e-?blast|this week at)\b/i;
+
+function looksLikeNewsletterByPattern({ fromHeader, subject, recipientCount }) {
+  const reasons = [];
+  const addr = newsletterSenderKey(fromHeader);
+  if (/^(no-?reply|donotreply|do-not-reply|noreply|news|newsletter|info|mailer|bounce)[@.+]/i.test(addr)
+      || /^(no-?reply|newsletter|news)@/i.test(addr)) reasons.push('sender address');
+  if (NEWSLETTER_PATTERN_SUBJECT.test(String(subject || ''))) reasons.push('subject wording');
+  if (recipientCount >= 8) reasons.push(`${recipientCount} recipients`);
+  return reasons;
+}
+
+function countRecipients(headers) {
+  const get = n => (headers.find(h => String(h.name || '').toLowerCase() === n) || {}).value || '';
+  const all = `${get('to')},${get('cc')}`;
+  return all.split(',').map(x => x.trim()).filter(x => x.includes('@')).length;
+}
+
+app.get('/api/newsletters/sender-preview', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 90);
+  const maxMessages = Math.min(Math.max(parseInt(req.query.max, 10) || 400, 1), 1000);
+
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const gmail = google.gmail({ version: 'v1', auth });
+
+    // Which senders Criba has already written events from, and which are muted.
+    const wrote = new Map();
+    for (const ev of await getUserEvents(email).values()) {
+      const sndr = String(ev?.sender_email || '').toLowerCase().trim();
+      if (!sndr) continue;
+      if (!wrote.has(sndr)) wrote.set(sndr, { written: 0, total: 0 });
+      const w = wrote.get(sndr);
+      w.total++;
+      if (ev.calEventId) w.written++;
+    }
+    const mutedDomains = await getMutedDomains(email);
+    const learned = await getLearnedMutes(email);
+    const isMuted = addr => {
+      if (addressMuteKeysIn(learned, addr).length) return true;
+      const d = domainOf(addr);
+      return !!(d && (mutedDomains || []).some(x => String(x).toLowerCase() === d));
+    };
+
+    const senders = new Map();
+    let scanned = 0, pageToken;
+    do {
+      const list = await gmail.users.messages.list({
+        userId: 'me', q: `newer_than:${days}d -in:chats`,
+        maxResults: Math.min(100, maxMessages - scanned), pageToken,
+      });
+      const ids = (list.data.messages || []).map(m => m.id);
+      pageToken = list.data.nextPageToken;
+      for (const id of ids) {
+        if (scanned >= maxMessages) break;
+        scanned++;
+        let headers = [];
+        try {
+          const meta = await gmail.users.messages.get({
+            userId: 'me', id, format: 'metadata',
+            metadataHeaders: ['Subject', 'From', 'To', 'Cc',
+                              'List-Unsubscribe', 'List-Id', 'List-Post', 'Mailing-List', 'Precedence'],
+          });
+          headers = meta.data.payload?.headers || [];
+        } catch { continue; }
+        const get = n => (headers.find(h => String(h.name || '').toLowerCase() === n) || {}).value || '';
+        const fromHeader = get('from');
+        const addr = newsletterSenderKey(fromHeader);
+        if (!addr) continue;
+        const sig = newsletterSignals(headers);
+        const recipients = countRecipients(headers);
+        const pattern = looksLikeNewsletterByPattern({ fromHeader, subject: get('subject'), recipientCount: recipients });
+
+        if (!senders.has(addr)) {
+          senders.set(addr, {
+            sender: addr, name: parseFrom(fromHeader).senderName || '',
+            messages: 0, bulkHeaders: new Set(), bulkPrecedence: false,
+            maxRecipients: 0, patternReasons: new Set(), sampleSubject: get('subject') || '',
+          });
+        }
+        const row = senders.get(addr);
+        row.messages++;
+        for (const h of sig.headers) row.bulkHeaders.add(h);
+        if (sig.bulkPrecedence) row.bulkPrecedence = true;
+        row.maxRecipients = Math.max(row.maxRecipients, recipients);
+        for (const r of pattern) row.patternReasons.add(r);
+      }
+    } while (pageToken && scanned < maxMessages);
+
+    const rows = [...senders.values()].map(r => {
+      const w = wrote.get(r.sender) || { written: 0, total: 0 };
+      const hasHeaders = r.bulkHeaders.size > 0 || r.bulkPrecedence;
+      return {
+        sender: r.sender, name: r.name, messages: r.messages,
+        bulkHeaders: [...r.bulkHeaders], bulkPrecedence: r.bulkPrecedence,
+        wouldGate: hasHeaders,
+        maxRecipients: r.maxRecipients,
+        // The gap: no bulk headers, but it looks like one anyway.
+        missedByHeaderRule: !hasHeaders && r.patternReasons.size > 0,
+        patternReasons: [...r.patternReasons],
+        cribaWroteEvents: w.written, cribaRowsFromSender: w.total,
+        muted: isMuted(r.sender),
+        sampleSubject: r.sampleSubject.slice(0, 120),
+      };
+    }).sort((a, b) => b.messages - a.messages);
+
+    res.json({
+      dryRun: true, days, scanned, senders: rows.length,
+      wouldGate: rows.filter(r => r.wouldGate).length,
+      missedByHeaderRule: rows.filter(r => r.missedByHeaderRule).length,
+      wouldGateButAlreadyWroteEvents: rows.filter(r => r.wouldGate && r.cribaWroteEvents > 0).length,
+      rows,
+      note: 'Nothing was written, extracted or changed. Headers only; no bodies were read and no model was called.',
+    });
+  } catch (err) {
+    console.error('[newsletter-preview] failed:', err.message);
+    res.status(502).json({ error: 'preview failed', detail: err.message });
+  }
+});
+
 // GET /api/calendar/overlap-preview — DRY RUN over the last 14 days of
 // Criba-written events. Reports what the overlap check would decide for each
 // one, writing nothing. No confirm parameter and no write path.
@@ -13589,7 +13721,13 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
     try {
       const metaRes = await gmail.users.messages.get({
         userId: 'me', id: messageId, format: 'metadata',
-        metadataHeaders: ['Subject', 'From', 'Date'],
+        // The bulk headers are fetched but not yet acted on. newsletterSignals
+        // has read them since it was written and has never been given them:
+        // this request asked for three headers and List-Unsubscribe was not one
+        // of them, so the cheap, conclusive test could never fire. The webhook
+        // path uses format:'full' and already has them all.
+        metadataHeaders: ['Subject', 'From', 'Date', 'To', 'Cc',
+                          'List-Unsubscribe', 'List-Id', 'List-Post', 'Mailing-List', 'Precedence'],
       });
       const meta = metaRes.data;
       const headers = meta.payload?.headers || [];

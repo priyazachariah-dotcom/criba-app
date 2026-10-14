@@ -533,9 +533,40 @@ function normalizeGrade(raw) {
 // grade only counts when it is unambiguously a grade: the word kindergarten or
 // TK, an explicit "3rd grade" / "grades 4-6", or an ordinal range like "K-2nd".
 // A bare "1st" is left alone — it is far more often a place or a date.
+// The academic year's graduating class, so "Class of 2030" can be turned into
+// a grade. A school year that starts in August belongs to the calendar year
+// after it, so in October 2026 the seniors are the class of 2027.
+function seniorClassYear(now = new Date()) {
+  const y = now.getFullYear();
+  return now.getMonth() >= 6 ? y + 1 : y;   // July onward is the next school year
+}
+
 function gradesMentionedIn(text) {
-  const t = String(text || '').toLowerCase();
+  let t = String(text || '').toLowerCase();
   const found = new Set();
+
+  // "Junior varsity" is a team, not year eleven. Consumed before "junior" is
+  // looked for, the same way TIER_PATTERNS consumes it before "varsity".
+  t = t.replace(/\bjunior\s+varsity\b/g, ' jv ');
+
+  // High-school years by name. These are how a school actually writes to
+  // parents -- "sophomore parents", "senior awards" -- and none of them were
+  // recognised, so every one of those events passed the grade gate untouched.
+  const CLASS_WORDS = [
+    [/\b(freshman|freshmen|frosh)\b/, 9],
+    [/\b(sophomores?|soph)\b/, 10],
+    [/\bjuniors?\b/, 11],
+    [/\bseniors?\b/, 12],
+  ];
+  for (const [re, grade] of CLASS_WORDS) if (re.test(t)) found.add(grade);
+
+  // "Class of 2030" is a grade stated the other way round.
+  const senior = seniorClassYear();
+  for (const m of t.matchAll(/\bclass of (\d{4})\b/g)) {
+    const grade = 12 - (parseInt(m[1], 10) - senior);
+    if (grade >= -1 && grade <= 12) found.add(grade);
+  }
+
   const add = g => { if (g !== null) found.add(g); };
   const expand = (a, b) => { if (a !== null && b !== null && b >= a) for (let g = a; g <= b; g++) found.add(g); };
 
@@ -584,6 +615,11 @@ function gradeRelevance(text, members) {
   const label = g => g === -1 ? 'TK' : g === 0 ? 'K' : `${g}`;
   return {
     relevant: false,
+    // Labelled so the card can say what kind of hold this is. Not in
+    // TODAY_SHOWN_HELD_KINDS, so it stays off Today entirely: an event for
+    // somebody else's year is not today's plan, it is an answer to a question
+    // nobody asked.
+    held_kind: 'not_relevant', held_key: null,
     reason: `For grade ${[...mentioned].sort((a, b) => a - b).map(label).join(', ')} — nobody in your family is in that grade`,
   };
 }

@@ -1687,7 +1687,14 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
   // calendar, and this is the only moment the answer is authoritative.
   if (!opts.skipDuplicateCheck) {
     const fresh = await eventsOnDate(ownerEmail, calendarApi, targetCalId, ev.date, { fresh: true });
-    const late = findCalendarDuplicate(fresh, ev.title, ev.date, ev.time || '');
+    // The same options the first check gets. Without endDate the span guard
+    // compares the existing event's LAST day against this event's FIRST day,
+    // which never agree for anything multi-day -- so since that guard landed
+    // this check has been blind to every multi-day all-day event, including an
+    // exact duplicate of one. A late check weaker than the early one is worse
+    // than no late check, because it reads as cover that is not there.
+    const late = findCalendarDuplicate(fresh, ev.title, ev.date, ev.time || '',
+      { endDate: ev.end_date || '' });
     if (late) {
       ev.duplicate_of = { ...late, calendarId: targetCalId, calendarName: targetCalId };
       console.log(`[calendar-dedup] LATE-SKIP "${ev.title}" on ${ev.date} — appeared between the first check and the write`);

@@ -1133,6 +1133,14 @@
   .ev-dup-title { font-size: 14px; font-weight: 500; margin: 2px 0; overflow-wrap: anywhere; }
   .ev-dup-when { font-size: 13px; color: var(--text2); }
   .ev-dup-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .gh { margin-top: 14px; }
+  .gh-head { display: flex; justify-content: space-between; align-items: center; width: 100%;
+    background: none; border: none; padding: 10px 0; cursor: pointer;
+    font-family: var(--font-body); font-size: 13px; color: var(--muted); }
+  .gh-chev { font-size: 16px; line-height: 1; }
+  .gh-row { padding: 6px 0; font-size: 13px; }
+  .gh-title { color: var(--text2); }
+  .gh-why { display: block; font-size: 12px; color: var(--muted); }
   .src-maint-last { font-size: 12px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
@@ -5253,6 +5261,43 @@ function toggleNotReviewed() {
   if (chev) chev.textContent = notReviewedOpen ? '\u2212' : '+';
 }
 
+// Items held because they name somebody else's year are real, and the reason
+// they were held has to stay inspectable -- a wrong grade reading is invisible
+// otherwise. But they are not questions for the user either: nothing is being
+// asked, Criba has already decided. So they collapse to one line.
+let gradeHeldOpen = false;
+function toggleGradeHeld() {
+  gradeHeldOpen = !gradeHeldOpen;
+  const body = document.getElementById('gh-body');
+  const chev = document.getElementById('gh-chev');
+  if (body) body.hidden = !gradeHeldOpen;
+  if (chev) chev.textContent = gradeHeldOpen ? '\u2212' : '+';
+}
+
+function notReviewedBody(items) {
+  const asks = (items || []).filter(e => e.held_kind !== 'not_relevant');
+  const held = (items || []).filter(e => e.held_kind === 'not_relevant');
+  const parts = [];
+  parts.push(asks.length
+    ? asks.map(it => renderEventRow({ ...it, notOnCalendar: true }, 'today')).join('')
+    : (held.length ? '' : '<div class="today-none">Nothing waiting.</div>'));
+  if (held.length) {
+    parts.push(`<div class="gh">
+      <button class="gh-head" onclick="toggleGradeHeld()" aria-expanded="${gradeHeldOpen}">
+        <span>${held.length} held for other grades</span>
+        <span class="gh-chev" id="gh-chev" aria-hidden="true">${gradeHeldOpen ? '\u2212' : '+'}</span>
+      </button>
+      <div class="gh-body" id="gh-body" ${gradeHeldOpen ? '' : 'hidden'}>
+        ${held.map(e => `<div class="gh-row">
+          <span class="gh-title">${escHtml(e.title || '')}</span>
+          <span class="gh-why">${escHtml(e.held_reason || 'for another grade')}</span>
+        </div>`).join('')}
+      </div>
+    </div>`);
+  }
+  return parts.join('');
+}
+
 function todayNotReviewedHtml(items, note) {
   return `<div class="today-section nr">
     <button class="nr-head" id="nr-head" onclick="toggleNotReviewed()" aria-expanded="${notReviewedOpen}">
@@ -5261,9 +5306,7 @@ function todayNotReviewedHtml(items, note) {
     </button>
     <div class="nr-body" id="nr-body" ${notReviewedOpen ? '' : 'hidden'}>
       <div class="nr-note">${note}</div>
-      ${items.length
-        ? items.map(it => renderEventRow({ ...it, notOnCalendar: true }, 'today')).join('')
-        : '<div class="today-none">Nothing waiting.</div>'}
+      ${notReviewedBody(items)}
     </div>
   </div>`;
 }

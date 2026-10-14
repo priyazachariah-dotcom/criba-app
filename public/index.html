@@ -1124,6 +1124,15 @@
   .rm-check { margin-top: 3px; flex-shrink: 0; }
   .rm-note { font-size: 13px; color: var(--muted); padding: 10px 12px 0; line-height: 1.5; }
   .rm-bulk { display: flex; gap: 14px; padding: 8px 12px 4px; }
+  .ev-dup { grid-column: 1 / -1; margin-top: 10px; padding: 12px; background: var(--bg2);
+    border-radius: var(--radius-card); }
+  .ev-dup-q { font-family: var(--font-body); font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+  .ev-dup-pair { display: flex; gap: 12px; flex-wrap: wrap; }
+  .ev-dup-side { flex: 1 1 200px; min-width: 0; }
+  .ev-dup-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .ev-dup-title { font-size: 14px; font-weight: 500; margin: 2px 0; overflow-wrap: anywhere; }
+  .ev-dup-when { font-size: 13px; color: var(--text2); }
+  .ev-dup-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
   .src-maint-last { font-size: 12px; color: var(--muted); margin: 8px 0 12px; line-height: 1.5; }
 
   /* The midnight sweep's receipt. Quiet on purpose: this is a note about
@@ -4764,6 +4773,35 @@ function wasCleared(elId) {
   return !!el && el.defaultValue !== '' && el.value === '';
 }
 
+// Answering a possible-duplicate card.
+async function evDuplicateVerdict(id, ctx, verdict) {
+  const row = document.getElementById(`ev-${ctx}-${id}`);
+  if (row) row.style.opacity = '0.45';
+  let data;
+  try {
+    const res = await fetch('/api/events/duplicate-verdict', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, verdict }),
+    });
+    data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (row) row.style.opacity = '';
+      evActionError(id, ctx, data.error || 'Could not record that.');
+      return;
+    }
+  } catch {
+    if (row) row.style.opacity = '';
+    evActionError(id, ctx, 'Could not reach Criba.');
+    return;
+  }
+  if (typeof pendingEvents !== 'undefined') pendingEvents = pendingEvents.filter(e => e.id !== id);
+  evRegistry.delete(id);
+  cribaAlert(verdict === 'same'
+    ? 'Noted \u2014 not added, your calendar already has it.'
+    : (data.written ? 'Added to your calendar.' : 'Noted \u2014 Criba could not add it, try again.'));
+  if (ctx === 'today') loadToday(); else loadWhatsAhead();
+}
+
 function renderEventRow(ev, ctx = 'today') {
   evRemember(ev);
   const id = ev.id;
@@ -4777,6 +4815,10 @@ function renderEventRow(ev, ctx = 'today') {
   //  - on the calendar, not Criba's      -> no menu; nothing to act on
   const waiting = !!ev.notOnCalendar;
   const readOnly = !!ev.readOnly;
+  // A possible duplicate replaces the row's menu with the question itself.
+  // Offering Add alongside "these look like duplicates" asks two things at
+  // once and invites the answer that makes the second copy.
+  const maybeDup = ev.possible_duplicate_of || null;
   const fromEmail = !waiting && (ev.source === 'gmail' || ev.sender_email)
     ? '<span class="ev-origin" title="Criba added this from your email"></span>' : '';
   return `
@@ -4786,7 +4828,7 @@ function renderEventRow(ev, ctx = 'today') {
       <div class="ev-title">${fromEmail}${waiting ? '<span class="ev-tag">Not added</span>' : ''}${escHtml(ev.title || '(untitled)')}</div>
       ${meta && !past ? `<div class="ev-meta">${meta}</div>` : ''}
     </div>
-    <div class="ev-actions">${readOnly ? '' : `
+    <div class="ev-actions">${maybeDup ? '' : (readOnly ? '' : `
       <button class="ev-more" id="${rid}-more" aria-label="More actions" aria-haspopup="menu"
         aria-expanded="false" onclick="evMenu('${escHtml(id)}','${ctx}')">
         <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><circle cx="9" cy="4" r="1.4" fill="currentColor"/><circle cx="9" cy="9" r="1.4" fill="currentColor"/><circle cx="9" cy="14" r="1.4" fill="currentColor"/></svg>
@@ -4802,8 +4844,28 @@ function renderEventRow(ev, ctx = 'today') {
         <button class="ev-menu-item" role="menuitem" onclick="evEdit('${escHtml(id)}','${ctx}')">Edit</button>
         <button class="ev-menu-item" role="menuitem" onclick="evKeep('${escHtml(id)}','${ctx}')">Keep</button>
         <button class="ev-menu-item ev-menu-danger" role="menuitem" onclick="evDelete('${escHtml(id)}','${ctx}')">Delete</button>`}
-      </div>`}
+      </div>`)}
     </div>
+    ${maybeDup ? `
+    <div class="ev-dup">
+      <div class="ev-dup-q">These look like duplicates. Review?</div>
+      <div class="ev-dup-pair">
+        <div class="ev-dup-side">
+          <div class="ev-dup-label">Already on ${escHtml(maybeDup.calendarName || 'your calendar')}</div>
+          <div class="ev-dup-title">${escHtml(maybeDup.title || '')}</div>
+          <div class="ev-dup-when">${escHtml(maybeDup.date || '')}${maybeDup.endDate && maybeDup.endDate !== maybeDup.date ? ' \u2192 ' + escHtml(maybeDup.endDate) : ''}</div>
+        </div>
+        <div class="ev-dup-side">
+          <div class="ev-dup-label">New, not added</div>
+          <div class="ev-dup-title">${escHtml(ev.title || '')}</div>
+          <div class="ev-dup-when">${escHtml(ev.date || '')}${ev.end_date && ev.end_date !== ev.date ? ' \u2192 ' + escHtml(ev.end_date) : ''}</div>
+        </div>
+      </div>
+      <div class="ev-dup-actions">
+        <button class="btn-secondary btn-sm" onclick="evDuplicateVerdict('${escHtml(id)}','${ctx}','same')">Same event</button>
+        <button class="btn-secondary btn-sm" onclick="evDuplicateVerdict('${escHtml(id)}','${ctx}','different')">Different</button>
+      </div>
+    </div>` : ''}
     <div class="ev-editor" id="${rid}-editor" hidden></div>
   </div>`;
 }

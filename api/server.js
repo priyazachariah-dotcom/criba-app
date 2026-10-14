@@ -1656,6 +1656,127 @@ function buildEventDescription(ev) {
   return parts.join('\n\n');
 }
 
+// ── Overlapping duplicates ────────────────────────────────────────────────
+//
+// Every check before this one compared a single date. "West Book Fair" Oct 8-19
+// and "Book Fair" Oct 13-20 are one fair described twice, and findCalendarDuplicate
+// discarded the pair on its first line -- ex.date !== date -- before it could
+// look at the titles, which do match. Two descriptions of one thing rarely
+// agree about which day it starts.
+//
+// Returns a tier, because certainty differs:
+//   'clear'    -- ranges overlap and the labels match, or a timed event agrees
+//                 on day, minute and place. Criba acts on this by itself.
+//   'probable' -- ranges overlap and the labels share their distinctive words
+//                 without either containing the other. Criba will not decide
+//                 this one; it asks.
+function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+  const a1 = aStart, a2 = aEnd || aStart, b1 = bStart, b2 = bEnd || bStart;
+  if (!a1 || !b1) return false;
+  return a1 <= b2 && b1 <= a2;
+}
+
+// Shared distinctive words without the containment the clear tier requires.
+// "Standardized Testing Day (Pre-ACT, PSAT, SAT)" and "Testing Day (Special Bus
+// Schedule)" share "testing" and neither set contains the other -- plausibly
+// one day, plausibly two things on one day, and not Criba's call to make.
+function allDayTitlesProbable(a, b) {
+  if (titlesDifferOnAudience(a, b)) return false;
+  const ta = allDayTitleTokens(a), tb = allDayTitleTokens(b);
+  if (!ta.size || !tb.size) return false;
+  let shared = 0;
+  for (const w of ta) if (tb.has(w)) shared++;
+  if (!shared) return false;
+  // Two shared words, or one when the shorter label is short enough that one
+  // word is most of what it says. "Standardized Testing Day (Pre-ACT, PSAT,
+  // SAT)" and "Testing Day (Special Bus Schedule)" share only "testing", and
+  // that is the whole reason this tier exists -- it is a real question, and
+  // the answer is a card rather than a decision.
+  //
+  // Requiring two would have returned "write it" for exactly the pair that
+  // prompted the tier. Allowing one on any length would pair a book fair with
+  // a science fair for sharing "fair", which is a card nobody needed.
+  const small = Math.min(ta.size, tb.size);
+  return shared >= 2 || (shared >= 1 && small <= 4);
+}
+
+// One events.list per calendar, over the whole span of the incoming event.
+async function calendarWindow(ownerEmail, calendarApi, calId, fromDate, toDate) {
+  const key = `${cacheScope(ownerEmail, 'calWindow')}|${calId}|${fromDate}|${toDate}`;
+  const hit = _calDayCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.events;
+  const events = await fetchExistingCalendarEvents(calendarApi, calId, [fromDate, toDate]);
+  _calDayCache.set(key, { events, at: Date.now() });
+  return events;
+}
+
+async function findOverlappingOnAnyCalendar(ownerEmail, calendarApi, targetCalId, ev, opts = {}) {
+  if (!ev?.date || !ev?.title) return null;
+  const start = ev.date;
+  const end = ev.end_date || ev.date;
+  const target = targetCalId || 'primary';
+  let probable = null;
+  try {
+    const cals = await visibleCalendars(ownerEmail, calendarApi, target);
+    for (const cal of cals) {
+      const existing = await calendarWindow(ownerEmail, calendarApi, cal.id, start, end, opts);
+      for (const ex of existing) {
+        const exEnd = existingLastDay(ex) || ex.date;
+        if (!rangesOverlap(start, end, ex.date, exEnd)) continue;
+        // Audience outranks everything, in both tiers: a frosh game and a
+        // varsity game, or two grade bands, are never one event.
+        if (titlesDifferOnAudience(ex.title, ev.title)) continue;
+
+        const bothAllDay = (!ev.time) && (!ex.time || ex.is_all_day);
+        if (bothAllDay) {
+          if (allDayTitlesMatch(ex.title, ev.title)) {
+            return { tier: 'clear', event: ex, calendarId: cal.id, calendarName: cal.name,
+                     onTarget: cal.id === target, reason: 'overlapping dates and the same label' };
+          }
+          if (!probable && allDayTitlesProbable(ex.title, ev.title)) {
+            probable = { tier: 'probable', event: ex, calendarId: cal.id, calendarName: cal.name,
+                         onTarget: cal.id === target, reason: 'overlapping dates and shared words' };
+          }
+          continue;
+        }
+        // Timed: the rule sameEventByFacts already uses -- same day, same
+        // half hour, compatible place.
+        if (ev.time && ex.time && ex.date === start
+            && Math.abs(timeToMinutes(ev.time) - timeToMinutes(ex.time)) <= 30
+            && placesCompatible(ex.location, ev.location)) {
+          return { tier: 'clear', event: ex, calendarId: cal.id, calendarName: cal.name,
+                   onTarget: cal.id === target, reason: 'same day, time and place' };
+        }
+      }
+    }
+  } catch (err) {
+    // A failed lookup must never block a write. Missing an event is worse than
+    // occasionally writing a duplicate we could have caught.
+    console.error('[calendar-dedup] overlap lookup failed, writing anyway:', err.message);
+    return null;
+  }
+  return probable;
+}
+
+// Fill blanks on an event Criba already has, never overwrite.
+//
+// Only on the target calendar. A match on a subscribed feed belongs to the
+// school: patching it edits their event, which is the thing #73 exists to stop.
+async function enrichExistingEvent(calendarApi, calendarId, existing, ev) {
+  const patch = {};
+  if (!existing.location && ev.location) patch.location = ev.location;
+  if (!existing.time && ev.time && !ev.is_all_day) {
+    // Only a blank start time is filled, and only with the span the new
+    // reading states; an all-day entry is not converted into a timed one here.
+    return { patched: false, reason: 'would change an all-day event into a timed one' };
+  }
+  const note = buildEventDescription(ev);
+  if (note && !existing.description) patch.description = note;
+  if (!Object.keys(patch).length) return { patched: false, reason: 'nothing new to add' };
+  await calendarApi.events.patch({ calendarId, eventId: existing.id, requestBody: patch, sendUpdates: 'none' });
+  return { patched: true, fields: Object.keys(patch) };
+}
+
 async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts = {}) {
   // Scopes the dedup caches to this account. Every caller must supply it.
   const ownerEmail = opts.email || null;
@@ -1664,6 +1785,41 @@ async function autoWriteToCalendar(calendarApi, targetCalId, ev, colorId, opts =
     if (dup) {
       ev.duplicate_of = dup;
       console.log(`[calendar-dedup] SKIP "${ev.title}" on ${ev.date} — already on "${dup.calendarName}" as "${dup.title}"`);
+      return null;
+    }
+
+    // Overlapping ranges, which every check above misses because they all
+    // compare a single date.
+    const over = await findOverlappingOnAnyCalendar(ownerEmail, calendarApi, targetCalId, ev);
+    if (over) {
+      const exEnd = existingLastDay(over.event) || over.event.date;
+      const span = `${ev.date}-${ev.end_date || ev.date}`;
+      const exSpan = `${over.event.date}-${exEnd}`;
+      if (over.tier === 'clear') {
+        ev.duplicate_of = { ...over.event, calendarId: over.calendarId, calendarName: over.calendarName };
+        console.log(`[calendar-dedup] OVERLAP-SKIP "${ev.title}" ${span} — "${over.event.title}" ${exSpan}`
+          + ` on ${over.calendarName} (${over.calendarId}/${over.event.id}) — ${over.reason}`);
+        // Enrich only what Criba writes to. A match on a subscribed feed is
+        // the school's event; logging it is the whole of what we may do.
+        if (over.onTarget) {
+          try {
+            const r = await enrichExistingEvent(calendarApi, over.calendarId, over.event, ev);
+            if (r.patched) console.log(`[calendar-dedup] ENRICHED ${over.event.id} with ${r.fields.join(', ')}`);
+          } catch (e) { console.error('[calendar-dedup] enrich failed:', e.message); }
+        } else {
+          console.log(`[calendar-dedup] not enriching ${over.event.id} — on ${over.calendarName}, which Criba does not own`);
+        }
+        return null;
+      }
+      // Probable: Criba will not decide this one. Nothing is written and the
+      // caller is told to raise a card instead.
+      ev.possible_duplicate_of = {
+        title: over.event.title, date: over.event.date, endDate: exEnd,
+        calendarId: over.calendarId, calendarName: over.calendarName,
+        eventId: over.event.id, reason: over.reason,
+      };
+      console.log(`[calendar-dedup] OVERLAP-ASK "${ev.title}" ${span} — maybe "${over.event.title}" ${exSpan}`
+        + ` on ${over.calendarName} (${over.calendarId}/${over.event.id})`);
       return null;
     }
   }
@@ -4443,6 +4599,76 @@ app.get('/api/mutes/cleanup-preview', requireAuth, async (req, res) => {
     note: 'Nothing was deleted. This endpoint only reads.' });
 });
 
+// POST /api/events/duplicate-verdict — the answer to a "these look like
+// duplicates" card.
+//
+// "Same event" means do not write it; the calendar already has it.
+// "Different" means write it, and the card was wrong.
+//
+// Both answers are recorded. The matcher does not read them yet -- turning a
+// tally into behaviour is a decision, not a side effect of collecting it --
+// but a question asked and answered that is then thrown away is a question
+// that will be asked again.
+app.post('/api/events/duplicate-verdict', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const { id, verdict } = req.body || {};
+  if (verdict !== 'same' && verdict !== 'different') {
+    return res.status(400).json({ error: 'verdict must be "same" or "different"' });
+  }
+  const events = getUserEvents(email);
+  const ev = await events.get(id);
+  if (!ev) return res.status(404).json({ error: 'Not found' });
+  const cand = ev.possible_duplicate_of || null;
+
+  try {
+    await redis.lpush(`dupVerdicts:${email}`, JSON.stringify({
+      ts: Date.now(), verdict,
+      title: ev.title, date: ev.date, endDate: ev.end_date || ev.date,
+      matchedTitle: cand?.title || null, matchedDate: cand?.date || null,
+      matchedCalendar: cand?.calendarName || null,
+    }));
+    await redis.ltrim(`dupVerdicts:${email}`, 0, 499);
+    await redis.expire(`dupVerdicts:${email}`, 400 * 24 * 60 * 60);
+  } catch (err) { console.error('[dup-verdict] record failed:', err.message); }
+
+  if (verdict === 'same') {
+    ev.status = 'duplicate';
+    ev.reviewed = false;
+    ev.held_kind = null;
+    ev.conflict_note = cand
+      ? `Already on your calendar as "${cand.title}" — not added again`
+      : 'Already on your calendar — not added again';
+    await events.set(id, ev);
+    console.log(`[dup-verdict] ${email} SAME "${ev.title}" ~ "${cand?.title || '?'}"`);
+    return res.json({ ok: true, verdict, written: false });
+  }
+
+  // Different: write it, skipping the check that raised the card.
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const targetCalId = await resolveTargetCalendar(email);
+    const timezone = await getUserTimezone(email);
+    const colorId = await resolveEventColorByNames(email,
+      Array.isArray(ev.attendees) ? ev.attendees : [],
+      [ev.title, ev.location, ev.notes].filter(Boolean).join(' '), ev.sender_email || null);
+    const calEventId = await autoWriteToCalendar(calendar, targetCalId, ev, colorId,
+      { timezone, email, skipDuplicateCheck: true });
+    ev.status = calEventId ? 'added' : 'pending';
+    ev.calEventId = calEventId || null;
+    ev.gcalId = calEventId ? targetCalId : null;
+    ev.held_kind = null;
+    ev.possible_duplicate_of = null;
+    ev.approved_at = new Date().toISOString();
+    await events.set(id, ev);
+    console.log(`[dup-verdict] ${email} DIFFERENT "${ev.title}" — written`);
+    res.json({ ok: true, verdict, written: !!calEventId });
+  } catch (err) {
+    console.error('[dup-verdict] write failed:', err.message);
+    res.status(500).json({ error: 'Could not add it to your calendar: ' + err.message });
+  }
+});
+
 // POST /api/events/mute-newsletter — "Don't show me events from this newsletter
 // again", from one button press on one queued item.
 //
@@ -5219,6 +5445,7 @@ async function buildTodayPayload(user) {
     // review queue uses, instead of a second editor fed by a thinner payload.
     // Read-only additions: nothing about how events are written changes.
     date: e.date || null, end_date: e.end_date || null,
+    possible_duplicate_of: e.possible_duplicate_of || null,
     notes: e.notes || null, status: e.status || null,
     attendees: Array.isArray(e.attendees) ? e.attendees : [],
     recurrence_rule: e.recurrence_rule || null,
@@ -10517,6 +10744,9 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
         }
         // Not written because it is already on one of the user's calendars.
         const calDup = evObj.duplicate_of || null;
+        // Criba would not decide this one, so it becomes a card rather than a
+        // silent skip or a second copy.
+        const maybeDup = evObj.possible_duplicate_of || null;
         const evId = randomUUID();
         await eventsStore.set(evId, {
           id: evId,
@@ -10541,7 +10771,9 @@ async function runGmailExtraction(email, refreshToken, newHistoryId, deadline) {
           // sweep must look up the exact cause, not a category of cause.
           // Deliberately never re-evaluated at read time: this records what was
           // true when the decision was made.
-          held_kind: hold ? (hold.held_kind || null) : (relevance.held_kind || null),
+          held_kind: maybeDup ? 'possible_duplicate'
+            : (hold ? (hold.held_kind || null) : (relevance.held_kind || null)),
+          possible_duplicate_of: maybeDup,
           held_key: hold ? (hold.held_key || null) : (relevance.held_key || null),
           source_type: ev.source_type || null,
           recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,
@@ -12511,6 +12743,51 @@ async function dedupeUserCalendar(user, days, opts = {}) {
   return { dryRun: false, plan, skipped, deleted, failed, storeCleared };
 }
 
+// GET /api/calendar/overlap-preview — DRY RUN over the last 14 days of
+// Criba-written events. Reports what the overlap check would decide for each
+// one, writing nothing. No confirm parameter and no write path.
+app.get('/api/calendar/overlap-preview', requireAuth, async (req, res) => {
+  const email = req.user.email;
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 14, 1), 60);
+  const since = addDaysToDateStr(localDateOnServer(), -days);
+  try {
+    const auth = await getUserOAuthClient(req.user);
+    const calendar = google.calendar({ version: 'v3', auth });
+    const targetCalId = await resolveTargetCalendar(email);
+
+    const rows = (await getUserEvents(email).values()).filter(e =>
+      e && e.title && e.date && e.source === 'gmail'
+      && String(e.created_at || '').slice(0, 10) >= since);
+
+    const out = { clear: [], probable: [], newEvent: [] };
+    for (const ev of rows) {
+      // The event itself is on the calendar, so it would match itself. Compare
+      // against everything except its own entry.
+      const hit = await findOverlappingOnAnyCalendar(email, calendar, targetCalId, ev);
+      const self = hit && ev.calEventId && String(hit.event.id) === String(ev.calEventId);
+      if (!hit || self) { out.newEvent.push({ title: ev.title, date: ev.date }); continue; }
+      const exEnd = existingLastDay(hit.event) || hit.event.date;
+      const entry = {
+        title: ev.title, date: ev.date, endDate: ev.end_date || ev.date,
+        createdAt: ev.created_at || null,
+        matchedTitle: hit.event.title, matchedDate: hit.event.date, matchedEndDate: exEnd,
+        matchedCalendar: hit.calendarName, matchedCalendarId: hit.calendarId,
+        matchedEventId: hit.event.id, onTarget: hit.onTarget, reason: hit.reason,
+      };
+      (hit.tier === 'clear' ? out.clear : out.probable).push(entry);
+    }
+    res.json({
+      dryRun: true, days, since, examined: rows.length,
+      wouldBlock: out.clear.length, wouldAsk: out.probable.length, wouldWrite: out.newEvent.length,
+      clear: out.clear, probable: out.probable,
+      note: 'Nothing was written or deleted. This endpoint only reads.',
+    });
+  } catch (err) {
+    console.error('[overlap-preview] failed:', err.message);
+    res.status(502).json({ error: 'preview failed', detail: err.message });
+  }
+});
+
 // GET /api/calendar/duplicate-groups — DRY RUN. Lists duplicate groups already
 // on the calendar and deletes nothing. No confirm parameter and no write path:
 // cleanup-duplicates is where removal lives, and a list that could delete is a
@@ -13665,6 +13942,7 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
             } catch (calErr) { console.error(`[backfill] GCal write failed "${ev.title}":`, calErr.message); }
           }
           const otherCalDup = bfWriteObj.duplicate_of || null;
+          const maybeDup = bfWriteObj.possible_duplicate_of || null;
           const evId = randomUUID();
           const stored = {
             id: evId, title: ev.title, date: ev.date, end_date: ev.end_date || '',
@@ -13682,7 +13960,9 @@ app.post('/api/gmail/backfill', requireAuth, async (req, res) => {
           // sweep must look up the exact cause, not a category of cause.
           // Deliberately never re-evaluated at read time: this records what was
           // true when the decision was made.
-          held_kind: hold ? (hold.held_kind || null) : (relevance.held_kind || null),
+          held_kind: maybeDup ? 'possible_duplicate'
+            : (hold ? (hold.held_kind || null) : (relevance.held_kind || null)),
+          possible_duplicate_of: maybeDup,
           held_key: hold ? (hold.held_key || null) : (relevance.held_key || null),
             duplicate_of_calendar: !!otherCalDup,
             source_type: ev.source_type || null, recurrence_rule: ev.recurrence || null, recurrence_end_date: ev.recurrence_end_date || null,

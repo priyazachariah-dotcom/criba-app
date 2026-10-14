@@ -1706,7 +1706,11 @@ function buildEventDescription(ev) {
 //   'probable' -- ranges overlap and the labels share their distinctive words
 //                 without either containing the other. Criba will not decide
 //                 this one; it asks.
-function rangesOverlap(aStart, aEnd, bStart, bEnd) {
+// Named for dates specifically. There is already a rangesOverlap for busy
+// time-ranges in household conflict detection, and two function declarations
+// with one name at module top level is a SyntaxError in an ES module -- which
+// is how this took production down rather than failing a check.
+function dateRangesOverlap(aStart, aEnd, bStart, bEnd) {
   const a1 = aStart, a2 = aEnd || aStart, b1 = bStart, b2 = bEnd || bStart;
   if (!a1 || !b1) return false;
   return a1 <= b2 && b1 <= a2;
@@ -1758,7 +1762,7 @@ async function findOverlappingOnAnyCalendar(ownerEmail, calendarApi, targetCalId
       const existing = await calendarWindow(ownerEmail, calendarApi, cal.id, start, end, opts);
       for (const ex of existing) {
         const exEnd = existingLastDay(ex) || ex.date;
-        if (!rangesOverlap(start, end, ex.date, exEnd)) continue;
+        if (!dateRangesOverlap(start, end, ex.date, exEnd)) continue;
         // Audience outranks everything, in both tiers: a frosh game and a
         // varsity game, or two grade bands, are never one event.
         if (titlesDifferOnAudience(ex.title, ev.title)) continue;

@@ -36,7 +36,11 @@ const SHADOW_MODEL = 'claude-sonnet-5';
 // Candidates the harness may replay. Kept as an allow-list so a typo becomes an
 // error rather than a silent fallback to Fable pricing on a real run.
 const SHADOW_PRICING = {
-  'claude-sonnet-5':  { in: 2,  out: 10, cacheRead: 0.1 },
+  'claude-sonnet-5':   { in: 2,  out: 10, cacheRead: 0.1 },
+  // Both spellings are priced. The allow-list is the whole safety here: a name
+  // that is not in it throws before any call, so a typo costs an error rather
+  // than a silent run on a model nobody chose at a price nobody checked.
+  'claude-sonnet-5-5': { in: 2,  out: 10, cacheRead: 0.1 },
   'claude-opus-5':    { in: 5,  out: 25, cacheRead: 0.1 },
   // The incumbent. Present so it can be replayed through the identical harness
   // -- the only way to check that its STORED output is a fair baseline rather
@@ -600,8 +604,12 @@ async function sonnetExtract(prompt, subject, body, dateSent, familyNames, maxTo
 // It cannot touch a calendar. There is no Calendar client in this file, no
 // import of the events store, and the only Google call it makes is a read of
 // the messages whose thread ids were passed in.
+const KINDS_BUDGET_MS = 42000;   // headroom under Vercel's 60s function cap
+function kindsRowsKey(runId) { return `kindsEvalRows:${runId}`; }
+
 export async function runKindsEval({
   email, specs, model = SHADOW_MODEL, capUsd = 2, dryRun = false, roster = [],
+  runId = null, batch = 3,
 } = {}) {
   if (!email) throw new Error('email is required');
   if (!Array.isArray(specs) || !specs.length) throw new Error('specs are required');
@@ -616,6 +624,7 @@ export async function runKindsEval({
   if (dryRun) {
     return { dryRun: true, model, emails: planned.length, calls: planned.length * 2,
       estimateUsd, capUsd, missingIds: missing,
+      batches: Math.ceil(planned.length / batch), batchSize: batch,
       note: 'Nothing was called. No mail was read and no model was invoked.' };
   }
   if (estimateUsd > capUsd) {
@@ -627,9 +636,21 @@ export async function runKindsEval({
   const basePrompt = loadExtractionPrompt(serverSource);
   const kindsPrompt = applyPromptVariant(basePrompt, 'kinds');
 
+  // Twenty model calls at six to nine seconds each does not fit in a sixty
+  // second function. The run is chunked: each call processes a few messages,
+  // stores them, and hands back a cursor. Partial results are kept in Redis so
+  // a timeout costs the remaining messages rather than all of them.
+  if (!runId) throw new Error('runId is required for a real run');
+  const key = kindsRowsKey(runId);
+  const already = await redis.hkeys(key);
+  const doneLabels = new Set(already);
+  const todo = planned.filter(sp => !doneLabels.has(sp.label));
+
   const startedMicro = Number(await redis.get(shadowSpendKey())) || 0;
+  const startedAt = Date.now();
   const rows = [];
-  for (const spec of planned) {
+  for (const spec of todo.slice(0, batch)) {
+    if (Date.now() - startedAt > KINDS_BUDGET_MS) break;
     // A thread id is not a message id. Resolve to the LAST message in the
     // thread, which is the one the schedule update actually lives in.
     let messageId = spec.messageId || null;
@@ -661,8 +682,29 @@ export async function runKindsEval({
     });
   }
 
+  if (rows.length) {
+    const pipeline = redis.pipeline();
+    for (const r of rows) pipeline.hset(key, r.label, JSON.stringify(r));
+    pipeline.expire(key, 7 * 24 * 60 * 60);
+    await pipeline.exec();
+  }
+  const storedLabels = await redis.hkeys(key);
   const spentUsd = +(((Number(await redis.get(shadowSpendKey())) || 0) - startedMicro) / 1e6).toFixed(4);
-  return { dryRun: false, model, spentUsd, capUsd, missingIds: missing, rows };
+  return {
+    dryRun: false, runId, model, spentUsd, capUsd, missingIds: missing,
+    processedThisCall: rows.length,
+    processed: storedLabels.length, total: planned.length,
+    remaining: Math.max(0, planned.length - storedLabels.length),
+    done: storedLabels.length >= planned.length,
+    rows,
+  };
+}
+
+// Everything collected so far, for scoring. Makes no model calls.
+export async function kindsEvalRows(runId) {
+  const all = await redis.hgetall(kindsRowsKey(runId));
+  return Object.values(all || {}).map(v => { try { return JSON.parse(v); } catch { return null; } })
+    .filter(Boolean);
 }
 
 export async function discoverSenders(email, { top = 15 } = {}) {

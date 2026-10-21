@@ -11302,22 +11302,45 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
       const only = Array.isArray(req.body?.labels) && req.body.labels.length
         ? new Set(req.body.labels) : null;
       const specs = EXPECTATIONS.filter(e => !only || only.has(e.label));
+      const runId = String(req.body?.runId || '').trim();
+      // Scoring is a separate call from running, so a partial run can never be
+      // quoted as if it were the whole result.
+      if (req.body?.report) {
+        if (!runId) return res.status(400).json({ error: 'runId is required to report' });
+        const stored = await mod.kindsEvalRows(runId);
+        const byLabel = new Map(specs.map(e => [e.label, e.expect || {}]));
+        const scored = stored.map(r => Object.assign(
+          scoreOne(r.label, r.baseline, r.candidate, byLabel.get(r.label) || {}),
+          { note: r.note, subject: r.subject, messageId: r.messageId,
+            baseline: r.baseline, candidate: r.candidate }));
+        return res.json({ ...scoreAll(scored), runId,
+          expected: specs.length, scored: scored.length,
+          complete: scored.length >= specs.length });
+      }
       const run = await mod.runKindsEval({
-        email: target, specs, roster,
-        model: String(req.body?.model || 'claude-sonnet-5'),
+        email: target, specs, roster, runId: runId || null,
+        model: String(req.body?.model || 'claude-sonnet-5-5'),
         capUsd: Math.min(20, Math.max(0.1, Number(req.body?.capUsd) || 2)),
         dryRun: req.body?.dryRun === true,
+        batch: Math.min(5, Math.max(1, Number(req.body?.batch) || 3)),
       });
       if (run.dryRun) return res.json(run);
+      if (!run.done) {
+        return res.json({ runId: run.runId, model: run.model, done: false,
+          processed: run.processed, total: run.total, remaining: run.remaining,
+          spentUsd: run.spentUsd,
+          next: 'Send the same request again with the same runId to continue.' });
+      }
       const byLabel = new Map(specs.map(e => [e.label, e.expect || {}]));
-      const scored = (run.rows || []).map(r => r.error
+      const all = await mod.kindsEvalRows(run.runId);
+      const scored = all.map(r => r.error
         ? { label: r.label, error: r.error, checks: [], passed: false,
             baselineItems: 0, candidateItems: 0, baselineAllDay: 0, candidateAllDay: 0,
             kinds: [], lostFromBaseline: [] }
         : Object.assign(scoreOne(r.label, r.baseline, r.candidate, byLabel.get(r.label) || {}),
             { note: r.note, subject: r.subject, messageId: r.messageId,
               baseline: r.baseline, candidate: r.candidate }));
-      return res.json({ ...scoreAll(scored), model: run.model,
+      return res.json({ ...scoreAll(scored), runId: run.runId, model: run.model, done: true,
         spentUsd: run.spentUsd, capUsd: run.capUsd, missingIds: run.missingIds });
     }
 

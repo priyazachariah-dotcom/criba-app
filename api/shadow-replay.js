@@ -174,6 +174,73 @@ traceable to words actually present in the content.
 
 const JSON_TAIL = 'Return a JSON array only.';
 
+// ── Variant: kinds ───────────────────────────────────────────────────────
+//
+// The question this variant asks is not "did you find the dates" but "did you
+// read it the way a person would". Four of the five kinds are things the
+// current prompt has no word for, so it turns every one of them into an event:
+// a payment-failed notice, a return window, a list of drop-in slots and a
+// subscription expiry all become all-day banners on a real calendar.
+//
+// Classification rides inside the SAME call. No second model call, so the cost
+// per email is unchanged apart from a slightly longer prompt and a slightly
+// longer answer.
+const KINDS_RULES = `
+Rule 12: What KIND of thing is this? Give every item a "kind".
+
+- "event"    - the reader is somewhere at a time, or a genuine whole-day
+               occasion: no school, a holiday, a class trip, a game, a
+               reservation, a webinar with a start time.
+- "reminder" - a do-by date with no attendance: due, expires, payment failed
+               and must be fixed, return window closes, RSVP by, register by,
+               renew by, deadline.
+- "choice"   - ONE thing the reader must do, offered at several times. Make-up
+               test drop-in windows, office hours, sign-up slots. Output ONE
+               item, dated at the DEADLINE, with every option listed in notes.
+               Never one item per window.
+- "notice"   - for information only: vendor mail, billing, account status,
+               promotions, newsletters about things that already happened.
+- "skip"     - not for this family: another grade, another child's team,
+               marketing. Say which in "skip_reason".
+
+Rule 13: ONE item per email, unless each entry is a FIXED COMMITMENT the reader
+must attend. A coach writing "Mon-Thu practice 3:10-5:30, Friday game 5pm" is
+five commitments and therefore five events. A list of times the reader may
+choose between is ONE choice. A newsletter describing six things that happened
+is one notice, or nothing.
+
+Rule 14: Do not default to all-day. "is_all_day": true is only for a real
+whole-day occasion -- no school, a holiday, a trip, a break. An untimed
+deadline is a "reminder" with a date and no time, NOT an all-day event. This is
+the difference between a calendar that shows your day and a calendar with a
+banner across it saying "Audible credit expires".
+
+Rule 15: Never invent an end time. If the source does not state one, set
+"end_time": null and leave it null. Something later decides what to do with
+that; guessing an hour here removes the chance.
+
+Rule 16: supersedes. If the email changes a schedule that was already sent
+("note the changes", "instead of", "this replaces", "updated schedule"), list
+in "supersedes" the items it replaces, each as {title, date, time} as the
+EARLIER mail would have described them. Only within the same week and the same
+sender. An email that merely repeats a schedule supersedes nothing.
+
+Rule 17: Person and grade come from the roster you were given. An item for a
+grade nobody is in is kind "skip" with skip_reason naming the grade. Do not
+guess a person from a sender alone.
+
+Each item adds these fields:
+- kind ("event" | "reminder" | "choice" | "notice" | "skip")
+- skip_reason (string, only when kind is "skip", else null)
+- options (array of strings, only when kind is "choice", else [])
+- supersedes (array of {title, date, time}, else [])
+
+Rule 6 still stands and is not weakened: a real event must never be missed. An
+availability window, a menu of options and a vendor notice are not events, and
+calling them events is itself a way of losing the real ones in the noise.
+
+`;
+
 export function applyPromptVariant(prompt, variant) {
   if (!variant || variant === 'production') return prompt;
   if (variant === 'literal-titles') {
@@ -183,6 +250,12 @@ export function applyPromptVariant(prompt, variant) {
       throw new Error('literal-titles: the closing JSON instruction was not found — the variant has nowhere to anchor Rule 11');
     }
     return prompt.replace(JSON_TAIL, RULE11_LITERAL + JSON_TAIL);
+  }
+  if (variant === 'kinds') {
+    if (!prompt.includes(JSON_TAIL)) {
+      throw new Error('kinds: the closing JSON instruction was not found — the variant has nowhere to anchor Rules 12-17');
+    }
+    return prompt.replace(JSON_TAIL, KINDS_RULES + JSON_TAIL);
   }
   if (variant === 'rule8-strict') {
     if (!prompt.includes(RULE8_ORIGINAL)) {

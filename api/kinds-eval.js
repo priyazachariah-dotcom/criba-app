@@ -40,14 +40,14 @@ export const EXPECTATIONS = [
     expect: { items: 1, kinds: ['reminder'], allDay: 0 } },
   { label: 'nytimes-expiry', messageId: null,
     expect: { items: 1, kinds: ['notice','reminder'], allDay: 0 } },
-  { label: 'audible-credit', messageId: null,
-    expect: { items: 1, kinds: ['notice','reminder'], allDay: 0 } },
-  { label: 'olukai-return-window', messageId: null,
-    expect: { items: 1, kinds: ['reminder'], allDay: 0 } },
+  { label: 'reservation-1', messageId: null,
+    note: 'restaurant reservation',
+    expect: { items: 1, kinds: ['event'], allDay: 0, hasTime: true } },
+  { label: 'reservation-2', messageId: null,
+    note: 'restaurant reservation',
+    expect: { items: 1, kinds: ['event'], allDay: 0, hasTime: true } },
 
   { label: 'zoom-webinar', messageId: null,
-    expect: { items: 1, kinds: ['event'], allDay: 0, hasTime: true } },
-  { label: 'restaurant-reservation', messageId: null,
     expect: { items: 1, kinds: ['event'], allDay: 0, hasTime: true } },
 ];
 

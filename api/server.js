@@ -11292,6 +11292,35 @@ app.post('/api/admin/shadow-replay', requireAuth, async (req, res) => {
         { top: Math.min(40, Math.max(1, Number(req.body?.top) || 15)) });
       return res.json({ discover: true, senders });
     }
+    // The kinds eval. Read-only: it reads the listed threads, calls the model
+    // twice per message, scores and returns. No calendar client is constructed
+    // anywhere in its path and nothing is written to the events store.
+    if (req.body?.kindsEval) {
+      const { EXPECTATIONS, scoreOne, scoreAll } = await import('./kinds-eval.js');
+      const target = String(req.body?.email || req.user.email).toLowerCase();
+      const roster = (await getUserFamily(target).values()).map(m => m.name).filter(Boolean);
+      const only = Array.isArray(req.body?.labels) && req.body.labels.length
+        ? new Set(req.body.labels) : null;
+      const specs = EXPECTATIONS.filter(e => !only || only.has(e.label));
+      const run = await mod.runKindsEval({
+        email: target, specs, roster,
+        model: String(req.body?.model || 'claude-sonnet-5'),
+        capUsd: Math.min(20, Math.max(0.1, Number(req.body?.capUsd) || 2)),
+        dryRun: req.body?.dryRun === true,
+      });
+      if (run.dryRun) return res.json(run);
+      const byLabel = new Map(specs.map(e => [e.label, e.expect || {}]));
+      const scored = (run.rows || []).map(r => r.error
+        ? { label: r.label, error: r.error, checks: [], passed: false,
+            baselineItems: 0, candidateItems: 0, baselineAllDay: 0, candidateAllDay: 0,
+            kinds: [], lostFromBaseline: [] }
+        : Object.assign(scoreOne(r.label, r.baseline, r.candidate, byLabel.get(r.label) || {}),
+            { note: r.note, subject: r.subject, messageId: r.messageId,
+              baseline: r.baseline, candidate: r.candidate }));
+      return res.json({ ...scoreAll(scored), model: run.model,
+        spentUsd: run.spentUsd, capUsd: run.capUsd, missingIds: run.missingIds });
+    }
+
     const senders = Array.isArray(req.body?.senders) ? req.body.senders : [];
     if (req.body?.composition) {
       const users = Array.isArray(req.body?.users) && req.body.users.length

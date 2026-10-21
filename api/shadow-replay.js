@@ -591,6 +591,80 @@ async function sonnetExtract(prompt, subject, body, dateSent, familyNames, maxTo
 // This reads stored events only. It is a way of proposing a list for a human
 // to approve, not the corpus itself: the corpus is always the Gmail sender
 // search, because a message Fable extracted nothing from leaves no row here.
+// ── The kinds eval, server side ──────────────────────────────────────────
+//
+// Runs entirely here so no secret has to live on a laptop. The API key stays in
+// the server environment, Redis and the Google credentials stay where they
+// already are, and the caller sends a session cookie and nothing else.
+//
+// It cannot touch a calendar. There is no Calendar client in this file, no
+// import of the events store, and the only Google call it makes is a read of
+// the messages whose thread ids were passed in.
+export async function runKindsEval({
+  email, specs, model = SHADOW_MODEL, capUsd = 2, dryRun = false, roster = [],
+} = {}) {
+  if (!email) throw new Error('email is required');
+  if (!Array.isArray(specs) || !specs.length) throw new Error('specs are required');
+  if (!SHADOW_PRICING[model]) throw new Error(`unknown shadow model "${model}"`);
+
+  const planned = specs.filter(s => s.threadId || s.messageId);
+  const missing = specs.filter(s => !s.threadId && !s.messageId).map(s => s.label);
+  const perCall = { in: 4500, out: 900 };
+  const p = SHADOW_PRICING[model];
+  const estimateUsd = +(((planned.length * 2) * (perCall.in * p.in + perCall.out * p.out)) / 1e6).toFixed(3);
+
+  if (dryRun) {
+    return { dryRun: true, model, emails: planned.length, calls: planned.length * 2,
+      estimateUsd, capUsd, missingIds: missing,
+      note: 'Nothing was called. No mail was read and no model was invoked.' };
+  }
+  if (estimateUsd > capUsd) {
+    throw new Error(`estimate $${estimateUsd} exceeds the cap $${capUsd} — raise the cap deliberately or shorten the list`);
+  }
+
+  const gmail = await gmailFor(email);
+  const serverSource = readFileSync(serverSourcePath(), 'utf8');
+  const basePrompt = loadExtractionPrompt(serverSource);
+  const kindsPrompt = applyPromptVariant(basePrompt, 'kinds');
+
+  const startedMicro = Number(await redis.get(shadowSpendKey())) || 0;
+  const rows = [];
+  for (const spec of planned) {
+    // A thread id is not a message id. Resolve to the LAST message in the
+    // thread, which is the one the schedule update actually lives in.
+    let messageId = spec.messageId || null;
+    if (!messageId) {
+      const th = await gmail.users.threads.get({
+        userId: 'me', id: spec.threadId, format: 'metadata', metadataHeaders: ['Date'],
+      });
+      const msgs = th.data.messages || [];
+      if (!msgs.length) { rows.push({ label: spec.label, error: 'empty thread' }); continue; }
+      messageId = msgs[msgs.length - 1].id;
+    }
+    const full = await gmail.users.messages.get({ userId: 'me', id: messageId, format: 'full' });
+    const headers = full.data.payload?.headers || [];
+    const h = n => (headers.find(x => String(x.name).toLowerCase() === n) || {}).value || '';
+    const body = extractPlainText(full.data.payload);
+
+    const spentNow = (Number(await redis.get(shadowSpendKey())) || 0) - startedMicro;
+    if (spentNow / 1e6 >= capUsd) {
+      rows.push({ label: spec.label, error: `stopped: cap $${capUsd} reached` });
+      break;
+    }
+
+    const baseline = await sonnetExtract(basePrompt, h('subject'), body, h('date'), roster, SHADOW_MAX_TOKENS, model);
+    const candidate = await sonnetExtract(kindsPrompt, h('subject'), body, h('date'), roster, SHADOW_MAX_TOKENS, model);
+    rows.push({
+      label: spec.label, note: spec.note || '', messageId, subject: h('subject'),
+      baseline: baseline.events || [], candidate: candidate.events || [],
+      baselineStop: baseline.stopReason || null, candidateStop: candidate.stopReason || null,
+    });
+  }
+
+  const spentUsd = +(((Number(await redis.get(shadowSpendKey())) || 0) - startedMicro) / 1e6).toFixed(4);
+  return { dryRun: false, model, spentUsd, capUsd, missingIds: missing, rows };
+}
+
 export async function discoverSenders(email, { top = 15 } = {}) {
   const all = await redis.hgetall(`events:${email}`);
   const byMessage = new Map();

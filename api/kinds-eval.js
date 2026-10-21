@@ -10,12 +10,15 @@
 // afterwards. messageId is filled in per account; the labels are stable.
 
 export const EXPECTATIONS = [
-  { label: 'rsm-makeup-test', messageId: null,
+  { label: 'rsm-makeup-test', threadId: '1a14278ea9ac6268',
     note: 'RSM "Missed the school test today"',
-    expect: { items: 1, kinds: ['choice'], allDay: 0, person: 'Arin',
+    // Stated as "ONE reminder due Oct 26, not 11 banners". Either kind is
+    // accepted: the distinction that matters is one item with the options
+    // kept, rather than one item per window.
+    expect: { items: 1, kinds: ['choice', 'reminder'], allDay: 0, person: 'Arin',
               dueDate: '2026-10-26', optionsAtLeast: 2 } },
 
-  { label: 'coach-week-of-1019', messageId: null,
+  { label: 'coach-week-of-1019', threadId: '1a150e2ea7815480',
     note: "Coach's WEEK OF 10/19",
     expect: { items: 5, kinds: ['event'], allDay: 0,
               times: ['15:10','15:10','15:10','15:10','17:00'],
@@ -28,26 +31,30 @@ export const EXPECTATIONS = [
                 { title: 'Game', date: '2026-10-23' },
               ] } },
 
-  { label: 'si-newsletter', messageId: null,
+  { label: 'si-newsletter', threadId: '1a15b8c4a1c8452c',
     note: 'SI newsletter, grade-specific items',
     expect: { oneEntryPerRealEvent: true, skipOtherGrades: true } },
 
-  { label: 'hcsd-newsletter', messageId: null,
+  { label: 'hcsd-newsletter', threadId: '1a14728a7252b7df',
     note: 'HCSD newsletter, grade-specific items',
     expect: { oneEntryPerRealEvent: true, skipOtherGrades: true } },
 
-  { label: 'clear-payment-failed', messageId: null,
-    expect: { items: 1, kinds: ['reminder'], allDay: 0 } },
-  { label: 'nytimes-expiry', messageId: null,
-    expect: { items: 1, kinds: ['notice','reminder'], allDay: 0 } },
-  { label: 'reservation-1', messageId: null,
+  { label: 'clear-payment-failed', threadId: '1a139babd366b945',
+    expect: { items: 1, kinds: ['notice', 'reminder'], allDay: 0, notEvent: true } },
+  { label: 'nytimes-expiry', threadId: '1a0f164abd835d69',
+    expect: { items: 1, kinds: ['notice', 'reminder'], allDay: 0, notEvent: true } },
+  { label: 'reservation-1', threadId: '1a12e5ef37b8c853',
     note: 'restaurant reservation',
     expect: { items: 1, kinds: ['event'], allDay: 0, hasTime: true } },
-  { label: 'reservation-2', messageId: null,
+  { label: 'reservation-2', threadId: '1a0fcc0f5e1e5964',
     note: 'restaurant reservation',
     expect: { items: 1, kinds: ['event'], allDay: 0, hasTime: true } },
 
-  { label: 'zoom-webinar', messageId: null,
+  { label: 'coach-next-week-1019', threadId: '1a1319f277a94d27',
+    note: 'the "NEXT WEEK (10/19)" email',
+    expect: { supersedesAtLeast: 1 } },
+
+  { label: 'zoom-webinar', threadId: '1a14b3a5f220593a',
     expect: { items: 1, kinds: ['event'], allDay: 0, hasTime: true } },
 ];
 
@@ -102,6 +109,7 @@ export function scoreOne(label, baseline, candidate, expect = {}) {
       : cand.every((e, i) => expect.kinds.includes(e.kind));
     check('kind', ok, kinds.join(','));
   }
+  if (expect.notEvent) check('not an event', cand.every(e => e.kind !== 'event'), kinds.join(','));
   if (expect.hasTime) check('has a time', cand.every(e => !!(e.start_time || e.time)), kinds.join(','));
   if (expect.person) check('person', cand.some(e =>
     (e.attendees || []).some(a => String(a).toLowerCase() === expect.person.toLowerCase())), expect.person);
